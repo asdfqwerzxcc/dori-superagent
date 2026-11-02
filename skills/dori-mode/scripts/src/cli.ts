@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
 
+import { AcpError, runAcp } from "./acp.ts";
 import { type Command, die, makeCli } from "./cli-context.ts";
 import { journalCommands, journalErrors } from "./cli-journal.ts";
 import { laneCommands } from "./cli-lanes.ts";
@@ -51,6 +52,7 @@ const USAGE = `dori <command> [options]
                                        post or edit a message (tokens from DORI_SLACK_TOKEN, DORI_TELEGRAM_TOKEN, DORI_DISCORD_TOKEN)
   presence <slack|discord>             keep the account shown as online until stopped
   transcribe <audio-file>              run hooks.transcribe and print the text
+  acp                                  speak Agent Client Protocol v1 on stdio (agent side)
   inbound slack|telegram [--loop MIN]  print INBOUND lines: Slack unread thread replies / Telegram owner DMs, edits and media + configured topic
                                        the Dori posted in (any helper), DMs and channels with unread mentions`;
 
@@ -98,11 +100,17 @@ const flags = parseArgs({
   },
 });
 
+// ACP is a long-running stdio server, not a registry call: it takes no lane and returns when stdin closes.
+const acp: Command = async () => {
+  await runAcp();
+};
+
 const commands: Readonly<Record<string, Command>> = {
   ...journalCommands,
   ...laneCommands,
   ...opsCommands,
   ...messengerCommands,
+  acp,
 };
 const handler = Object.hasOwn(commands, command) ? commands[command] : undefined;
 
@@ -113,7 +121,11 @@ try {
     process.exit(command ? 1 : 0);
   }
 } catch (e) {
-  if (e instanceof LaunchError || [...messengerErrors, ...journalErrors].some((type) => e instanceof type))
+  if (
+    e instanceof AcpError ||
+    e instanceof LaunchError ||
+    [...messengerErrors, ...journalErrors].some((type) => e instanceof type)
+  )
     die((e as Error).message);
   throw e;
 }
