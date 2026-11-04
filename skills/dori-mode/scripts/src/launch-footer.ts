@@ -52,5 +52,9 @@ export const footer = (lane: Lane, leadPane: string, identities: DoriConfig["rep
     "",
   ].join("\n");
 
-export const quoteForPane = (arg: string): string =>
-  /^[\w./:@=-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, `'\\''`)}'`;
+// Windows panes run PowerShell/cmd, where an embedded quote is doubled, not closed and reopened as in POSIX shells.
+export const quoteForPane = (arg: string): string => {
+  if (/^[\w./:@=-]+$/.test(arg)) return arg;
+  const escaped = process.platform === "win32" ? arg.replace(/'/g, "''") : arg.replace(/'/g, `'\\''`);
+  return `'${escaped}'`;
+};

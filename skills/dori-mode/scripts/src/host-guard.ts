@@ -20,6 +20,7 @@ export const sampleHost = async (
   dataPath = "/",
   rts: ChosenRuntimes = runtimesFor({}, process.env, run),
 ): Promise<HostSample> => {
+  if (process.platform === "win32") return await sampleWindows(dataPath, rts);
   const load = await run(["sysctl", "-n", "vm.loadavg"]);
   const loadLinux = load.code === 0 ? null : await run(["cat", "/proc/loadavg"]);
   const load1 = num(
@@ -50,6 +51,33 @@ export const sampleHost = async (
     () => -1,
   );
   return { load1, memFreePct, diskFreeGb, swapFreeGb, panes };
+};
+
+
+// Windows has none of the POSIX probes above (`sysctl`, `memory_pressure`, `/proc`): read memory and disk from node.
+const sampleWindows = async (dataPath: string, rts: ChosenRuntimes): Promise<HostSample> => {
+  const { statfsSync } = await import("node:fs");
+  const os = await import("node:os");
+  const total = os.totalmem();
+  const free = os.freemem();
+  let diskFreeGb = 0;
+  try {
+    const st = statfsSync(dataPath);
+    diskFreeGb = (st.bavail * st.bsize) / 1_073_741_824;
+  } catch {
+    diskFreeGb = 0;
+  }
+  return {
+    load1: 0,
+    memFreePct: total > 0 ? (free / total) * 100 : 100,
+    diskFreeGb,
+    swapFreeGb: 0,
+    // Same rule as the POSIX path: an unknown count is -1, never 0.
+    panes: await listSessions(rts).then(
+      (sessions) => sessions.length,
+      () => -1,
+    ),
+  };
 };
 
 export const alertReasons = (s: HostSample, t: GuardThresholds): string[] => {
