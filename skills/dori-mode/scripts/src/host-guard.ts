@@ -19,8 +19,9 @@ export const sampleHost = async (
   run: Runner,
   dataPath = "/",
   rts: ChosenRuntimes = runtimesFor({}, process.env, run),
+  platform: NodeJS.Platform = process.platform,
 ): Promise<HostSample> => {
-  if (process.platform === "win32") return await sampleWindows(dataPath, rts);
+  if (platform === "win32") return await sampleWindows(dataPath, rts);
   const load = await run(["sysctl", "-n", "vm.loadavg"]);
   const loadLinux = load.code === 0 ? null : await run(["cat", "/proc/loadavg"]);
   const load1 = num(

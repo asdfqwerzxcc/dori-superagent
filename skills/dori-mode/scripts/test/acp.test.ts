@@ -52,8 +52,26 @@ const fakeBackend = (opts: FakeOptions = {}) => {
   return { backend, state, began };
 };
 
+type Wire = {
+  readonly jsonrpc?: unknown;
+  readonly id?: unknown;
+  readonly method?: unknown;
+  readonly params?: unknown;
+  readonly result?: unknown;
+  readonly error?: unknown;
+};
+
+type ResultFields = {
+  readonly protocolVersion?: unknown;
+  readonly agentInfo?: unknown;
+  readonly agentCapabilities?: unknown;
+  readonly authMethods?: unknown;
+  readonly sessionId?: unknown;
+  readonly stopReason?: unknown;
+};
+
 const collector = (backend: Backend) => {
-  const messages: Record<string, unknown>[] = [];
+  const messages: Wire[] = [];
   const server = new AcpServer({
     write: (message) => messages.push(message),
     createBackend: async () => backend,
@@ -65,16 +83,16 @@ const collector = (backend: Backend) => {
   return { messages, server, send };
 };
 
-const response = (messages: Record<string, unknown>[], id: number): Record<string, unknown> | undefined =>
+const response = (messages: Wire[], id: number): Wire | undefined =>
   messages.find((message) => message.id === id);
 
-const resultOf = (messages: Record<string, unknown>[], id: number): Record<string, unknown> =>
-  (response(messages, id)?.result ?? {}) as Record<string, unknown>;
+const resultOf = (messages: Wire[], id: number): ResultFields =>
+  (response(messages, id)?.result ?? {}) as ResultFields;
 
-const errorOf = (messages: Record<string, unknown>[], id: number): Record<string, unknown> =>
-  (response(messages, id)?.error ?? {}) as Record<string, unknown>;
+const errorOf = (messages: Wire[], id: number): { readonly code?: unknown } =>
+  (response(messages, id)?.error ?? {}) as { readonly code?: unknown };
 
-const newSession = async (send: (message: Record<string, unknown>) => Promise<void>, messages: Record<string, unknown>[], id: number): Promise<string> => {
+const newSession = async (send: (message: Record<string, unknown>) => Promise<void>, messages: Wire[], id: number): Promise<string> => {
   await send({ id, method: "session/new", params: { cwd: process.cwd(), mcpServers: [] } });
   return String(resultOf(messages, id).sessionId);
 };
@@ -124,7 +142,7 @@ test("session/prompt streams agent_message_chunk updates before the end_turn res
   await send({ id: 3, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "hello" }] } });
   const updates = messages.filter((message) => message.method === "session/update");
   expect(updates.length).toBeGreaterThanOrEqual(1);
-  const params = updates[0]?.params as Record<string, unknown>;
+  const params = updates[0]?.params as { readonly sessionId?: unknown; readonly update?: unknown };
   expect(params.sessionId).toBe(sessionId);
   expect(params.update).toMatchObject({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "DORI_ACP_OK" } });
   expect(resultOf(messages, 3).stopReason).toBe("end_turn");

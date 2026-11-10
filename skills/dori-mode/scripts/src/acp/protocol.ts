@@ -5,9 +5,8 @@ export type JsonRpcId = string | number | null;
 export type StopReason = "end_turn" | "max_tokens" | "max_turn_requests" | "refusal" | "cancelled";
 
 export type ContentBlock = {
-  readonly type: string;
-  readonly text?: string;
-  readonly [key: string]: unknown;
+  readonly type?: unknown;
+  readonly text?: unknown;
 };
 
 export type PromptParams = {
@@ -32,7 +31,7 @@ export type InitializeParams = {
 };
 
 export interface Backend {
-  readonly pid?: number;
+  readonly pid?: number | undefined;
   prompt(text: string, onText: (text: string) => void): Promise<StopReason>;
   cancel(): Promise<void>;
   close(): Promise<void>;
@@ -133,8 +132,8 @@ export const initializeResult = (): Record<string, unknown> => ({
 export const promptText = (prompt: unknown): string | undefined => {
   if (!Array.isArray(prompt)) return undefined;
   const parts: string[] = [];
-  for (const block of prompt) {
-    if (isRecord(block) && block.type === "text" && typeof block.text === "string") parts.push(block.text);
+  for (const block of prompt as readonly ContentBlock[]) {
+    if (isRecord(block) && block["type"] === "text" && typeof block["text"] === "string") parts.push(block["text"]);
   }
   return parts.length ? parts.join("\n\n") : undefined;
 };

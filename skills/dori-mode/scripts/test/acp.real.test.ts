@@ -5,7 +5,7 @@ import { isPidAlive } from "../src/acp/backend.ts";
 import { processList, startAcp, streamedText } from "./acp-harness.ts";
 import { withState } from "./fakes.ts";
 
-const real = process.env.DORI_ACP_REAL === "1";
+const real = process.env["DORI_ACP_REAL"] === "1";
 const realModel = "opencode-go/claude-haiku-5-5";
 
 const realConfig = async (stateDir: string): Promise<string> => {
@@ -22,14 +22,14 @@ test.skipIf(!real)("a spawned dori acp answers a real model prompt with DORI_ACP
     await harness.waitFor((message) => message.id === 1);
     harness.send({ id: 2, method: "session/new", params: { cwd: state.dir, mcpServers: [] } });
     const created = await harness.waitFor((message) => message.id === 2);
-    const sessionId = String((created.result as Record<string, unknown>).sessionId);
+    const sessionId = String((created.result as Record<string, unknown>)["sessionId"]);
     harness.send({
       id: 3,
       method: "session/prompt",
       params: { sessionId, prompt: [{ type: "text", text: "Reply with exactly: DORI_ACP_OK. Do not call tools." }] },
     });
     const answered = await harness.waitFor((message) => message.id === 3, 120_000);
-    expect((answered.result as Record<string, unknown>).stopReason).toBe("end_turn");
+    expect((answered.result as Record<string, unknown>)["stopReason"]).toBe("end_turn");
     expect(streamedText(harness.messages)).toContain("DORI_ACP_OK");
     const stderr = await harness.waitForStderr((text) => /SENPI_CHILD pid=\d+/.test(text));
     const pidText = /SENPI_CHILD pid=(\d+)/.exec(stderr)?.[1];
@@ -55,7 +55,7 @@ test.skipIf(!real)("session/cancel stops a real model turn with the cancelled st
     await harness.waitFor((message) => message.id === 1);
     harness.send({ id: 2, method: "session/new", params: { cwd: state.dir, mcpServers: [] } });
     const created = await harness.waitFor((message) => message.id === 2);
-    const sessionId = String((created.result as Record<string, unknown>).sessionId);
+    const sessionId = String((created.result as Record<string, unknown>)["sessionId"]);
     harness.send({
       id: 5,
       method: "session/prompt",
@@ -64,7 +64,7 @@ test.skipIf(!real)("session/cancel stops a real model turn with the cancelled st
     await harness.waitForStderr((text) => text.includes("SENPI_PROMPT_ACK"), 30_000);
     harness.send({ method: "session/cancel", params: { sessionId } });
     const answered = await harness.waitFor((message) => message.id === 5, 60_000);
-    expect((answered.result as Record<string, unknown>).stopReason).toBe("cancelled");
+    expect((answered.result as Record<string, unknown>)["stopReason"]).toBe("cancelled");
     harness.send({ id: 6, method: "session/close", params: { sessionId } });
     await harness.waitFor((message) => message.id === 6, 20_000);
   } finally {

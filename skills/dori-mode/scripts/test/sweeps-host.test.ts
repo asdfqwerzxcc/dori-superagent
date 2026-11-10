@@ -47,6 +47,9 @@ test("the host guard alerts on low disk, clears when it recovers, and flips comp
 test("on Linux the host guard reports 0% free when MemAvailable is 0", async () => {
   const s = await sampleHost(
     linuxHost("MemTotal:       16000000 kB\nMemFree:               0 kB\nMemAvailable:          0 kB\n"),
+    "/",
+    undefined,
+    "linux",
   );
   expect(s.memFreePct).toBe(0);
 });
@@ -54,13 +57,16 @@ test("on Linux the host guard reports 0% free when MemAvailable is 0", async () 
 test("on Linux the host guard reads free memory from /proc/meminfo when memory_pressure is missing", async () => {
   const s = await sampleHost(
     linuxHost("MemTotal:       16000000 kB\nMemFree:          200000 kB\nMemAvailable:    4000000 kB\n"),
+    "/",
+    undefined,
+    "linux",
   );
   expect(s.memFreePct).toBe(25);
 });
 
 test("the host guard keeps memory at 100% when neither memory_pressure nor /proc/meminfo works", async () => {
-  expect((await sampleHost(linuxHost(null))).memFreePct).toBe(100);
-  expect((await sampleHost(linuxHost("MemTotal:       16000000 kB\n"))).memFreePct).toBe(100);
+  expect((await sampleHost(linuxHost(null), "/", undefined, "linux")).memFreePct).toBe(100);
+  expect((await sampleHost(linuxHost("MemTotal:       16000000 kB\n"), "/", undefined, "linux")).memFreePct).toBe(100);
 });
 
 test("a heavy slot waits for load to drop, and a slot held by a dead process is taken over", async () => {

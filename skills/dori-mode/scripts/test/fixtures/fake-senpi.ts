@@ -9,6 +9,12 @@ const send = (message: unknown): void => {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 };
 
+type FakeMessage = {
+  readonly type?: unknown;
+  readonly id?: unknown;
+  readonly message?: unknown;
+};
+
 const settle = (aborted = false): void => {
   active = false;
   send({ type: "agent_end", messages: [], willRetry: false, ...(aborted ? { aborted: true } : {}) });
@@ -23,11 +29,11 @@ for await (const chunk of Bun.stdin.stream()) {
     const line = buffer.slice(0, newline).replace(/\r$/, "");
     buffer = buffer.slice(newline + 1);
     if (!line.trim()) continue;
-    let message: Record<string, unknown>;
+    let message: FakeMessage;
     try {
       const parsed: unknown = JSON.parse(line);
       if (typeof parsed !== "object" || parsed === null) continue;
-      message = parsed as Record<string, unknown>;
+      message = parsed as FakeMessage;
     } catch {
       continue;
     }

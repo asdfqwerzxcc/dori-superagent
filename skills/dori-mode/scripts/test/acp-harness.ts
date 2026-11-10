@@ -2,7 +2,13 @@ import { join } from "node:path";
 
 import { LineFramer } from "../src/acp/protocol.ts";
 
-export type AcpMessage = Record<string, unknown>;
+export type AcpMessage = {
+  readonly id?: string | number;
+  readonly method?: string;
+  readonly params?: unknown;
+  readonly result?: unknown;
+  readonly error?: unknown;
+};
 
 type Waiter = {
   readonly predicate: (message: AcpMessage) => boolean;
@@ -155,13 +161,15 @@ export const processList = async (pid: number): Promise<string> => {
   return `exit=${code} ${out}${err}`.trim();
 };
 
+type SessionUpdateParams = {
+  readonly update?: { readonly content?: { readonly text?: unknown } };
+};
+
 export const streamedText = (messages: readonly AcpMessage[]): string =>
   messages
     .filter((message) => message.method === "session/update")
     .map((message) => {
-      const params = message.params as Record<string, unknown>;
-      const update = params.update as Record<string, unknown>;
-      const content = update.content as Record<string, unknown>;
-      return typeof content.text === "string" ? content.text : "";
+      const content = (message.params as SessionUpdateParams | undefined)?.update?.content;
+      return typeof content?.text === "string" ? content.text : "";
     })
     .join("");

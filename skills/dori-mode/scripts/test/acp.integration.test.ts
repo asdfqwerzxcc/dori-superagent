@@ -16,16 +16,16 @@ test("dori acp speaks ACP end to end through a spawned process and reaps its chi
   try {
     harness.send({ id: 1, method: "initialize", params: { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "test-client", version: "1.0.0" } } });
     const initialized = await harness.waitFor((message) => message.id === 1);
-    expect((initialized.result as Record<string, unknown>).protocolVersion).toBe(1);
+    expect((initialized.result as Record<string, unknown>)["protocolVersion"]).toBe(1);
 
     harness.send({ id: 2, method: "session/new", params: { cwd: state.dir, mcpServers: [] } });
     const created = await harness.waitFor((message) => message.id === 2);
-    const sessionId = String((created.result as Record<string, unknown>).sessionId);
+    const sessionId = String((created.result as Record<string, unknown>)["sessionId"]);
     expect(sessionId.startsWith("sess_")).toBe(true);
 
     harness.send({ id: 3, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "Reply with exactly: DORI_ACP_OK" }] } });
     const answered = await harness.waitFor((message) => message.id === 3, 20_000);
-    expect((answered.result as Record<string, unknown>).stopReason).toBe("end_turn");
+    expect((answered.result as Record<string, unknown>)["stopReason"]).toBe("end_turn");
     expect(streamedText(harness.messages)).toContain("DORI_ACP_OK");
 
     const stderr = await harness.waitForStderr((text) => /SENPI_CHILD pid=\d+/.test(text));

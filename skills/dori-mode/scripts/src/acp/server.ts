@@ -19,6 +19,18 @@ import {
   type JsonRpcId,
 } from "./protocol.ts";
 
+type RpcMessage = {
+  readonly method?: unknown;
+  readonly id?: unknown;
+  readonly params?: unknown;
+};
+
+type RpcParams = {
+  readonly cwd?: unknown;
+  readonly prompt?: unknown;
+  readonly sessionId?: unknown;
+};
+
 type Session = {
   readonly id: string;
   readonly backend: Backend;
@@ -57,12 +69,13 @@ export class AcpServer {
       this.opts.write(jsonRpcError(null, INVALID_REQUEST, "Invalid Request"));
       return;
     }
-    if (typeof parsed.method !== "string") {
+    const message = parsed as RpcMessage;
+    if (typeof message.method !== "string") {
       if ("result" in parsed || "error" in parsed) return;
       this.opts.write(jsonRpcError(null, INVALID_REQUEST, "Invalid Request"));
       return;
     }
-    const id = parsed.id;
+    const id = message.id;
     if (id !== undefined && id !== null && typeof id !== "string" && typeof id !== "number") {
       this.opts.write(jsonRpcError(null, INVALID_REQUEST, "Invalid Request"));
       return;
@@ -70,12 +83,12 @@ export class AcpServer {
     const requestId: JsonRpcId = id === undefined ? null : id;
     const notification = id === undefined;
     try {
-      const result = await this.dispatch(parsed.method, parsed.params);
+      const result = await this.dispatch(message.method, message.params);
       if (!notification) this.opts.write(jsonRpcResult(requestId, result ?? null));
     } catch (error) {
-      const rpc = this.toRpcError(error, parsed.method);
+      const rpc = this.toRpcError(error, message.method);
       if (notification) {
-        this.log(`${parsed.method} notification failed: ${rpc.message}`);
+        this.log(`${message.method} notification failed: ${rpc.message}`);
         return;
       }
       this.opts.write(jsonRpcError(requestId, rpc.code, rpc.message, rpc.data));
@@ -114,7 +127,8 @@ export class AcpServer {
   }
 
   private async newSession(params: unknown): Promise<{ readonly sessionId: string }> {
-    const cwd = isRecord(params) && typeof params.cwd === "string" ? params.cwd.trim() : "";
+    const params_ = isRecord(params) ? (params as RpcParams) : undefined;
+    const cwd = typeof params_?.cwd === "string" ? params_.cwd.trim() : "";
     if (!cwd) throw new JsonRpcError(INVALID_PARAMS, "session/new requires cwd");
     if (!isAbsolute(cwd)) throw new JsonRpcError(INVALID_PARAMS, "session/new cwd must be an absolute path");
     let backend: Backend;
@@ -130,7 +144,8 @@ export class AcpServer {
 
   private async prompt(params: unknown): Promise<{ readonly stopReason: string }> {
     const session = this.requireSession(params);
-    const text = isRecord(params) ? promptText(params.prompt) : undefined;
+    const params_ = isRecord(params) ? (params as RpcParams) : undefined;
+    const text = promptText(params_?.prompt);
     if (!text) throw new JsonRpcError(INVALID_PARAMS, "session/prompt requires at least one text content block");
     if (session.busy) throw new JsonRpcError(INTERNAL_ERROR, "the session already has a prompt in progress");
     session.busy = true;
@@ -176,7 +191,8 @@ export class AcpServer {
   }
 
   private requireSession(params: unknown): Session {
-    const sessionId = isRecord(params) && typeof params.sessionId === "string" ? params.sessionId : "";
+    const params_ = isRecord(params) ? (params as RpcParams) : undefined;
+    const sessionId = typeof params_?.sessionId === "string" ? params_.sessionId : "";
     if (!sessionId) throw new JsonRpcError(INVALID_PARAMS, "sessionId is required");
     const session = this.sessions.get(sessionId);
     if (!session) throw new JsonRpcError(INVALID_PARAMS, `unknown session: ${sessionId}`);
