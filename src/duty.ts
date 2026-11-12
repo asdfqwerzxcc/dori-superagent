@@ -3,7 +3,7 @@ import { type Deps, prompt } from "./harness.ts";
 import { runHook } from "./hooks.ts";
 import { flushInbox, sendOrThrow, tellLead } from "./inbox.ts";
 import { Refusal } from "./refusal.ts";
-import { refText } from "./refs.ts";
+import { refText, sameSession } from "./refs.ts";
 import type { Lane } from "./store-types.ts";
 
 export const NUDGE_MINUTES = [10, 20, 40] as const;
@@ -40,7 +40,20 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
         events.push({ pane: paneId, action: "delivery-ambiguous", detail: `${held} message(s) held, not resent` });
     } catch (e) {
       // One pane's failed delivery must never kill the loop for every other pane and lane.
-      if (e instanceof Refusal) events.push({ pane: paneId, action: "inbox-target-gone" });
+      if (e instanceof Refusal) {
+        // A closed lane's pane keeps its inbox forever otherwise: the loop retries the same entry every
+        // pass and the log fills with inbox-target-gone. Drop it only when the target can never come
+        // back — neither a registered role nor a live (not done) lane. A pane that is merely restarting
+        // still has its lane, so its queue is kept.
+        const isRole = Object.values(d.store.roles()).some((r) => sameSession(r, ref));
+        if (isRole || d.store.laneBySession(ref) !== undefined) {
+          events.push({ pane: paneId, action: "inbox-target-gone" });
+        } else {
+          const dropped = d.store.queued(ref).length;
+          d.store.saveInbox(ref, []);
+          events.push({ pane: paneId, action: "inbox-dropped", detail: `${dropped} message(s) for a closed target` });
+        }
+      }
       else if (e instanceof DeliveryUncertain && !e.typed)
         events.push({ pane: paneId, action: "delivery-ambiguous", detail: failureDetail(e) });
       else events.push({ pane: paneId, action: "flush-failed", detail: failureDetail(e) });

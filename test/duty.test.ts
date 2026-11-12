@@ -52,6 +52,21 @@ describe("duty loop", () => {
     expect(broken.received).toEqual([]);
   });
 
+  test("a queued message for a pane that is neither a role nor a live lane is dropped, not retried forever", async () => {
+    const { w, d } = setup();
+    w.addPane("w1:p9", "idle");
+    d.store.enqueue(href("w1:p9"), { at: w.clock, from: "cli", text: "orphan" });
+    // The pane disappears and no lane owns it: nothing can ever deliver this message.
+    w.panes.delete("w1:p9");
+    const events = await dutyTick(d);
+    expect(events).toContainEqual({
+      pane: "w1:p9",
+      action: "inbox-dropped",
+      detail: expect.stringContaining("1 message"),
+    });
+    expect(d.store.queued(href("w1:p9"))).toEqual([]);
+  });
+
   test("a failing lane-phase delivery is recorded as lane-failed and does not stop the other lanes", async () => {
     const { w, d, brief } = setup();
     const lost = await startLane(d, "lost-lane", brief, { group: "w1" });
