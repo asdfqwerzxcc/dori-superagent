@@ -27,7 +27,10 @@ const identity = (agent: string | undefined, pgid: number | undefined): AgentIde
 /** A pane whose last visible line is a bare shell prompt has no agent in front, whatever herdr's status says. */
 const BARE_PROMPT = /(?:^|\s)(?:PS\s+[A-Za-z]:\\[^>]*>|[$#>%])\s*$/;
 const showsBarePrompt = (screen: string): boolean => {
-  const lines = screen.split("\n").map((l) => l.replace(/\s+$/, "")).filter((l) => l.length > 0);
+  const lines = screen
+    .split("\n")
+    .map((l) => l.replace(/\s+$/, ""))
+    .filter((l) => l.length > 0);
   const last = lines.at(-1) ?? "";
   return BARE_PROMPT.test(last);
 };
@@ -59,7 +62,11 @@ export async function deliver(cli: HerdrCli, paneId: string, text: string, sleep
     if (process.env["DORI_VERIFY_PROMPT"] === "1") {
       try {
         if (showsBarePrompt(await cli.read(paneId, SCREEN_LINES_FOR_DELIVERY))) {
-          return { kind: "ambiguous", detail: "herdr agent prompt left a bare shell prompt in the pane" };
+          return {
+            kind: "ambiguous",
+            detail: "herdr agent prompt left a bare shell prompt in the pane",
+            failure: "herdr agent prompt left a bare shell prompt in the pane",
+          };
         }
       } catch {
         // A screen read that fails proves nothing either way; the prompt was accepted, so keep the success.
