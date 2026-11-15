@@ -2,6 +2,7 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
     "skills/dori-mode/scripts/src/cli.ts",
+    "src/supervisors/*.ts",
     "test/**/*.test.ts",
     "skills/dori-mode/scripts/test/**/*.test.ts",
     "skills/dori-mode/scripts/test/record-fetch.ts"
