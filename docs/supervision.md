@@ -40,7 +40,8 @@ one of them did not come back, and the lines above the verdict say which.
 Measured on this host (Windows, herdr 0.9.5, 2026-11-15):
 
 - `dori restart` after killing both supervisors by hand: **1333 ms** until all heartbeats were fresh and every child pid
-  was up (`killed=1` = the watchdog it also replaces).
+  was up (`killed=1` = the watchdog it also replaces). The final run on the committed code took **1481 ms**; both sit
+  well inside one 30 s heartbeat window.
 - Gateway `GATEWAY_READY` 1 s after the restart; all seven processes (six + ensure-up) had new pids and records.
 - The ensure-up loop came back with the loops supervisor, no separate step.
 
