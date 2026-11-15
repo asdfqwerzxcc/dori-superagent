@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { shq } from "./delivery.ts";
 import { promptsDir, type Deps } from "./harness.ts";
@@ -6,6 +6,16 @@ import { refText } from "./refs.ts";
 import { groupId } from "./runtime/group.ts";
 import { openSession, type SessionRef } from "./runtime/types.ts";
 import { RuntimeChoiceError } from "./runtime/select.ts";
+
+const loopsSupervised = (root: string): boolean => {
+  const beat = join(root, "state", "loops-heartbeat");
+  if (!existsSync(beat)) return false;
+  try {
+    return Date.now() - statSync(beat).mtimeMs < 120_000;
+  } catch {
+    return false;
+  }
+};
 
 function renderPrompt(d: Deps, name: string): string {
   const dir = join(d.store.root, "prompts");
@@ -21,8 +31,9 @@ function renderPrompt(d: Deps, name: string): string {
  * lead is a new workspace's root pane, duty a tab in it, the loops splits below duty. hc: four terminals labelled with
  * this home's group.
  */
-export async function up(d: Deps, cwd: string): Promise<void> {
+export async function up(d: Deps, cwd: string, retireOld = false): Promise<void> {
   const rt = d.runtimes.default;
+  const previous = d.store.roles().lead;
   const env = { DORI_HOME: d.store.root };
   const agent = (name: string) => `${d.agentCmd} --append-system-prompt ${shq(renderPrompt(d, name))}`;
   // herdr ignores the group of a workspace-root session and reports the new workspace as the lead ref's group.
@@ -40,6 +51,21 @@ export async function up(d: Deps, cwd: string): Promise<void> {
     agent("duty.md"),
   );
   d.store.setRole("duty", duty);
+  const retire = async () => {
+    if (!retireOld || previous === undefined || previous.id === lead.id) return;
+    try {
+      await rt.close(previous, "container");
+      console.log(`UP retired previous lead ${refText(previous)}`);
+    } catch (e) {
+      console.log(`UP could not retire ${refText(previous)}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+  if (loopsSupervised(d.store.root)) {
+    console.log("UP loops are supervised; skipping the loop panes (lead+duty only)");
+    console.log(`UP runtime=${rt.kind} lead=${refText(lead)} duty=${refText(duty)} loops=supervised`);
+    await retire();
+    return;
+  }
   const loop = await openSession(
     rt,
     { name: "duty-loop", role: "duty-loop", container: "split-below", near: duty, cwd, env, ...inGroup },
@@ -56,6 +82,7 @@ export async function up(d: Deps, cwd: string): Promise<void> {
   console.log(
     `UP runtime=${rt.kind} lead=${refText(lead)} duty=${refText(duty)} loop=${refText(loop)} hourly=${refText(hourly)} home=${d.store.root}`,
   );
+  await retire();
 }
 
 /** The runtime line first (a runtime that cannot be chosen is shown, not thrown; a bad setting still throws). */

@@ -55,7 +55,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
   if (cmd !== undefined && COMMANDS.has(cmd)) d.usage.touch();
   switch (cmd) {
     case "up":
-      await up(d, resolve(one(a, "cwd") ?? process.cwd()));
+      await up(d, resolve(one(a, "cwd") ?? process.cwd()), one(a, "retire-old") === "true");
       return 0;
     case "role": {
       const role = need(x, "role") as Role;
