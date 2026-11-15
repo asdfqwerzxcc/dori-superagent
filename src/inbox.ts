@@ -1,7 +1,7 @@
 import { DeliveryUncertain, failureDetail } from "./delivery.ts";
 import type { Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
-import { resolveTarget } from "./target.ts";
+import { resolveLiveTarget, StaleRole } from "./target.ts";
 import { refText } from "./refs.ts";
 import type { AgentStatus, SessionRef } from "./runtime/types.ts";
 import { migrating } from "./store-journal.ts";
@@ -28,7 +28,7 @@ export async function sendOrThrow(
   text: string,
   from: string,
 ): Promise<"DELIVERED" | "QUEUED"> {
-  const ref = resolveTarget(d, target);
+  const ref = await resolveLiveTarget(d, target);
   d.store.enqueue(ref, { at: d.now(), from, text });
   return (await flushInbox(d, ref)) === "delivered" ? "DELIVERED" : "QUEUED";
 }
@@ -53,7 +53,14 @@ export async function tellLead(d: Deps, text: string, from: string): Promise<"DE
     process.stderr.write(`dori: no lead pane registered; message kept only in the lane log\n`);
     return undefined;
   }
-  return sendOrThrow(d, "lead", text, from);
+  try {
+    return await sendOrThrow(d, "lead", text, from);
+  } catch (e) {
+    // A notice must never fail a lane or a flush because the lead's pane died; the lane log keeps the text.
+    if (!(e instanceof StaleRole)) throw e;
+    process.stderr.write(`dori: the lead role is stale (${e.message}); message kept only in the lane log\n`);
+    return undefined;
+  }
 }
 
 /**

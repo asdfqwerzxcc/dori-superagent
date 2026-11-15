@@ -53,7 +53,7 @@ export class Store {
 
   private writeJson(path: string, value: unknown): void {
     const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n");
+    writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`);
     renameSync(tmp, path);
   }
 
@@ -90,6 +90,14 @@ export class Store {
   setRole(role: Role, ref: SessionRef): void {
     const raw = this.readJson<Partial<Record<Role, string>>>(join(this.root, "roles.json")) ?? {};
     this.writeJson(join(this.root, "roles.json"), { ...raw, [role]: refText(ref) });
+  }
+
+  /** Drops a role whose pane no longer runs it; `dori role <role> -` and `dori up` under supervisors both use this. */
+  clearRole(role: Role): void {
+    const raw = this.readJson<Partial<Record<Role, string>>>(join(this.root, "roles.json")) ?? {};
+    if (!(role in raw)) return;
+    delete raw[role];
+    this.writeJson(join(this.root, "roles.json"), raw);
   }
 
   briefPath(key: string): string {

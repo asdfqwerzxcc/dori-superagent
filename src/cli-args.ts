@@ -3,7 +3,7 @@ import { Refusal } from "./refusal.ts";
 export const USAGE = `dori - a proactive multi-session harness on herdr or hc + omo
 
   dori up [--cwd DIR]                         open lead, duty, duty loop and hourly loop sessions
-  dori role <lead|duty> [REF]                 register a session (w1:p3, herdr:w1:p3, hc:t7) as lead or duty (default: this one)
+  dori role <lead|duty> [REF|-]               register a session (w1:p3, herdr:w1:p3, hc:t7) as lead or duty (default: this one); - drops a stale role
   dori start <key> --brief FILE [--cwd DIR]   open a lane: new tab, omo session, brief + lane rules
   dori report <key> --text T [--status working|waiting]
   dori ready <key> --text T --evidence LINK [--evidence LINK ...]
@@ -26,6 +26,7 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori migrate [--to hc|herdr] (--lane K | --role lead|duty|duty-loop|hourly-loop | --all) [--dry-run]
                [--wait-minutes N] [--resume]  hand sessions over to another runtime; MIGRATED, SKIP, DEFERRED,
                                               or MIGRATE_ROLLBACK (exit 3) per session
+  dori restart                                restart the gateway and loops supervisors; waits for fresh heartbeats
   dori status
 
 --text may be omitted to read the message from stdin.

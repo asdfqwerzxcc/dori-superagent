@@ -6,6 +6,8 @@ import { refText } from "./refs.ts";
 import { groupId } from "./runtime/group.ts";
 import { openSession, type SessionRef } from "./runtime/types.ts";
 import { RuntimeChoiceError } from "./runtime/select.ts";
+import { superviseHome, type SupervisedState } from "./supervisor-run.ts";
+import { ensureUpHealth, ensureUpOff, formatEnsureUp, formatSupervisor, supervisorHealth } from "./supervisors.ts";
 
 const loopsSupervised = (root: string): boolean => {
   const beat = join(root, "state", "loops-heartbeat");
@@ -17,6 +19,9 @@ const loopsSupervised = (root: string): boolean => {
   }
 };
 
+const supervise = (d: Deps, supervisors: boolean): Promise<SupervisedState> =>
+  d.supervise !== undefined ? d.supervise(d.store.root, { supervisors }) : superviseHome(d.store.root, { supervisors });
+
 function renderPrompt(d: Deps, name: string): string {
   const dir = join(d.store.root, "prompts");
   mkdirSync(dir, { recursive: true });
@@ -26,10 +31,13 @@ function renderPrompt(d: Deps, name: string): string {
   return out;
 }
 
+const ensureLine = (state: SupervisedState): string =>
+  state.off ? "off" : state.ensureUp.alive ? `pid=${state.ensureUp.pid ?? "?"}` : "DOWN";
+
 /**
  * Opens lead, duty, the duty loop and the hourly loop on the selected runtime and registers all four roles. herdr: the
  * lead is a new workspace's root pane, duty a tab in it, the loops splits below duty. hc: four terminals labelled with
- * this home's group.
+ * this home's group. When the loops are supervised, their panes are not opened and the stale loop roles are dropped.
  */
 export async function up(d: Deps, cwd: string, retireOld = false): Promise<void> {
   const rt = d.runtimes.default;
@@ -61,8 +69,15 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
     }
   };
   if (loopsSupervised(d.store.root)) {
+    d.store.clearRole("duty-loop");
+    d.store.clearRole("hourly-loop");
     console.log("UP loops are supervised; skipping the loop panes (lead+duty only)");
-    console.log(`UP runtime=${rt.kind} lead=${refText(lead)} duty=${refText(duty)} loops=supervised`);
+    const state = await supervise(d, true);
+    console.log(
+      `UP runtime=${rt.kind} lead=${refText(lead)} duty=${refText(duty)} loops=supervised ensure-up=${ensureLine(state)}`,
+    );
+    for (const h of state.health) console.log(formatSupervisor(h));
+    console.log(formatEnsureUp(state.ensureUp, state.off));
     await retire();
     return;
   }
@@ -79,9 +94,11 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
     `${d.doriCmd} loop`,
   );
   d.store.setRole("hourly-loop", hourly);
+  const state = await supervise(d, false);
   console.log(
     `UP runtime=${rt.kind} lead=${refText(lead)} duty=${refText(duty)} loop=${refText(loop)} hourly=${refText(hourly)} home=${d.store.root}`,
   );
+  console.log(formatEnsureUp(state.ensureUp, state.off));
   await retire();
 }
 
@@ -96,11 +113,26 @@ function runtimeLine(d: Deps): string {
   }
 }
 
-export function status(d: Deps): void {
+/**
+ * Runtime, roles with their liveness, the supervised processes and their heartbeats, then the lanes. A role whose pane
+ * is gone is printed as STALE, never silently accepted by the next send.
+ */
+export async function status(d: Deps): Promise<void> {
   console.log(runtimeLine(d));
   const roles = d.store.roles();
   const show = (ref: SessionRef | undefined) => (ref ? refText(ref) : "-");
   console.log(`lead=${show(roles.lead)} duty=${show(roles.duty)} home=${d.store.root}`);
+  for (const [role, ref] of Object.entries(roles)) {
+    if (ref === undefined) continue;
+    try {
+      const { status: st } = await d.runtimes.for(ref).probe(ref);
+      if (st === "gone") console.log(`STALE ${role}=${refText(ref)}: pane not found`);
+    } catch {
+      console.log(`UNVERIFIED ${role}=${refText(ref)}: its runtime did not answer`);
+    }
+  }
+  for (const h of supervisorHealth(d.store.root)) console.log(formatSupervisor(h));
+  console.log(formatEnsureUp(ensureUpHealth(d.store.root), ensureUpOff(d.store.root)));
   for (const l of d.store.lanes()) {
     const last = l.log.at(-1);
     const age = Math.round((d.now() - l.lastActivityAt) / 60_000);

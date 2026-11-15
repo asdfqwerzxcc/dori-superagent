@@ -65,7 +65,7 @@ describe("records written before runtimes existed (IS-3)", () => {
   test("dori status shows the old lane as w1:p3 beside a herdr runtime column, the way it prints roles", async () => {
     const { d } = oldHome();
     const { out } = await captureIo(async () => {
-      status(d);
+      await status(d);
       return 0;
     });
     const lines = out.split("\n");

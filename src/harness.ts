@@ -11,6 +11,7 @@ import { type RuntimeChoice, readRuntimeChoice } from "./runtime/select.ts";
 import { Store } from "./store.ts";
 import { type HostLoad, KEY_RE, type Role, reservedKey } from "./store-types.ts";
 import { Telemetry, type Usage } from "./telemetry.ts";
+import { superviseHome, type SupervisedState } from "./supervisor-run.ts";
 
 export { KEY_RE, reservedKey };
 
@@ -29,6 +30,8 @@ export type Deps = {
   readonly doriCmd: string;
   readonly host: () => HostLoad;
   readonly usage: Usage;
+  /** Starts the supervisors and the ensure-up loop that are not running (`dori up`); a fake Deps replaces it. */
+  readonly supervise?: (home: string, opts?: { readonly supervisors?: boolean }) => Promise<SupervisedState>;
 };
 
 /** The runtime is chosen on first use, so commands that open or reach no session work without one installed. */
@@ -55,6 +58,7 @@ export const defaultDeps = (): Deps => {
     doriCmd: process.env["DORI_CMD"] ?? `DORI_HOME=${shq(store.root)} bun ${shq(CLI)}`,
     host: () => ({ load1: loadavg()[0] ?? 0, cores: cpus().length, memFreePct: memFreePct() }),
     usage: new Telemetry(store.root),
+    supervise: (home, opts) => superviseHome(home, opts),
   };
 };
 

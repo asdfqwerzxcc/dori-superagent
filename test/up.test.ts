@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { up } from "../src/cli-up.ts";
 import { groupId } from "../src/runtime/group.ts";
@@ -59,7 +59,10 @@ describe("dori up", () => {
       "duty-loop": "w1:p4",
       "hourly-loop": "w1:p5",
     });
-    expect(out).toBe(`UP runtime=herdr lead=w1:p2 duty=w1:p3 loop=w1:p4 hourly=w1:p5 home=${root}`);
+    expect(out).toBe(
+      `UP runtime=herdr lead=w1:p2 duty=w1:p3 loop=w1:p4 hourly=w1:p5 home=${root}\nENSURE-UP off (ensure-up.off)`,
+    );
+    expect(w.superviseCalls).toEqual([{ supervisors: false }]);
   });
 
   test("hc: four terminals in this home's group, prefixed roles, no herdr workspace variable", async () => {
@@ -93,5 +96,24 @@ describe("dori up", () => {
       "hourly-loop": "hc:t4",
     });
     expect(out).toStartWith("UP runtime=hc lead=hc:t1 duty=hc:t2 loop=hc:t3 hourly=hc:t4 ");
+  });
+
+  test("loops supervised: no loop panes, the stale loop roles dropped, the supervisors asked to ensure the stack", async () => {
+    const w = new World();
+    const d = w.deps();
+    const root = d.store.root;
+    mkdirSync(join(root, "state"), { recursive: true });
+    writeFileSync(join(root, "state", "loops-heartbeat"), new Date().toISOString());
+    d.store.setRole("duty-loop", { runtime: "herdr", id: "w1:p8" });
+    d.store.setRole("hourly-loop", { runtime: "herdr", id: "w1:p9" });
+    const { out } = await captureIo(async () => {
+      await up(d, "/w");
+      return 0;
+    });
+    expect(w.calls.filter((c) => c.cmd === "herdr" && c.argv[0] === "pane" && c.argv[1] === "split")).toHaveLength(0);
+    expect(JSON.parse(readFileSync(join(root, "roles.json"), "utf8"))).toEqual({ lead: "w1:p2", duty: "w1:p3" });
+    expect(w.superviseCalls).toEqual([{ supervisors: true }]);
+    expect(out).toStartWith("UP loops are supervised; skipping the loop panes (lead+duty only)\n");
+    expect(out).toContain("ensure-up=off");
   });
 });

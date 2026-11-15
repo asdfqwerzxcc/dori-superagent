@@ -14,7 +14,9 @@ import { runMigrate } from "./migrate.ts";
 import { refText } from "./refs.ts";
 import { ConfigError as RuntimeConfigError, RuntimeChoiceError } from "./runtime/select.ts";
 import { parseRef } from "./runtime/types.ts";
-import type { Role } from "./store-types.ts";
+import { formatEnsureUp, formatSupervisor } from "./supervisors.ts";
+import { restartSupervisors } from "./supervisor-run.ts";
+import { RESERVED_KEYS, type Role } from "./store-types.ts";
 
 const COMMANDS = new Set([
   "up",
@@ -32,6 +34,7 @@ const COMMANDS = new Set([
   "loop",
   "backlog",
   "migrate",
+  "restart",
 ]);
 
 /** Prints the line for a delivery that did not land now and returns the exit code: HELD 3, everything else 0. */
@@ -59,8 +62,16 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       return 0;
     case "role": {
       const role = need(x, "role") as Role;
-      if (!ROLES.includes(role)) throw new Refusal(`role must be one of ${ROLES.join(", ")}`);
       const given = a.pos[2];
+      if (given === "-") {
+        // Clearing accepts the loop roles too: a supervised home registers only lead (and duty on a pane), and an
+        // older roles.json may still hold stale loop panes that no `up` will open again.
+        if (!RESERVED_KEYS.includes(role)) throw new Refusal(`role must be one of ${RESERVED_KEYS.join(", ")}`);
+        d.store.clearRole(role);
+        console.log(`ROLE ${role}=-`);
+        return 0;
+      }
+      if (!ROLES.includes(role)) throw new Refusal(`role must be one of ${ROLES.join(", ")}`);
       const ref = given === undefined ? d.runtimes.selfAny(process.env) : parseRef(given);
       if (given !== undefined && ref === undefined)
         throw new Refusal(`${given} is not a session ref (w1:p3, herdr:w1:p3 or hc:t7)`);
@@ -137,8 +148,16 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       return 0;
     case "migrate":
       return runMigrate(d, a);
+    case "restart": {
+      const r = await restartSupervisors(d.store.root);
+      for (const h of r.health) console.log(formatSupervisor(h));
+      console.log(formatEnsureUp(r.ensureUp, r.off));
+      const ws = r.wsHeartbeatAgeMs === undefined ? "missing" : `${Math.round(r.wsHeartbeatAgeMs / 1000)}s`;
+      console.log(`${r.ok ? "RESTARTED" : "RESTART INCOMPLETE"} killed=${r.killed.length} ms=${r.elapsedMs} ws=${ws}`);
+      return r.ok ? 0 : 1;
+    }
     case "status":
-      status(d);
+      await status(d);
       return 0;
     default:
       console.log(USAGE);
