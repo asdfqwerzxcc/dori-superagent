@@ -6,6 +6,8 @@ import { foreground, paneAgent, probe } from "./probe.ts";
 export const PASTE_SETTLE_MS = 400;
 /** How often the Enter that submits typed fallback text is tried before the delivery is reported as failed. */
 export const ENTER_ATTEMPTS = 3;
+/** Screen lines read after an accepted prompt, enough to see the prompt line the pane ends on. */
+const SCREEN_LINES_FOR_DELIVERY = 12;
 
 export type Sleep = (ms: number) => Promise<void>;
 
@@ -21,6 +23,14 @@ const identity = (agent: string | undefined, pgid: number | undefined): AgentIde
   ...(agent !== undefined ? { agent } : {}),
   ...(pgid !== undefined ? { pgid } : {}),
 });
+
+/** A pane whose last visible line is a bare shell prompt has no agent in front, whatever herdr's status says. */
+const BARE_PROMPT = /(?:^|\s)(?:PS\s+[A-Za-z]:\\[^>]*>|[$#>%])\s*$/;
+const showsBarePrompt = (screen: string): boolean => {
+  const lines = screen.split("\n").map((l) => l.replace(/\s+$/, "")).filter((l) => l.length > 0);
+  const last = lines.at(-1) ?? "";
+  return BARE_PROMPT.test(last);
+};
 
 /**
  * Delivers one message to the agent in a pane as a single argv element: nothing in it is ever expanded by a shell.
@@ -43,6 +53,18 @@ export async function deliver(cli: HerdrCli, paneId: string, text: string, sleep
   if (first.status === "gone" || first.shellInFront) return NO_AGENT;
   try {
     await cli.call(["agent", "prompt", paneId, text]);
+    // herdr accepts a prompt for a pane whose agent it still believes in, and types it into whatever is in front.
+    // Opt-in (`DORI_VERIFY_PROMPT=1`) because it costs one screen read per delivery: a pane that answers with a bare
+    // shell prompt has no agent, so the text may have run as a command and must not be sent again as is (#89).
+    if (process.env["DORI_VERIFY_PROMPT"] === "1") {
+      try {
+        if (showsBarePrompt(await cli.read(paneId, SCREEN_LINES_FOR_DELIVERY))) {
+          return { kind: "ambiguous", detail: "herdr agent prompt left a bare shell prompt in the pane" };
+        }
+      } catch {
+        // A screen read that fails proves nothing either way; the prompt was accepted, so keep the success.
+      }
+    }
     return { kind: "delivered" };
   } catch (e) {
     // herdr only accepts `agent prompt` for agents it started itself (`herdr agent start`); an omo launched
