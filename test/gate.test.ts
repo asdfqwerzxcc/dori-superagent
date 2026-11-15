@@ -5,6 +5,10 @@ import { mergeGate, review } from "../src/gate.ts";
 import type { World } from "./fake.ts";
 import { setup } from "./harness-setup.ts";
 
+// Windows has no POSIX mode bits: statSync reports a synthesized 0o666 for any writable file, whatever chmod asked for.
+// The private-diagnostic assertion is therefore a POSIX check; the content assertions above it run on every platform.
+const posixModes = process.platform !== "win32";
+
 describe("review + merge gate", () => {
   const head = "a".repeat(40);
   function gh(w: World, checks: unknown[]) {
@@ -64,7 +68,7 @@ describe("review + merge gate", () => {
     const diagnostic = join(d.store.root, "receipts", name);
     expect(failure.message).toContain("no VERDICT");
     expect(failure.message).toContain(diagnostic);
-    expect(statSync(diagnostic).mode & 0o777).toBe(0o600);
+    if (posixModes) expect(statSync(diagnostic).mode & 0o777).toBe(0o600);
     expect(readFileSync(diagnostic, "utf8").split("\n")).toEqual(lines.slice(5));
     expect(d.store.receipt("o/r#8", head)).toBeUndefined();
   });
@@ -86,7 +90,7 @@ describe("review + merge gate", () => {
     expect(failure.message).toContain("reviewer exited 9");
     expect(failure.message).toContain(diagnostic);
     expect(readFileSync(diagnostic, "utf8")).toBe("partial reviewer output");
-    expect(statSync(diagnostic).mode & 0o777).toBe(0o600);
+    if (posixModes) expect(statSync(diagnostic).mode & 0o777).toBe(0o600);
     expect(d.store.receipt("o/r#9", head)).toBeUndefined();
   });
 });

@@ -5,8 +5,11 @@ import { join, resolve } from "node:path";
 import { shq } from "../src/delivery.ts";
 import { spawnExec } from "../src/runtime/exec.ts";
 
-// Real herdr, isolated named session, fake agent instead of a model: proves the pane plumbing end to end.
+// Real herdr, isolated named session, fake agent instead of a model: proves the pane plumbing end to end. The fake
+// agent is a POSIX shell fixture, and herdr panes on Windows do not run it (the pane gets a shell that cannot execute
+// the .sh agent); the Linux and macOS CI jobs run these tests. The win32 skip is explicit for that reason.
 const herdrBin = Bun.which("herdr");
+const realAgent = process.platform === "win32" ? undefined : herdrBin;
 const session = `dori-e2e-${process.pid}`;
 const home = mkdtempSync(join(tmpdir(), "dori-e2e-"));
 const cli = resolve(import.meta.dir, "../src/cli.ts");
@@ -43,19 +46,19 @@ const leadScreen = async (lead: string) =>
     .stdout;
 
 beforeAll(async () => {
-  if (!herdrBin) return;
-  server = Bun.spawn([herdrBin, "--session", session, "server"], { stdout: "ignore", stderr: "ignore" });
+  if (!realAgent) return;
+  server = Bun.spawn([herdrBin!, "--session", session, "server"], { stdout: "ignore", stderr: "ignore" });
   await until("herdr server", () => herdr("workspace", "list"));
 });
 
 afterAll(async () => {
-  if (!herdrBin) return;
+  if (!realAgent) return;
   await spawnExec("herdr", ["--session", session, "server", "stop"]);
   await server?.exited;
   await spawnExec("herdr", ["session", "delete", session]);
 });
 
-test.skipIf(!herdrBin)(
+test.skipIf(!realAgent)(
   "a lane started in real herdr reports and finishes; the lead pane has no agent, so both wait in its inbox",
   async () => {
     const ws = await herdr("workspace", "create", "--label", "e2e", "--cwd", home, "--no-focus");
@@ -91,7 +94,7 @@ test.skipIf(!herdrBin)(
   60_000,
 );
 
-test.skipIf(!herdrBin)(
+test.skipIf(!realAgent)(
   "the hourly loop starts a backlog item as a lane in real herdr and reports the run to the lead",
   async () => {
     const ws = await herdr("workspace", "create", "--label", "e2e-loop", "--cwd", home, "--no-focus");

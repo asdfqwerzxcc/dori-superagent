@@ -131,10 +131,13 @@ describe("releasing held entries: dori inbox list | ack | resend (#108 2)", () =
     expect(s.pane.received).toEqual(["again"]);
   });
 
-  test("a gone pane with only held entries reports inbox-target-gone, not delivery-ambiguous", async () => {
+  test("a gone pane whose only entries are held reports the drop, never delivery-ambiguous", async () => {
     const s = setup();
     s.d.store.saveInbox(href("w1:p2"), [{ at: 0, from: "cli", text: "held", attempt: { at: 1, state: "ambiguous" } }]);
     s.w.panes.delete("w1:p2");
-    expect(await dutyTick(s.d)).toEqual([{ pane: "w1:p2", action: "inbox-target-gone" }]);
+    expect(await dutyTick(s.d)).toEqual([
+      { pane: "w1:p2", action: "inbox-dropped", detail: "1 message(s) for a closed target" },
+    ]);
+    expect(s.d.store.queued(href("w1:p2"))).toEqual([]);
   });
 });

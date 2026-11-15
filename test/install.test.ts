@@ -1,7 +1,13 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test as bunTest } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+
+// install.sh is a POSIX shell script run with bash, a git checkout and a stub `bun` on PATH. Windows has no POSIX
+// install path (dori installs through Git Bash there by hand), so these tests carry an explicit win32 skip naming that
+// reason; the POSIX CI jobs run every one of them.
+const test = (name: string, fn: () => void | Promise<void>): void =>
+  process.platform === "win32" ? bunTest.skip(`${name} (win32: install.sh is POSIX-only)`, fn) : bunTest(name, fn);
 
 // The real install.sh over a checkout of a local upstream; a stub `bun` stands in for `bun install` and `bun link`.
 const script = resolve(import.meta.dir, "../install.sh");

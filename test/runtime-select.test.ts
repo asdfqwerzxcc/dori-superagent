@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { ConfigError, RuntimeChoiceError, readRuntimeChoice } from "../src/runtime/select.ts";
 
 const scratch = (): string => mkdtempSync(join(tmpdir(), "dori-select-"));
@@ -22,7 +22,7 @@ const pathWith = (...bins: string[]): string => {
     chmodSync(file, 0o755);
     return dir;
   });
-  return [join(scratch(), "empty"), ...dirs].join(":");
+  return [join(scratch(), "empty"), ...dirs].join(delimiter);
 };
 
 describe("readRuntimeChoice precedence", () => {
@@ -105,7 +105,9 @@ describe("readRuntimeChoice refusals", () => {
     expect(() => readRuntimeChoice({ env: {}, configPath: NO_CONFIG })).toThrow(RuntimeChoiceError);
   });
 
-  test("a non-executable file named hc is not an install", () => {
+  // POSIX only: Windows has no executable bit, so accessSync(X_OK) passes for any file on PATH and the fixture would
+  // read as an install. The POSIX CI jobs cover this refusal.
+  test.skipIf(process.platform === "win32")("a non-executable file named hc is not an install", () => {
     const dir = scratch();
     writeFileSync(join(dir, "hc"), "");
     chmodSync(join(dir, "hc"), 0o644);
@@ -116,7 +118,9 @@ describe("readRuntimeChoice refusals", () => {
   test('config value "tmux": ConfigError naming the file and the value', () => {
     const configPath = config('{"runtime":"tmux"}');
     expect(() => readRuntimeChoice({ env: { DORI_RUNTIME: "" }, configPath })).toThrow(ConfigError);
-    expect(() => readRuntimeChoice({ env: {}, configPath })).toThrow(new RegExp(`${configPath}.*"tmux"`));
+    // Two substring checks, not one regex: a Windows path is full of regex escapes.
+    expect(() => readRuntimeChoice({ env: {}, configPath })).toThrow(configPath);
+    expect(() => readRuntimeChoice({ env: {}, configPath })).toThrow(/"tmux"/);
   });
 
   test("a non-string runtime value is a ConfigError too", () => {
@@ -152,14 +156,14 @@ describe("readRuntimeChoice PATH detection is injectable", () => {
     const asked: string[] = [];
     const exists = (path: string): boolean => {
       asked.push(path);
-      return path === "/b/hc";
+      return path === join("/b", "hc");
     };
-    expect(readRuntimeChoice({ env: { PATH: "/a:/b" }, configPath: NO_CONFIG, exists })).toEqual({
+    expect(readRuntimeChoice({ env: { PATH: ["/a", "/b"].join(delimiter) }, configPath: NO_CONFIG, exists })).toEqual({
       kind: "hc",
       source: "detect:path",
     });
-    expect(asked).toContain("/a/herdr");
-    expect(asked).toContain("/b/hc");
+    expect(asked).toContain(join("/a", "herdr"));
+    expect(asked).toContain(join("/b", "hc"));
   });
 
   test("an empty PATH entry is skipped, never read as the working directory", () => {
@@ -168,9 +172,9 @@ describe("readRuntimeChoice PATH detection is injectable", () => {
       asked.push(path);
       return false;
     };
-    expect(() => readRuntimeChoice({ env: { PATH: ":/a:" }, configPath: NO_CONFIG, exists })).toThrow(
-      RuntimeChoiceError,
-    );
-    expect(asked.every((p) => p.startsWith("/a/"))).toBe(true);
+    expect(() =>
+      readRuntimeChoice({ env: { PATH: ["", "/a", ""].join(delimiter) }, configPath: NO_CONFIG, exists }),
+    ).toThrow(RuntimeChoiceError);
+    expect(asked.every((p) => p.startsWith(join("/a", "")))).toBe(true);
   });
 });

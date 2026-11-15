@@ -21,7 +21,8 @@ describe("groupId", () => {
 
   test("a symlinked store root shares the target's group", () => {
     const dir = mkdtempSync(join(tmpdir(), "dori-group-"));
-    symlinkSync(dir, `${dir}-link`);
+    // A junction needs no symlink privilege on Windows; both resolve through realpath to the same root.
+    symlinkSync(dir, `${dir}-link`, process.platform === "win32" ? "junction" : undefined);
     expect(groupId(`${dir}-link`)).toBe(groupId(dir));
   });
 });
@@ -39,7 +40,10 @@ describe("exec", () => {
   });
 
   test("spawnExec returns code, stdout and stderr of a real process", async () => {
-    const r = await spawnExec("sh", ["-c", "printf out; printf err >&2; exit 4"]);
+    const r = await spawnExec(process.execPath, [
+      "-e",
+      "process.stdout.write('out'); process.stderr.write('err'); process.exit(4)",
+    ]);
     expect(r).toEqual({ code: 4, stdout: "out", stderr: "err" });
   });
 });
