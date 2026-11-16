@@ -75,7 +75,7 @@ export async function reviewLane(d: Deps, key: string, model?: string): Promise<
   const text = prompt("review-lane.md", { key, base, tip, brief: lane.brief, diff: diffPath, repo });
   // hooks.reviewCommand replaces the built-in reviewer for lanes too; it must print a VERDICT line like the built-in one.
   const hook = loadHooks(d.store.root).reviewCommand;
-  const vars = { lane: key, key, base, tip, sha: tip, brief: lane.brief, diff: diffPath };
+  const vars = { lane: key, key, base, tip, sha: tip, brief: lane.brief, diff: diffPath, repo };
   const [cmd, ...argv] = hook
     ? substitute(hook, vars)
     : [d.agentCmd, "-p", "--no-session", ...(model ? ["--model", model] : []), text];

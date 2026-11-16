@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { status } from "../src/cli-up.ts";
@@ -152,6 +152,30 @@ describe("lane review gate", () => {
     expect(row("green")).toContain("review=reviewed");
     expect(row("red")).toContain("review=BLOCK");
     expect(row("plain")).toContain("review=no receipt");
+  });
+
+  test("hooks.reviewCommand gets the pinned diff, brief, base and tip, not the raw placeholders", async () => {
+    const { w, d, brief } = setup();
+    const repo: Repo = { head: base, mergeBase: base, diff };
+    fakeGit(w, repo);
+    const lane = await startLane(d, "hooked", brief, { group: "w1" });
+    repo.head = tip;
+    writeFileSync(
+      join(d.store.root, "config.json"),
+      JSON.stringify({
+        hooks: { reviewCommand: ["hook-review", "{diff}", "{brief}", "{base}", "{tip}", "{lane}", "{repo}"] },
+      }),
+    );
+    let seen: readonly string[] = [];
+    w.reviewer = (argv) => {
+      seen = argv;
+      return { code: 0, stdout: "VERDICT: CLEAR" };
+    };
+    await reviewLane(d, "hooked");
+    expect(seen).toEqual([d.store.laneDiffPath("hooked", tip), lane.brief, base, tip, "hooked", "/repo"]);
+    expect(d.store.laneReceipt("hooked", tip)!.reviewer).toBe(
+      "hook: hook-review {diff} {brief} {base} {tip} {lane} {repo}",
+    );
   });
 
   test("dori review --lane prints the tip and exits by verdict; a PR plus --lane is refused", async () => {

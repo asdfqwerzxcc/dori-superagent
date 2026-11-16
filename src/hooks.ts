@@ -13,7 +13,12 @@ export type Hooks = {
 };
 
 export type HookName = keyof Hooks;
-export type HookVars = Partial<Record<"key" | "text" | "evidence" | "pr" | "repo" | "number" | "sha", string>>;
+export type HookVars = Partial<
+  Record<
+    "key" | "text" | "evidence" | "pr" | "repo" | "number" | "sha" | "lane" | "base" | "tip" | "brief" | "diff",
+    string
+  >
+>;
 
 /** `$DORI_HOME/config.json` is present but its `hooks` value is not the documented shape. */
 export class ConfigError extends Error {}
@@ -56,10 +61,14 @@ export function loadHooks(root: string): Hooks {
   return hooks;
 }
 
-/** Substitutes `{key}`, `{text}`, `{evidence}`, `{pr}`, `{repo}`, `{number}`, `{sha}` inside each element. */
+/** Substitutes `{key}`, `{text}`, `{evidence}`, `{pr}`, `{repo}`, `{number}`, `{sha}`, `{lane}`, `{base}`, `{tip}`, `{brief}`,
+ * `{diff}` inside each element. */
 export function substitute(argv: ArgvTemplate, vars: HookVars): string[] {
   return argv.map((element) =>
-    element.replace(/\{(key|text|evidence|pr|repo|number|sha)\}/g, (whole, k: keyof HookVars) => vars[k] ?? whole),
+    element.replace(
+      /\{(key|text|evidence|pr|repo|number|sha|lane|base|tip|brief|diff)\}/g,
+      (whole, k: keyof HookVars) => vars[k] ?? whole,
+    ),
   );
 }
 
