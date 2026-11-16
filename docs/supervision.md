@@ -4,13 +4,15 @@ Dori's always-on half runs outside the sessions, so a closed tab or a dead works
 
 One supervisor owns every long-lived child. The children stay separate processes on purpose: duty is the delivery path
 and must not be killable by an exception in update-check or the hourly loop. The watchdog stays separate because it
-exists to resurrect the supervisor and cannot resurrect itself.
+exists to resurrect the supervisor and cannot resurrect itself. The timed side-jobs (`ensure-up`, `update-check`,
+`gateway-catchup`) are plugins and run as their own supervisor children; see [plugins.md](plugins.md).
 
 | Process | Parent | Writes | Log |
 | --- | --- | --- | --- |
 | `supervisor.ts` | launched by `dori up`, `dori restart`, or the watchdog | `state/supervisor-heartbeat`, `state/supervisor.json`, `state/gateway-heartbeat` (compatibility) | `state/supervisor.log` |
 | `discord-gateway.ts` | supervisor | `state/gateway-ws-heartbeat` (each Discord heartbeat ack) | `state/gateway.log` |
-| `duty`, `loop`, `update-check`, `dori-ensure-up.ts` | supervisor | their own files under `state/`, `duty/`, `loop/` | `state/loops.log` |
+| `duty`, `loop` | supervisor | their own files under `state/`, `duty/`, `loop/` | `state/loops.log` |
+| `plugins/run.ts <name>` | supervisor (one per enabled plugin) | `state/plugins/<name>.json`/`.tick`/`.lock`, plus its own `state/` files | `state/loops.log` |
 | `gateway-watchdog.ts` | launcher | `state/gateway-watchdog-heartbeat`, `state/watchdog-supervisor.json` | `state/gateway-watchdog.log` |
 
 The repo owns each program under `src/supervisors/`; `~/.dori/bin/*.ts` is a two-line shim into the installed checkout, so a
@@ -22,24 +24,30 @@ launcher or the watchdog keeps spawning the same path it always did.
 RUNTIME herdr (from config)
 lead=w9:p1 duty=- home=C:\Users\USER\.dori
 STALE <role>=<ref>: pane not found          # only when roles.json names a dead pane
-SUPERVISED supervisor up pid=12836 hb=1s units=discord-gateway:4528,duty:18000,loop:19416,update-check:3140,ensure-up:8368
+SUPERVISED supervisor up pid=12836 hb=1s units=discord-gateway:4528,duty:18000,loop:19416,ensure-up:8368,update-check:3140,gateway-catchup:9977
 WATCHDOG up pid=5204 hb=0s
-ENSURE-UP up pid=8368 hb=1s
+PLUGIN ensure-up up pid=8368 hb=2s
+PLUGIN update-check up pid=3140 hb=3s (next 04:00)
+PLUGIN gateway-catchup up pid=9977 hb=4s
 ```
 
 The supervisor is `up` only when its recorded pid is alive **and** its heartbeat is inside the 90 s window. The watchdog
-line is separate: its own heartbeat and record, one stale threshold, one grace window. `ENSURE-UP off (ensure-up.off)`
-means the loop is deliberately off. A role whose pane is gone is printed as `STALE`, and `dori send <role>` refuses it
-instead of queueing text nowhere.
+line is separate: its own heartbeat and record, one stale threshold, one grace window. Plugin lines come from
+`state/plugins/<name>.json` plus the child's own `.tick` beat; a disabled plugin leaves no line, and
+`PLUGIN ensure-up ... (off)` means `state/ensure-up.off` is present. A role whose pane is gone is printed as `STALE`, and
+`dori send <role>` refuses it instead of queueing text nowhere.
 
 ## `dori restart`
 
-Kills the supervisor and every child process by command line, so a supervisor killed on its own does not leave five
-orphans behind. It starts one supervisor again and returns only when the supervisor heartbeat, `gateway-ws-heartbeat` (the Discord socket actually acked) and all five unit pids are newer than the moment the restart
-began. `RESTART INCOMPLETE` (exit 1) means one of them did not come back, and the lines above the verdict say which.
+Kills the supervisor and every child process by command line (core units and plugin children alike), so a supervisor
+killed on its own does not leave orphans behind. It starts one supervisor again and returns only when the supervisor
+heartbeat, `gateway-ws-heartbeat` (the Discord socket actually acked) and the units — the three core children plus every
+enabled plugin — are newer than the moment the restart began. `RESTART INCOMPLETE` (exit 1) means one of them did not
+come back, and the lines above the verdict say which.
 A live watchdog is left alone; a missing one is started.
 
-Measured on this host (Windows, herdr 0.9.5, 2026-11-16):
+Measured on this host (Windows, herdr 0.9.5, 2026-11-16). These runs predate the plugin split: "five units" means the
+three core children plus the two side-jobs that were units then; the plugin children are restart-checked the same way.
 
 - Swap from the pre-merge pair: `RESTARTED killed=7 ms=5818 ws=2s` (the two old supervisors and their five children).
   `GATEWAY_READY` landed at 10:51:00, one second after the new supervisor started.
@@ -69,11 +77,12 @@ Verified on this host (2026-11-16):
 
 ## ensure-up
 
-The supervisor owns `dori-ensure-up.ts`; it starts it when `state/ensure-up.off` is absent and keeps it out of the
-supervised set while the file exists. Every 20 s the loop checks whether a workspace labelled `dori` holds two panes
-with a live agent; only when none does it runs `dori up`. One loop per home is enforced by `state/ensure-up.lock` (a
-dead holder's lock is taken over), so two supervisors cannot raise two workspaces. A pane-mode `dori up` (loops not
-supervised) starts the ensure-up loop itself.
+`ensure-up` is a plugin (`src/plugins/ensure-up.ts`) over the same engine in `src/supervisors/ensure-up.ts`. The
+supervisor starts its child while `state/plugins.json` enables it; the plugin idles and reports `off` while
+`state/ensure-up.off` exists. Every 20 s the loop checks whether a workspace labelled `dori` holds two panes with a live
+agent; only when none does it runs `dori up`. One loop per home is enforced by `state/ensure-up.lock` (a dead holder's
+lock is taken over), so two supervisors cannot raise two workspaces. A pane-mode `dori up` (loops not supervised) starts
+the same plugin child itself.
 
 ## Roles under supervision
 
