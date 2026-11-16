@@ -23,7 +23,8 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori review <owner/repo#N> [--model M]      fresh omo reviewer at the exact head -> receipt
   dori review --lane <key> [--model M]        fresh reviewer over a lane's own diff -> lane receipt
   dori merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks -> squash merge
-  dori done <key>                             lead closes a READY lane; needs a CLEAR lane receipt unless it committed nothing
+  dori done <key> [--rebase]                  lead closes a READY lane; needs a CLEAR lane receipt unless it committed nothing
+                                              --rebase moves the lane onto current main first, re-records its base and demands a fresh receipt
   dori done --drop <key> --reason TEXT        remove a lane's worktree and branch without landing it on main
   dori worktrees list                        every lane worktree with its status and orphan reason
   dori worktrees prune                       remove orphan worktrees and their lane/* branches (never dirty, never --force)

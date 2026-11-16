@@ -43,6 +43,7 @@ export function fakeGit(w: World, repo: Repo): void {
         ? { code: 0, stdout: "", stderr: "" }
         : { code: 1, stdout: "", stderr: repo.mergeFails };
     if (cmd === "branch") return { code: 0, stdout: "", stderr: "" };
+    if (cmd === "rebase") return { code: 0, stdout: "", stderr: "" };
     return { code: 1, stdout: "", stderr: `unhandled git ${argv.join(" ")}` };
   };
 }

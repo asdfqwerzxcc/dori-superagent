@@ -79,6 +79,31 @@ describe("lane worktrees", () => {
     expect(gits).not.toContain("-C /repo branch -d lane/moved");
   });
 
+  test("done --rebase moves the lane onto main, re-records the base, then demands a fresh receipt", async () => {
+    const { w, d, brief } = setup();
+    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
+    fakeGit(w, repo);
+    await startLane(d, "rebound", brief, { group: "w1" });
+    await ready(d, "rebound", "done", ["file:///x"]);
+    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
+    await reviewLane(d, "rebound");
+
+    const moved = "c".repeat(40);
+    repo.head = moved;
+    repo.ancestor = false;
+    // The rebase rewrites the lane's commit, so the tip the old receipt covered no longer exists.
+    repo.worktreeHead = "d".repeat(40);
+    const failure: unknown = await done(d, "rebound", { rebase: true }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(failure).toBeDefined();
+    expect(gitCalls(w)).toContain(`-C ${wtPath(d, "rebound")} rebase main`);
+    expect(d.store.lane("rebound")!.baseSha).toBe(moved);
+    expect(d.store.lane("rebound")!.status).toBe("ready");
+    expect(gitCalls(w)).not.toContain("-C /repo merge --ff-only lane/rebound");
+  });
+
   test("a retried done removes a branch main already contains without merging twice", async () => {
     const { w, d, brief } = setup();
     const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };

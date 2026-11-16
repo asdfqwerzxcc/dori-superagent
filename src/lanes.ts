@@ -4,7 +4,7 @@ import { shq } from "./delivery.ts";
 import { prompt, type Deps } from "./harness.ts";
 import { laneGate } from "./lane-gate.ts";
 import { repoHead, resolveLaneRepo } from "./lane-repo.ts";
-import { assertCleanWorktree, createLaneWorktree, discardWorktree, dropLane, landWorktree, worktreeRoot } from "./lane-worktree.ts";
+import { assertCleanWorktree, createLaneWorktree, discardWorktree, dropLane, landWorktree, rebaseLaneWorktree, worktreeRoot } from "./lane-worktree.ts";
 import { settled, tellLead, type SendResult } from "./inbox.ts";
 import { Refusal } from "./refusal.ts";
 import { runHook } from "./hooks.ts";
@@ -155,6 +155,8 @@ export async function ready(
 export type DoneOptions = {
   /** Remove the worktree and branch without landing, and mark the lane `dropped` with this reason. */
   drop?: string;
+  /** Rebase the lane onto the current `main` and re-record its base before gating; a fresh receipt is then required. */
+  rebase?: boolean;
 };
 
 export async function done(d: Deps, key: string, opts: DoneOptions = {}): Promise<string | undefined> {
@@ -162,6 +164,11 @@ export async function done(d: Deps, key: string, opts: DoneOptions = {}): Promis
   if (!lane) throw new Refusal(`no lane ${key}`);
   if (opts.drop !== undefined) return dropLane(d, lane, opts.drop);
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
+  if (opts.rebase === true) {
+    const before = lane.baseSha;
+    const rebased = await rebaseLaneWorktree(d, lane);
+    if (rebased !== before) d.store.saveLane(lane);
+  }
   const gate = await laneGate(d, lane);
   if (!gate.ok) throw new Refusal(gate.reason);
   // Check cleanliness BEFORE any git mutation: main must never advance while the tree cannot be removed.

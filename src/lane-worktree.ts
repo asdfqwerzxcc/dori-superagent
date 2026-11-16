@@ -133,6 +133,27 @@ async function removeWorktree(d: Deps, lane: Lane, branchFlag: "-d" | "-D"): Pro
 }
 
 /**
+ * Moves a lane's branch onto the current `main` and re-records the base, so the receipt range stays exactly the lane's
+ * own commits. The receipt at the old tip no longer applies: `done` still demands a CLEAR receipt at the new tip.
+ */
+export async function rebaseLaneWorktree(d: Deps, lane: Lane): Promise<string | undefined> {
+  const repo = lane.repo;
+  const path = lane.worktree;
+  if (repo === undefined || path === undefined) return undefined;
+  const head = await d.exec("git", ["-C", repo, "rev-parse", "main"]);
+  if (head.code !== 0) throw new Refusal(`cannot read main in ${repo}: ${gitWhy(head)}`);
+  const main = head.stdout.trim();
+  if (main === lane.baseSha) return lane.baseSha;
+  const rb = await d.exec("git", ["-C", path, "rebase", "main"]);
+  if (rb.code !== 0) {
+    await d.exec("git", ["-C", path, "rebase", "--abort"]);
+    throw new Refusal(`cannot rebase lane ${lane.key} onto main: ${gitWhy(rb)}; the lane is unchanged (rebase aborted)`);
+  }
+  lane.baseSha = main;
+  return main;
+}
+
+/**
  * Lands the lane's branch on the main checkout and tears its worktree down. Fast-forward only, and only while `main`
  * still sits at the lane's recorded base; a main that moved refuses and keeps both, unless the branch already landed.
  */
