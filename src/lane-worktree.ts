@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Deps } from "./harness.ts";
 import { repoHead } from "./lane-gate.ts";
 import { Refusal } from "./refusal.ts";
@@ -11,6 +11,25 @@ const gitWhy = (r: ExecResult): string => (r.stderr || r.stdout).trim() || `git 
 
 /** Where lane worktrees live: `DORI_WORKTREES_DIR` when set, else `<DORI_HOME>/worktrees`. */
 export const worktreeRoot = (d: Deps): string => process.env["DORI_WORKTREES_DIR"] || join(d.store.root, "worktrees");
+
+const samePath = (a: string, b: string): boolean =>
+  resolve(a).replaceAll("\\", "/").toLowerCase() === resolve(b).replaceAll("\\", "/").toLowerCase();
+
+/** A lane's pane must start in its own worktree; a pane elsewhere commits into the shared checkout by mistake. */
+export function worktreeMismatch(cwd: string | undefined, lane: Lane): string | undefined {
+  if (lane.worktree === undefined || cwd === undefined || cwd === "") return undefined;
+  return samePath(cwd, lane.worktree) ? undefined : `pane cwd ${cwd} is not its worktree ${lane.worktree}`;
+}
+
+export async function paneWorktreeMismatch(d: Deps, lane: Lane): Promise<string | undefined> {
+  if (lane.worktree === undefined) return undefined;
+  try {
+    const { cwd } = await d.runtimes.for(lane.sessionRef).probe(lane.sessionRef);
+    return worktreeMismatch(cwd, lane);
+  } catch {
+    return undefined;
+  }
+}
 
 /** Warn about a lock a previous git process left behind; never delete it (another process may still hold it). */
 function warnStaleLocks(key: string, repo: string): void {

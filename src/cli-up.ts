@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { shq } from "./delivery.ts";
 import { promptsDir, type Deps } from "./harness.ts";
 import { reviewLabel } from "./lane-gate.ts";
+import { paneWorktreeMismatch } from "./lane-worktree.ts";
 import { refText } from "./refs.ts";
 import { groupId } from "./runtime/group.ts";
 import { openSession, type SessionRef } from "./runtime/types.ts";
@@ -136,6 +137,8 @@ export async function status(d: Deps): Promise<void> {
     console.log(
       `${l.key.padEnd(24)} ${l.status.padEnd(8)} ${l.sessionRef.runtime.padEnd(5)} ${refText(l.sessionRef).padEnd(14)} review=${review.padEnd(10)} active ${age}m ago  ${last ? `${last.kind}: ${last.text.slice(0, 60)}` : ""}`,
     );
+    const mismatch = await paneWorktreeMismatch(d, l);
+    if (mismatch !== undefined) console.log(`MISMATCH ${l.key}: ${mismatch}`);
   }
   try {
     const { orphans } = await scanWorktrees(d, { dirty: false });

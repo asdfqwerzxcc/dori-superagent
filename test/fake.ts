@@ -26,6 +26,7 @@ type Pane = {
   foreground?: string | { name: string; argv: string[] }[] | undefined;
   agent?: string;
   pgid?: number;
+  cwd?: string;
 };
 
 export class World {
@@ -139,7 +140,12 @@ export class World {
       this.gets.set(id!, n);
       this.getHook.get(id!)?.(n);
       return ok({
-        pane: { pane_id: id, agent: pane.status === "shell" ? null : (pane.agent ?? "pi"), agent_status: pane.status },
+        pane: {
+          pane_id: id,
+          agent: pane.status === "shell" ? null : (pane.agent ?? "pi"),
+          agent_status: pane.status,
+          ...(pane.cwd === undefined ? {} : { cwd: pane.cwd }),
+        },
       });
     }
     if (group === "pane" && verb === "read") {

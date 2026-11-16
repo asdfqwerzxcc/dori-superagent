@@ -3,7 +3,14 @@ import { resolve } from "node:path";
 import { shq } from "./delivery.ts";
 import { prompt, type Deps } from "./harness.ts";
 import { laneGate, repoHead, resolveLaneRepo } from "./lane-gate.ts";
-import { assertCleanWorktree, createLaneWorktree, discardWorktree, dropLane, landWorktree } from "./lane-worktree.ts";
+import {
+  assertCleanWorktree,
+  createLaneWorktree,
+  discardWorktree,
+  dropLane,
+  landWorktree,
+  worktreeMismatch,
+} from "./lane-worktree.ts";
 import { settled, tellLead, type SendResult } from "./inbox.ts";
 import { Refusal } from "./refusal.ts";
 import { runHook } from "./hooks.ts";
@@ -153,9 +160,12 @@ export async function done(d: Deps, key: string, opts: DoneOptions = {}): Promis
   // Check cleanliness BEFORE any git mutation: main must never advance while the tree cannot be removed.
   await assertCleanWorktree(d, lane);
   const rt = d.runtimes.for(lane.sessionRef);
-  const { status: st } = await rt.probe(lane.sessionRef);
+  const { status: st, cwd } = await rt.probe(lane.sessionRef);
   if (st === "working" || st === "blocked" || st === "error")
     throw new Refusal(`lane ${key} pane is ${st}; let it finish first`);
+  const mismatch = worktreeMismatch(cwd, lane);
+  if (mismatch !== undefined)
+    throw new Refusal(`lane ${key} ${mismatch}; fix its pane cwd or run: dori done --drop ${key} --reason <text>`);
   // Windows refuses `worktree remove` while the pane holds the directory, so close it first.
   if (st !== "gone") await rt.close(lane.sessionRef);
   const landing = lane.worktree === undefined ? undefined : await landWorktree(d, lane);
