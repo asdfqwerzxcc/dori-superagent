@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { reviewLane } from "../src/lane-review.ts";
@@ -30,6 +30,13 @@ const failed = async (run: () => Promise<unknown>): Promise<Error> => {
   return error as Error;
 };
 
+const lastDiagnostic = (d: ReturnType<typeof setup>["d"], key: string) => {
+  const files = readdirSync(join(d.store.root, "receipts")).filter((n) => n.endsWith(".diagnostic.json"));
+  expect(files).toHaveLength(1);
+  expect(files[0]).toStartWith(`lane_${key}@${tip}-`);
+  return JSON.parse(readFileSync(join(d.store.root, "receipts", files[0]!), "utf8"));
+};
+
 describe("lane review deadline", () => {
   test("a hung reviewer is killed at the deadline and leaves a reviewer_timeout receipt", async () => {
     const { w, d } = await lane("hung");
@@ -54,6 +61,12 @@ describe("lane review deadline", () => {
     const receipt = d.store.laneReceipt("hung", tip)!;
     expect(receipt.verdict).toBe("reviewer_timeout");
     expect(receipt.summary).toContain("timed out");
+    const diagnostic = lastDiagnostic(d, "hung");
+    expect(diagnostic).toMatchObject({ exitCode: null, model: null });
+    expect(diagnostic.durationMs).toBeGreaterThanOrEqual(60);
+    expect(diagnostic.stdoutTail).toContain("partial finding");
+    expect(diagnostic.argv[0]).toBe("omo");
+    expect(error.message).toContain('"exitCode":null');
     expect(readFileSync(reviewLogPath(d.store.root, "hung"), "utf8")).toContain("partial finding");
     expect(d.store.lane("hung")!.tipSha).toBe(base);
     await expect(done(d, "hung")).rejects.toThrow("reviewer_timeout");
@@ -70,6 +83,9 @@ describe("lane review deadline", () => {
     expect(receipt.verdict).toBe("reviewer_empty");
     expect(receipt.summary).toContain("exit 0");
     expect(receipt.summary).toContain("child reaper warning");
+    const diagnostic = lastDiagnostic(d, "silent");
+    expect(diagnostic).toMatchObject({ exitCode: 0, model: null, stdoutTail: "" });
+    expect(diagnostic.stderrTail).toContain("child reaper warning");
     expect(readFileSync(reviewLogPath(d.store.root, "silent"), "utf8")).toContain("review lane silent");
     expect(d.store.lane("silent")!.tipSha).toBe(base);
     await expect(done(d, "silent")).rejects.toThrow("reviewer_empty");
@@ -96,9 +112,10 @@ describe("lane review deadline", () => {
         ? { code: 0, stdout: "HIGH src/b.ts:1 bug\nVERDICT: BLOCK" }
         : { code: 0, stdout: "VERDICT: CLEAR" };
 
-    expect(await reviewLane(d, "big")).toEqual({ verdict: "BLOCK", base, tip });
+    expect(await reviewLane(d, "big", "some/model")).toEqual({ verdict: "BLOCK", base, tip });
     const reviewers = w.calls.filter((c) => c.cmd === "omo");
     expect(reviewers).toHaveLength(2);
+    for (const reviewer of reviewers) expect(reviewer.argv).toContain("some/model");
     expect(reviewers[0]!.argv.at(-1)).toContain("This is chunk 1 of 2");
     expect(reviewers[1]!.argv.at(-1)).toContain("This is chunk 2 of 2");
     expect(readFileSync(d.store.receipts.laneChunkDiffPath("big", tip, 1), "utf8")).toContain("src/a.ts");
@@ -106,6 +123,7 @@ describe("lane review deadline", () => {
 
     const receipt = d.store.laneReceipt("big", tip)!;
     expect(receipt.verdict).toBe("BLOCK");
+    expect(receipt.reviewer).toContain("--model some/model");
     expect(receipt.summary).toContain("chunks:");
     expect(receipt.summary).toContain("src/a.ts");
     expect(receipt.summary).toContain("src/b.ts");

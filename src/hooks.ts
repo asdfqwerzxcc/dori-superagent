@@ -37,10 +37,17 @@ function template(name: string, value: unknown): ArgvTemplate {
   return argv;
 }
 
-/** Reads `hooks` from `<root>/config.json`. No file or no `hooks` key = no hooks; other keys are ignored. */
-export function loadHooks(root: string): Hooks {
+/** The config values a lane review reads: the hooks and the optional fallback model for a failed reviewer. */
+export type ReviewSettings = {
+  readonly hooks: Hooks;
+  /** `reviewFallbackModel`: one retry of the built-in reviewer when the first attempt produces no verdict. */
+  readonly fallbackModel?: string;
+};
+
+/** Reads `config.json` once: hooks plus the review fallback model. No file = no hooks, no fallback. */
+function readConfig(root: string): ReviewSettings {
   const path = join(root, "config.json");
-  if (!existsSync(path)) return {};
+  if (!existsSync(path)) return { hooks: {} };
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
@@ -50,16 +57,26 @@ export function loadHooks(root: string): Hooks {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
     throw new ConfigError("config.json must be a JSON object");
   const raw: unknown = Reflect.get(parsed, "hooks");
-  if (raw === undefined) return {};
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+  if (raw !== undefined && (typeof raw !== "object" || raw === null || Array.isArray(raw)))
     throw new ConfigError("config.json: hooks must be an object");
   const hooks: { -readonly [K in HookName]?: ArgvTemplate } = {};
-  for (const name of NAMES) {
-    const value: unknown = Reflect.get(raw, name);
-    if (value !== undefined) hooks[name] = template(name, value);
+  if (raw !== undefined) {
+    for (const name of NAMES) {
+      const value: unknown = Reflect.get(raw, name);
+      if (value !== undefined) hooks[name] = template(name, value);
+    }
   }
-  return hooks;
+  const fallback: unknown = Reflect.get(parsed, "reviewFallbackModel");
+  if (fallback !== undefined && (typeof fallback !== "string" || fallback.trim() === ""))
+    throw new ConfigError("config.json: reviewFallbackModel must be a non-empty string");
+  return { hooks, ...(fallback === undefined ? {} : { fallbackModel: fallback.trim() }) };
 }
+
+/** Reads `hooks` from `<root>/config.json`. No file or no `hooks` key = no hooks; other keys are ignored. */
+export const loadHooks = (root: string): Hooks => readConfig(root).hooks;
+
+/** The hooks and the review fallback model from `<root>/config.json`, parsed once. */
+export const loadReviewSettings = (root: string): ReviewSettings => readConfig(root);
 
 /** Substitutes `{key}`, `{text}`, `{evidence}`, `{pr}`, `{repo}`, `{number}`, `{sha}`, `{lane}`, `{base}`, `{tip}`, `{brief}`,
  * `{diff}` inside each element. */

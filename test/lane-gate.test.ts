@@ -67,16 +67,21 @@ describe("lane review gate", () => {
       (e: unknown) => e,
     );
     expect(failure).toBeInstanceOf(Error);
-    const files = readdirSync(join(second.d.store.root, "receipts")).filter((n) => n.endsWith(".noverdict.txt"));
+    const files = readdirSync(join(second.d.store.root, "receipts")).filter((n) => n.endsWith(".diagnostic.json"));
     expect(files).toHaveLength(1);
     expect(files[0]).toStartWith(`lane_quiet@${tip}-`);
     const diagnostic = join(second.d.store.root, "receipts", files[0]!);
     expect((failure as Error).message).toContain("no VERDICT");
     expect((failure as Error).message).toContain(diagnostic);
+    expect((failure as Error).message).toContain('"exitCode":0');
     if (posixModes) expect(statSync(diagnostic).mode & 0o777).toBe(0o600);
-    expect(readFileSync(diagnostic, "utf8")).toContain("no verdict here");
-    expect(readFileSync(diagnostic, "utf8")).toContain("provider warning");
-    expect(readFileSync(diagnostic, "utf8")).toContain("exit 0");
+    const parsed = JSON.parse(readFileSync(diagnostic, "utf8"));
+    expect(parsed).toMatchObject({ exitCode: 0, model: null });
+    expect(parsed.durationMs).toBeGreaterThanOrEqual(0);
+    expect(parsed.stdoutTail).toContain("no verdict here");
+    expect(parsed.stderrTail).toContain("provider warning");
+    expect(parsed.argv[0]).toBe("omo");
+    expect(parsed.argv).toContain("-p");
     expect(second.d.store.laneReceipt("quiet", tip)).toBeUndefined();
     expect(second.d.store.lane("quiet")!.tipSha).toBe(base);
   });

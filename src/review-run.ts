@@ -18,8 +18,20 @@ export type ReviewVerdict = "CLEAR" | "BLOCK";
 export const reviewLogPath = (root: string, key: string): string => join(root, "state", "reviews", `${key}.log`);
 
 export type ReviewOutcome =
-  | { readonly kind: "exit"; readonly code: number; readonly stdout: string; readonly stderr: string }
-  | { readonly kind: "timeout"; readonly stdout: string; readonly stderr: string; readonly code?: number };
+  | {
+      readonly kind: "exit";
+      readonly code: number;
+      readonly stdout: string;
+      readonly stderr: string;
+      readonly durationMs: number;
+    }
+  | {
+      readonly kind: "timeout";
+      readonly stdout: string;
+      readonly stderr: string;
+      readonly code?: number;
+      readonly durationMs: number;
+    };
 
 export type ReviewerRun = {
   readonly exec: Exec;
@@ -62,6 +74,7 @@ const append = (log: string, text: string): void => {
  * kept in memory so a killed process still leaves a diagnosable tail.
  */
 export async function runReviewer(run: ReviewerRun): Promise<ReviewOutcome> {
+  const startedAt = Date.now();
   const now = run.now ?? Date.now;
   const started = now();
   const progressMs = run.progressMs ?? REVIEW_PROGRESS_MS;
@@ -74,7 +87,7 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewOutcome> {
   const timedOutAt = new Promise<void>((resolve) => {
     fireTimeout = resolve;
   });
-  if (run.timeoutMs < 1) return { kind: "timeout", stdout, stderr };
+  if (run.timeoutMs < 1) return { kind: "timeout", stdout, stderr, durationMs: Date.now() - startedAt };
   const deadline = setTimeout(() => {
     timedOut = true;
     try {
@@ -119,7 +132,7 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewOutcome> {
     clearTimeout(deadline);
     clearInterval(beat);
   });
-  if (outcome.kind === "exit" && !timedOut) return { kind: "exit", ...outcome.res };
+  if (outcome.kind === "exit" && !timedOut) return { kind: "exit", ...outcome.res, durationMs: Date.now() - startedAt };
   // The kill may not have reaped the process yet; one short grace captures its exit code when it is there.
   let graceTimer: ReturnType<typeof setTimeout> | undefined;
   const settled = await Promise.race([
@@ -132,5 +145,11 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewOutcome> {
     }),
   ]);
   clearTimeout(graceTimer);
-  return { kind: "timeout", stdout, stderr, ...(settled === undefined ? {} : { code: settled.code }) };
+  return {
+    kind: "timeout",
+    stdout,
+    stderr,
+    durationMs: Date.now() - startedAt,
+    ...(settled === undefined ? {} : { code: settled.code }),
+  };
 }

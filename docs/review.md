@@ -31,15 +31,19 @@ The lane record also carries the current `tipSha`, refreshed at each review.
    base, the tip, that diff and the worktree as `repo`; a diff over 40 KB or 3000 changed lines is split by path into
    chunks (`lane-reviews/lane_<key>@<tip>.chunk-<n>.diff`), each rendered with `prompts/review-lane-chunk.md` and
    reviewed in sequence;
-4. runs the reviewer non-interactively (`omo -p --no-session`, or `hooks.reviewCommand` when configured) with a 10-minute
-   deadline (`DORI_REVIEW_TIMEOUT_MS` overrides it), streams its stdout/stderr to `state/reviews/<key>.log`, and prints
-   one "still running" line every 30 s;
+4. runs the reviewer non-interactively (`omo -p --no-session --model M`, or `hooks.reviewCommand` when configured) with a
+   10-minute deadline per attempt (`DORI_REVIEW_TIMEOUT_MS` overrides it), streams its stdout/stderr to
+   `state/reviews/<key>.log`, and prints one "still running" line every 30 s; a failed attempt (timeout, non-zero exit,
+   empty stdout or no verdict) is retried once with `reviewFallbackModel` from `config.json` when that key is set and
+   differs from the first model;
 5. reads exactly one final `VERDICT: CLEAR|BLOCK` line per chunk (BLOCK wins when any chunk blocks) and writes
-   `receipts/lane_<key>@<tip>.json` with the verdict, base, tip, brief path, reviewer command, time and, for a chunked
-   review, a summary naming every chunk and its result.
+   `receipts/lane_<key>@<tip>.json` with the verdict, base, tip, brief path, reviewer command (including its `--model`,
+   and the fallback when one ran), time and, for a chunked review, a summary naming every chunk, its model and its
+   result.
 
-A `hooks.reviewCommand` reviewer still gets the deadline, the log and the failure receipts, but it runs once on the
-full diff: it owns its own arguments, so the path chunking applies to the built-in `omo` reviewer.
+A `hooks.reviewCommand` reviewer still gets the deadline, the log, the diagnostic and the failure receipts, but it runs
+once on the full diff and is not retried with a fallback model: it owns its own command, so the path chunking and
+`reviewFallbackModel` apply to the built-in `omo` reviewer.
 
 The receipt names the exact tip, so it can never describe a different diff. A new commit after a review invalidates it:
 review again.
@@ -49,9 +53,14 @@ partial stdout, the stderr and the exit code (when the killed process reported o
 stdout writes a `reviewer_empty` receipt, also carrying stderr and the exit code. Both are failed reviews: `dori done`
 refuses them and never treats the lane as approved. The full output stays in `state/reviews/<key>.log`.
 
-A reviewer that printed something but no `VERDICT` line writes no receipt; its last 200 output lines, its stderr and its
-exit code are kept as `receipts/lane_<key>@<tip>-<uuid>.noverdict.txt` (mode 0600) and the command fails. A zero-byte
-answer is always `reviewer_empty`, never a pending review.
+A failed run also writes one JSON diagnostic, `receipts/lane_<key>@<tip>-<uuid>.diagnostic.json` (mode 0600), with
+`exitCode`, `durationMs`, `stdoutTail`, `stderrTail`, `argv` (the prompt elided) and `model`; a chunked review adds
+`chunk`. The same compact JSON is in the refusal line. That is what turns a zero-byte answer into a diagnosis: the exit
+code, the duration, the stderr and the argv (including the model) are all on disk.
+
+A reviewer that printed something but no `VERDICT` line writes no receipt; the diagnostic above is its record and the
+command fails. A zero-byte answer is always `reviewer_empty`, never a pending review. A verdict printed only to stderr is
+not accepted: it is a `reviewer_empty` receipt whose diagnostic keeps that stderr.
 
 ## Layer 2: the lead review
 
