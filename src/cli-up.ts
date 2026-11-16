@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { shq } from "./delivery.ts";
 import { promptsDir, type Deps } from "./harness.ts";
+import { reviewLabel } from "./lane-gate.ts";
 import { refText } from "./refs.ts";
 import { groupId } from "./runtime/group.ts";
 import { openSession, type SessionRef } from "./runtime/types.ts";
@@ -130,8 +131,9 @@ export async function status(d: Deps): Promise<void> {
   for (const l of d.store.lanes()) {
     const last = l.log.at(-1);
     const age = Math.round((d.now() - l.lastActivityAt) / 60_000);
+    const review = await reviewLabel(d, l);
     console.log(
-      `${l.key.padEnd(24)} ${l.status.padEnd(8)} ${l.sessionRef.runtime.padEnd(5)} ${refText(l.sessionRef).padEnd(14)} active ${age}m ago  ${last ? `${last.kind}: ${last.text.slice(0, 60)}` : ""}`,
+      `${l.key.padEnd(24)} ${l.status.padEnd(8)} ${l.sessionRef.runtime.padEnd(5)} ${refText(l.sessionRef).padEnd(14)} review=${review.padEnd(10)} active ${age}m ago  ${last ? `${last.kind}: ${last.text.slice(0, 60)}` : ""}`,
     );
   }
 }
