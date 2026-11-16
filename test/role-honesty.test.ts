@@ -58,6 +58,6 @@ describe("role honesty", () => {
     });
     expect(out).toContain("STALE lead=w9:p1: pane not found");
     expect(out).toContain("SUPERVISED supervisor up");
-    expect(out).toContain("ENSURE-UP DOWN");
+    expect(out).toContain("PLUGIN ensure-up DOWN");
   });
 });

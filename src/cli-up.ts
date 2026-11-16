@@ -7,7 +7,8 @@ import { groupId } from "./runtime/group.ts";
 import { openSession, type SessionRef } from "./runtime/types.ts";
 import { RuntimeChoiceError } from "./runtime/select.ts";
 import { superviseHome, type SupervisedState } from "./supervisor-run.ts";
-import { ensureUpHealth, ensureUpOff, formatEnsureUp, formatSupervised, supervisorHealth } from "./supervisors.ts";
+import { pluginLines } from "./plugins/state.ts";
+import { formatEnsureUp, formatSupervised, supervisorHealth } from "./supervisors.ts";
 
 const supervisorAlive = (root: string): boolean =>
   supervisorHealth(root).some((h) => h.name === "supervisor" && h.alive);
@@ -125,7 +126,7 @@ export async function status(d: Deps): Promise<void> {
     }
   }
   for (const line of formatSupervised(supervisorHealth(d.store.root))) console.log(line);
-  console.log(formatEnsureUp(ensureUpHealth(d.store.root), ensureUpOff(d.store.root)));
+  for (const line of pluginLines(d.store.root)) console.log(line);
   for (const l of d.store.lanes()) {
     const last = l.log.at(-1);
     const age = Math.round((d.now() - l.lastActivityAt) / 60_000);

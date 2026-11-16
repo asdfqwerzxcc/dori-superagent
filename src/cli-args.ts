@@ -27,6 +27,8 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
                [--wait-minutes N] [--resume]  hand sessions over to another runtime; MIGRATED, SKIP, DEFERRED,
                                               or MIGRATE_ROLLBACK (exit 3) per session
   dori restart                                restart the supervisor tree; waits for a fresh heartbeat and all five units
+  dori plugin list | enable <name> | disable <name>
+                                              the registry and state/plugins.json; the supervisor re-reads it every 5 s
   dori status
 
 --text may be omitted to read the message from stdin.

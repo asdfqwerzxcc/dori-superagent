@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { resolve } from "node:path";
 import { runBacklog, runDuty, runLoop } from "./cli-loops.ts";
+import { pluginCommand } from "./cli-plugins.ts";
 import { status, up } from "./cli-up.ts";
 import { done, ready, report, startLane } from "./lanes.ts";
 import { mergeGate, review } from "./gate.ts";
@@ -35,6 +36,7 @@ const COMMANDS = new Set([
   "backlog",
   "migrate",
   "restart",
+  "plugin",
 ]);
 
 /** Prints the line for a delivery that did not land now and returns the exit code: HELD 3, everything else 0. */
@@ -159,6 +161,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "status":
       await status(d);
       return 0;
+    case "plugin":
+      return pluginCommand(d.store.root, x, a.pos[2]);
     default:
       console.log(USAGE);
       return cmd === undefined || cmd === "help" ? 0 : 64;
