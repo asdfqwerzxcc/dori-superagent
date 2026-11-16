@@ -70,6 +70,7 @@ orphan, so a running lane cannot be pruned out from under its pane.
 | `dori start <key> --brief FILE [--cwd DIR]` | records the base, creates and locks `worktrees/<key>` on `lane/<key>`, and opens the pane there |
 | `dori review --lane <key> [--model M]` | diffs `merge-base(baseSha, tip)..tip` in the lane's tree and writes `receipts/lane_<key>@<tip>.json` |
 | `dori done <key>` | requires a CLEAR receipt at the current tip and a clean tree, closes the pane, fast-forwards `main`, removes the tree and branch |
+| `dori done <key> --rebase` | moves the lane onto the current `main` first and re-records its base, then requires a CLEAR receipt at the new tip before landing |
 | `dori done --drop <key> --reason TEXT` | closes the lane without landing: removes the tree and `lane/<key>`, records `dropped` with the reason |
 | `dori worktrees list` | prints `WORKTREES root=...`, one `TREE <key>` line per tree with status, path, repo, dirty count, locks and orphan reason, then `WORKTREES <n> orphan` |
 | `dori worktrees prune` | removes clean orphan trees and their `lane/<key>` branches, printing `REMOVED`/`DELETED`, `DIRTY`, `LOCKED` or `SKIPPED` per tree, then `WORKTREES <n> pruned` |
@@ -79,8 +80,9 @@ orphan, so a running lane cannot be pruned out from under its pane.
 
 - The worktree is isolation for commits, not for processes: the lane's pane is a normal process that can still reach
   the main checkout by absolute path.
-- The base is recorded once and never updated. A lane that rebases onto a moved `main` is still reviewed from the
-  merge-base with its recorded base, which can then include commits from outside the lane; `dori done` still refuses to
-  land onto a `main` that moved, so that path ends in `--drop` or a lead-side landing.
+- The base is recorded when the lane starts, and the only supported way to move it is `dori done <key> --rebase`: it
+  rebases the lane onto the current `main` inside the lane's own tree and re-records `baseSha`; the receipt at the old
+  tip then no longer matches, so `done` refuses until the new tip carries its own CLEAR receipt. Without `--rebase`,
+  `dori done` refuses to land onto a `main` that moved (`main moved: rebase required`) and keeps the branch and tree.
 - `dori worktrees prune` removes an orphan tree even when its lane record says `lost`; the branch goes with it. Inspect
   a lost lane before pruning it.
