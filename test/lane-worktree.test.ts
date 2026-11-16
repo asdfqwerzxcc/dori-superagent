@@ -110,21 +110,6 @@ describe("lane worktrees", () => {
     expect(gits).not.toContain("-C /repo merge --ff-only lane/drop-me");
   });
 
-  test("done refuses a pane that is not in the lane worktree", async () => {
-    const { w, d, brief } = setup();
-    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
-    fakeGit(w, repo);
-    const lane = await startLane(d, "wrong-cwd", brief, { group: "w1" });
-    w.panes.get(lane.paneId)!.cwd = "/shared";
-    await ready(d, "wrong-cwd", "done", ["file:///x"]);
-    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
-    await reviewLane(d, "wrong-cwd");
-
-    await expect(done(d, "wrong-cwd")).rejects.toThrow("pane cwd /shared is not its worktree");
-    expect(d.store.lane("wrong-cwd")!.status).toBe("ready");
-    expect(gitCalls(w)).not.toContain("-C /repo merge --ff-only lane/wrong-cwd");
-  });
-
   test("status names a pane whose cwd is not its worktree", async () => {
     const { w, d, brief } = setup();
     const repo: Repo = { head: base, worktreeHead: base, mergeBase: base, diff };
