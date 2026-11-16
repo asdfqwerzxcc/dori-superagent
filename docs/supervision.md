@@ -8,7 +8,7 @@ exists to resurrect the supervisor and cannot resurrect itself.
 
 | Process | Parent | Writes | Log |
 | --- | --- | --- | --- |
-| `supervisor.ts` | launched by `dori up`, `dori restart`, or the watchdog | `state/supervisor-heartbeat`, `state/supervisor.json` | `state/supervisor.log` |
+| `supervisor.ts` | launched by `dori up`, `dori restart`, or the watchdog | `state/supervisor-heartbeat`, `state/supervisor.json`, `state/gateway-heartbeat` (compatibility) | `state/supervisor.log` |
 | `discord-gateway.ts` | supervisor | `state/gateway-ws-heartbeat` (each Discord heartbeat ack) | `state/gateway.log` |
 | `duty`, `loop`, `update-check`, `dori-ensure-up.ts` | supervisor | their own files under `state/`, `duty/`, `loop/` | `state/loops.log` |
 | `gateway-watchdog.ts` | launcher | `state/gateway-watchdog-heartbeat`, `state/watchdog-supervisor.json` | `state/gateway-watchdog.log` |
@@ -41,10 +41,22 @@ A live watchdog is left alone; a missing one is started.
 
 Measured on this host (Windows, herdr 0.9.5, 2026-11-16):
 
-- `dori restart` from a healthy stack: **~1500 ms** until the supervisor heartbeat, the Discord socket heartbeat and all
-  five children were fresh (`killed=6`: the supervisor and its five children).
-- Gateway `GATEWAY_READY` and a fresh `gateway-ws-heartbeat` followed within one beat.
+- Swap from the pre-merge pair: `RESTARTED killed=7 ms=5818 ws=2s` (the two old supervisors and their five children).
+  `GATEWAY_READY` landed at 10:51:00, one second after the new supervisor started.
+- Killing only the supervisor and running `dori restart`: `RESTARTED killed=0 ms=3853 ws=0s`; all five units came
+  back with new pids. Bun on Windows exits the children with the supervisor, so the command-line cleanup found nothing
+  left to kill; the new supervisor rebuilt them.
 - The ensure-up loop came back with the supervisor, no separate step.
+- The watchdog recovered a killed supervisor unaided in 80 s: `WATCHDOG_STALE supervisor=94s ws=82s`, then
+  `WATCHDOG_SPAWN supervisor pid=3716`; the five units returned with new pids.
+
+## Host guard compatibility
+
+The `DoriGatewayGuard` scheduled task runs `bin/ensure-gateway.ps1` every minute and is the cover for "the watchdog
+itself dies". The merged supervisor keeps `state/gateway-heartbeat` fresh in the same 30 s beat as
+`state/supervisor-heartbeat`, so the old guard never sees a missing gateway. The script matches only `bin/supervisor.ts`
+(or the repo's `src/supervisors/supervisor.ts`), reads `supervisor-heartbeat` with `gateway-heartbeat` as a fallback,
+and starts `bin/supervisor.ts`; it no longer matches or starts the pre-merge `gateway-supervisor.ts`.
 
 ## ensure-up
 
@@ -62,10 +74,11 @@ duty panes and drops `duty-loop` / `hourly-loop` from `roles.json`; a stale role
 
 ## What the merge removed
 
-`gateway-supervisor.ts` and `loops-supervisor.ts` no longer exist. `state/gateway-heartbeat`, `state/loops-heartbeat`,
-`state/gateway-supervisor.json` and `state/loops-supervisor.json` are neither read nor written; `gateway.log` and
-`loops.log` remain the child-output logs. A `dori restart` still matches the old supervisor command lines once, so a
-host that is still running the pre-merge pair can be swapped with one command.
+`gateway-supervisor.ts` and `loops-supervisor.ts` no longer exist. `state/loops-heartbeat`, `state/gateway-supervisor.json`
+and `state/loops-supervisor.json` are neither read nor written; `state/gateway-heartbeat` stays as the compatibility
+write for the Windows boot guard, and `gateway.log` / `loops.log` remain the child-output logs. A `dori restart` still
+matches the old supervisor command lines once, so a host that is still running the pre-merge pair can be swapped with
+one command.
 
 ## Tests on Windows
 

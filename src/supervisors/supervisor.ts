@@ -30,7 +30,8 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 /**
  * One supervisor for every long-lived child: the Discord gateway, duty, the hourly loop, update-check and ensure-up.
  * Each child stays a separate process, so an exception in one cannot take the delivery path down with it. Output:
- * `SUPERVISED <event>` lines; one record (state/supervisor.json) and one beat (state/supervisor-heartbeat) every 30 s.
+ * `SUPERVISED <event>` lines; one record (state/supervisor.json) and one beat (state/supervisor-heartbeat) every 30 s,
+ * plus a gateway-heartbeat compatibility write for the Windows boot guard.
  */
 export async function runSupervisor(): Promise<never> {
   const home = process.env["DORI_HOME"] ?? join(homedir(), ".dori");
@@ -71,8 +72,11 @@ export async function runSupervisor(): Promise<never> {
   const write = () =>
     writeSupervisorRecord(home, { name: "supervisor", pid: process.pid, startedAt, units: list(), at: Date.now() });
   const beat = () => {
+    const at = new Date().toISOString();
     try {
-      writeFileSync(join(state, "supervisor-heartbeat"), new Date().toISOString());
+      writeFileSync(join(state, "supervisor-heartbeat"), at);
+      // The DoriGatewayGuard task still reads gateway-heartbeat; keep the compatibility file in lockstep.
+      writeFileSync(join(state, "gateway-heartbeat"), at);
     } catch {}
     write();
   };
