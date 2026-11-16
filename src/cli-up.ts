@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { shq } from "./delivery.ts";
 import { promptsDir, type Deps } from "./harness.ts";
@@ -7,17 +7,10 @@ import { groupId } from "./runtime/group.ts";
 import { openSession, type SessionRef } from "./runtime/types.ts";
 import { RuntimeChoiceError } from "./runtime/select.ts";
 import { superviseHome, type SupervisedState } from "./supervisor-run.ts";
-import { ensureUpHealth, ensureUpOff, formatEnsureUp, formatSupervisor, supervisorHealth } from "./supervisors.ts";
+import { ensureUpHealth, ensureUpOff, formatEnsureUp, formatSupervised, supervisorHealth } from "./supervisors.ts";
 
-const loopsSupervised = (root: string): boolean => {
-  const beat = join(root, "state", "loops-heartbeat");
-  if (!existsSync(beat)) return false;
-  try {
-    return Date.now() - statSync(beat).mtimeMs < 120_000;
-  } catch {
-    return false;
-  }
-};
+const supervisorAlive = (root: string): boolean =>
+  supervisorHealth(root).some((h) => h.name === "supervisor" && h.alive);
 
 const supervise = (d: Deps, supervisors: boolean): Promise<SupervisedState> =>
   d.supervise !== undefined ? d.supervise(d.store.root, { supervisors }) : superviseHome(d.store.root, { supervisors });
@@ -68,7 +61,7 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
       console.log(`UP could not retire ${refText(previous)}: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
-  if (loopsSupervised(d.store.root)) {
+  if (supervisorAlive(d.store.root)) {
     d.store.clearRole("duty-loop");
     d.store.clearRole("hourly-loop");
     console.log("UP loops are supervised; skipping the loop panes (lead+duty only)");
@@ -76,7 +69,7 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
     console.log(
       `UP runtime=${rt.kind} lead=${refText(lead)} duty=${refText(duty)} loops=supervised ensure-up=${ensureLine(state)}`,
     );
-    for (const h of state.health) console.log(formatSupervisor(h));
+    for (const line of formatSupervised(state.health)) console.log(line);
     console.log(formatEnsureUp(state.ensureUp, state.off));
     await retire();
     return;
@@ -131,7 +124,7 @@ export async function status(d: Deps): Promise<void> {
       console.log(`UNVERIFIED ${role}=${refText(ref)}: its runtime did not answer`);
     }
   }
-  for (const h of supervisorHealth(d.store.root)) console.log(formatSupervisor(h));
+  for (const line of formatSupervised(supervisorHealth(d.store.root))) console.log(line);
   console.log(formatEnsureUp(ensureUpHealth(d.store.root), ensureUpOff(d.store.root)));
   for (const l of d.store.lanes()) {
     const last = l.log.at(-1);

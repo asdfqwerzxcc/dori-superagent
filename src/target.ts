@@ -36,14 +36,14 @@ const UNIT: Partial<Record<Role, string>> = { duty: "duty", "duty-loop": "duty",
 /** Where the role's loop really runs, for a refusal that names the process instead of a pane that is not there. */
 export function supervisedHint(d: Deps, role: Role): string | undefined {
   const unit = UNIT[role];
-  const loops = supervisorHealth(d.store.root).find((h) => h.name === "loops");
-  if (loops === undefined || loops.pid === undefined) return undefined;
-  const running = unit === undefined ? undefined : loops.units.find((u) => u.name === unit && u.alive);
+  const supervisor = supervisorHealth(d.store.root).find((h) => h.name === "supervisor");
+  if (supervisor === undefined || supervisor.pid === undefined) return undefined;
+  const running = unit === undefined ? undefined : supervisor.units.find((u) => u.name === unit && u.alive);
   const label = role === "hourly-loop" ? "hourly loop" : "duty loop";
-  if (loops.alive && running !== undefined)
-    return `the ${label} runs under the loops supervisor (pid ${loops.pid}, ${running.name} pid ${running.pid ?? "?"}); it has no pane`;
-  if (loops.alive) return `the loops supervisor (pid ${loops.pid}) is up but runs no ${label}`;
-  return `the loops supervisor (pid ${loops.pid}) is DOWN`;
+  if (supervisor.alive && running !== undefined)
+    return `the ${label} runs under the supervisor (pid ${supervisor.pid}, ${running.name} pid ${running.pid ?? "?"}); it has no pane`;
+  if (supervisor.alive) return `the supervisor (pid ${supervisor.pid}) is up but runs no ${label}`;
+  return `the supervisor (pid ${supervisor.pid}) is DOWN`;
 }
 
 /** A role whose pane is gone; `dori send` refuses it, internal notices fall back to the lane log. */

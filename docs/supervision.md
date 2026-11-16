@@ -2,14 +2,16 @@
 
 Dori's always-on half runs outside the sessions, so a closed tab or a dead workspace cannot silence it.
 
+One supervisor owns every long-lived child. The children stay separate processes on purpose: duty is the delivery path
+and must not be killable by an exception in update-check or the hourly loop. The watchdog stays separate because it
+exists to resurrect the supervisor and cannot resurrect itself.
+
 | Process | Parent | Writes | Log |
 | --- | --- | --- | --- |
-| `gateway-supervisor.ts` | launched by `dori up`, `dori restart`, or the watchdog | `state/gateway-heartbeat`, `state/gateway-supervisor.json` | `state/gateway.log` |
-| `discord-gateway.ts` | gateway supervisor | `state/gateway-ws-heartbeat` (each Discord heartbeat ack) | `state/gateway.log` |
-| `loops-supervisor.ts` | same as the gateway supervisor | `state/loops-heartbeat`, `state/loops-supervisor.json` | `state/loops.log` |
-| `duty`, `loop`, `update-check` | loops supervisor | their own files under `state/`, `duty/`, `loop/` | `state/loops.log` |
-| `dori-ensure-up.ts` | loops supervisor (or `dori up` when it is missing) | `state/ensure-up-heartbeat`, `state/ensure-up.json`, lock `state/ensure-up.lock` | stdout of the supervisor |
-| `gateway-watchdog.ts` | same as the gateway supervisor | `state/gateway-watchdog-heartbeat`, `state/watchdog-supervisor.json` | `state/gateway-watchdog.log` |
+| `supervisor.ts` | launched by `dori up`, `dori restart`, or the watchdog | `state/supervisor-heartbeat`, `state/supervisor.json` | `state/supervisor.log` |
+| `discord-gateway.ts` | supervisor | `state/gateway-ws-heartbeat` (each Discord heartbeat ack) | `state/gateway.log` |
+| `duty`, `loop`, `update-check`, `dori-ensure-up.ts` | supervisor | their own files under `state/`, `duty/`, `loop/` | `state/loops.log` |
+| `gateway-watchdog.ts` | launcher | `state/gateway-watchdog-heartbeat`, `state/watchdog-supervisor.json` | `state/gateway-watchdog.log` |
 
 The repo owns each program under `src/supervisors/`; `~/.dori/bin/*.ts` is a two-line shim into the installed checkout, so a
 launcher or the watchdog keeps spawning the same path it always did.
@@ -20,43 +22,50 @@ launcher or the watchdog keeps spawning the same path it always did.
 RUNTIME herdr (from config)
 lead=w9:p1 duty=- home=C:\Users\USER\.dori
 STALE <role>=<ref>: pane not found          # only when roles.json names a dead pane
-SUPERVISED gateway  up pid=12836 hb=1s units=discord-gateway:4528
-SUPERVISED loops    up pid=6720 hb=1s units=duty:18000,loop:19416,update-check:3140,ensure-up:8368
-SUPERVISED watchdog up pid=5204 hb=0s
+SUPERVISED supervisor up pid=12836 hb=1s units=discord-gateway:4528,duty:18000,loop:19416,update-check:3140,ensure-up:8368
+WATCHDOG up pid=5204 hb=0s
 ENSURE-UP up pid=8368 hb=1s
 ```
 
-A supervisor is `up` only when its recorded pid is alive **and** its heartbeat is inside the window (90 s, 120 s for the
-loops). `ENSURE-UP off (ensure-up.off)` means the loop is deliberately off. A role whose pane is gone is printed as
-`STALE`, and `dori send <role>` refuses it instead of queueing text nowhere.
+The supervisor is `up` only when its recorded pid is alive **and** its heartbeat is inside the 90 s window. The watchdog
+line is separate: its own heartbeat and record, one stale threshold, one grace window. `ENSURE-UP off (ensure-up.off)`
+means the loop is deliberately off. A role whose pane is gone is printed as `STALE`, and `dori send <role>` refuses it
+instead of queueing text nowhere.
 
 ## `dori restart`
 
-Kills the three supervisor trees by command line, starts them again from the home's shims, and returns only when
-`gateway-heartbeat`, `gateway-ws-heartbeat` (the Discord socket actually acked) and `loops-heartbeat` are newer than the
-moment the restart began. It then checks the six child pids and the ensure-up loop; `RESTART INCOMPLETE` (exit 1) means
-one of them did not come back, and the lines above the verdict say which.
+Kills the supervisor and every child process by command line, so a supervisor killed on its own does not leave five
+orphans behind. It starts one supervisor again and returns only when the supervisor heartbeat, `gateway-ws-heartbeat` (the Discord socket actually acked) and all five unit pids are newer than the moment the restart
+began. `RESTART INCOMPLETE` (exit 1) means one of them did not come back, and the lines above the verdict say which.
+A live watchdog is left alone; a missing one is started.
 
-Measured on this host (Windows, herdr 0.9.5, 2026-11-15):
+Measured on this host (Windows, herdr 0.9.5, 2026-11-16):
 
-- `dori restart` after killing both supervisors by hand: **1333 ms** until all heartbeats were fresh and every child pid
-  was up (`killed=1` = the watchdog it also replaces). The final run on the committed code took **1481 ms**; both sit
-  well inside one 30 s heartbeat window.
-- Gateway `GATEWAY_READY` 1 s after the restart; all seven processes (six + ensure-up) had new pids and records.
-- The ensure-up loop came back with the loops supervisor, no separate step.
+- `dori restart` from a healthy stack: **~1500 ms** until the supervisor heartbeat, the Discord socket heartbeat and all
+  five children were fresh (`killed=6`: the supervisor and its five children).
+- Gateway `GATEWAY_READY` and a fresh `gateway-ws-heartbeat` followed within one beat.
+- The ensure-up loop came back with the supervisor, no separate step.
 
 ## ensure-up
 
-`dori up` (and the loops supervisor) starts `dori-ensure-up.ts` when `state/ensure-up.off` is absent. Every 20 s it
-checks whether a workspace labelled `dori` holds two panes with a live agent; only when none does it runs `dori up`.
-One loop per home is enforced by `state/ensure-up.lock` (a dead holder's lock is taken over), so two supervisors cannot
-raise two workspaces. `state/ensure-up.off` makes the loop idle and `dori status` print `ENSURE-UP off`.
+The supervisor owns `dori-ensure-up.ts`; it starts it when `state/ensure-up.off` is absent and keeps it out of the
+supervised set while the file exists. Every 20 s the loop checks whether a workspace labelled `dori` holds two panes
+with a live agent; only when none does it runs `dori up`. One loop per home is enforced by `state/ensure-up.lock` (a
+dead holder's lock is taken over), so two supervisors cannot raise two workspaces. A pane-mode `dori up` (loops not
+supervised) starts the ensure-up loop itself.
 
 ## Roles under supervision
 
-The duty and hourly loops are supervisor children, not panes. `dori up` under a live loops supervisor opens only the
-lead and duty panes and drops `duty-loop` / `hourly-loop` from `roles.json`; a stale role left by an older layout is
-removed with `dori role <role> -` (clearing accepts the loop roles; registering still accepts only lead and duty).
+The duty and hourly loops are supervisor children, not panes. `dori up` under a live supervisor opens only the lead and
+duty panes and drops `duty-loop` / `hourly-loop` from `roles.json`; a stale role left by an older layout is removed with
+`dori role <role> -` (clearing accepts the loop roles; registering still accepts only lead and duty).
+
+## What the merge removed
+
+`gateway-supervisor.ts` and `loops-supervisor.ts` no longer exist. `state/gateway-heartbeat`, `state/loops-heartbeat`,
+`state/gateway-supervisor.json` and `state/loops-supervisor.json` are neither read nor written; `gateway.log` and
+`loops.log` remain the child-output logs. A `dori restart` still matches the old supervisor command lines once, so a
+host that is still running the pre-merge pair can be swapped with one command.
 
 ## Tests on Windows
 

@@ -1,12 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-// The record files and heartbeat files of the always-on processes. Each supervisor writes state/<name>-supervisor.json
-// and state/<name>-heartbeat every 30 s, so `dori status` reports what runs without asking the OS, and `dori restart`
-// proves recovery by heartbeat age. Starting, killing and restarting them lives in supervisor-run.ts.
+// The record files and heartbeat files of the always-on processes. The supervisor writes state/supervisor.json and
+// state/supervisor-heartbeat every 30 s; the watchdog writes its own pair. `dori status` reports what runs without
+// asking the OS, and `dori restart` proves recovery by heartbeat age. Starting, killing and restarting them lives in
+// supervisor-run.ts. The pre-merge records (gateway-supervisor.json, loops-supervisor.json) are neither read nor
+// written any more.
 
-export type SupervisorName = "gateway" | "loops" | "watchdog";
-export const SUPERVISORS: readonly SupervisorName[] = ["gateway", "loops", "watchdog"];
+export type SupervisorName = "supervisor" | "watchdog";
+export const SUPERVISORS: readonly SupervisorName[] = ["supervisor", "watchdog"];
 
 export type UnitRecord = { readonly name: string; readonly pid: number; readonly at: number };
 export type SupervisorRecord = {
@@ -28,34 +30,28 @@ export type SupervisorHealth = {
 };
 export type EnsureUpHealth = { readonly pid?: number; readonly alive: boolean; readonly heartbeatAgeMs?: number };
 
-/** Three missed beats; the gateway watchdog uses the same window for the gateway. */
+/** Three missed beats; the watchdog uses the same window for the supervisor heartbeat and the Discord socket. */
 export const STALE_MS = 90_000;
-/** The loops supervisor is checked a little more loosely, as the watchdog does. */
-export const LOOPS_STALE_MS = 120_000;
 export const WS_HEARTBEAT = "gateway-ws-heartbeat";
 export const ENSURE_UP_HEARTBEAT = "ensure-up-heartbeat";
 export const ENSURE_UP_RECORD = "ensure-up.json";
 export const ENSURE_UP_OFF = "ensure-up.off";
 
 const HEARTBEAT: Readonly<Record<SupervisorName, string>> = {
-  gateway: "gateway-heartbeat",
-  loops: "loops-heartbeat",
+  supervisor: "supervisor-heartbeat",
   watchdog: "gateway-watchdog-heartbeat",
 };
 const RECORD: Readonly<Record<SupervisorName, string>> = {
-  gateway: "gateway-supervisor.json",
-  loops: "loops-supervisor.json",
+  supervisor: "supervisor.json",
   watchdog: "watchdog-supervisor.json",
 };
 /** The installed home's shim first (that is what the Windows launchers and the watchdog spawn), else the repo entry. */
 const SHIM: Readonly<Record<SupervisorName, string>> = {
-  gateway: "gateway-supervisor.ts",
-  loops: "loops-supervisor.ts",
+  supervisor: "supervisor.ts",
   watchdog: "gateway-watchdog.ts",
 };
 const SOURCE: Readonly<Record<SupervisorName, string>> = {
-  gateway: "gateway.ts",
-  loops: "loops.ts",
+  supervisor: "supervisor.ts",
   watchdog: "watchdog.ts",
 };
 
@@ -72,6 +68,17 @@ export function ensureUpEntry(home: string): string {
   const shim = join(home, "bin", "dori-ensure-up.ts");
   return existsSync(shim) ? shim : join(import.meta.dir, "supervisors", "ensure-up.ts");
 }
+
+/** The five children's command lines; a restart and a new supervisor use them to clean orphans. */
+export const UNIT_PATTERNS: readonly string[] = [
+  "discord-gateway.ts",
+  "cli.ts duty",
+  "cli.ts loop",
+  "update-check.ts",
+  "dori-ensure-up.ts",
+  "supervisors/ensure-up.ts",
+  "supervisors\\ensure-up.ts",
+];
 
 /** A heartbeat or record file's age in ms, or undefined when it is missing. */
 export function ageMs(path: string, now: number = Date.now()): number | undefined {
@@ -129,8 +136,7 @@ export function supervisorHealth(
   return SUPERVISORS.map((name) => {
     const record = readJson<SupervisorRecord>(recordPath(home, name));
     const beat = ageMs(heartbeatPath(home, name), now);
-    const window = name === "loops" ? LOOPS_STALE_MS : STALE_MS;
-    const fresh = beat !== undefined && beat <= window;
+    const fresh = beat !== undefined && beat <= STALE_MS;
     // A record from a supervisor that was killed under it is not evidence; its beat and its pid both have to agree.
     const live = record !== undefined ? alive(record.pid) && fresh : fresh;
     return {
@@ -162,10 +168,17 @@ export function ensureUpHealth(
 const secs = (ms: number | undefined): string =>
   ms === undefined || !Number.isFinite(ms) ? "missing" : `${Math.max(0, Math.round(ms / 1000))}s`;
 
-/** `SUPERVISED <name> up|DOWN pid=N hb=Ks units=a:1,b:2(dead)` for `dori status` and `dori restart`. */
+/** `SUPERVISED supervisor up pid=N hb=Ks units=a:1,b:2(dead)` for `dori status` and `dori restart`. */
 export function formatSupervisor(h: SupervisorHealth): string {
   const units = h.units.map((u) => `${u.name}:${u.pid ?? "?"}${u.alive ? "" : "(dead)"}`).join(",");
-  return `SUPERVISED ${h.name.padEnd(8)} ${h.alive ? "up" : "DOWN"} pid=${h.pid ?? "?"} hb=${secs(h.heartbeatAgeMs)}${units ? ` units=${units}` : ""}`;
+  return `SUPERVISED ${h.name.padEnd(10)} ${h.alive ? "up" : "DOWN"} pid=${h.pid ?? "?"} hb=${secs(h.heartbeatAgeMs)}${units ? ` units=${units}` : ""}`;
+}
+export function formatWatchdog(h: SupervisorHealth): string {
+  return `WATCHDOG ${h.alive ? "up" : "DOWN"} pid=${h.pid ?? "?"} hb=${secs(h.heartbeatAgeMs)}`;
+}
+/** The supervisor line first, then the watchdog: one `SUPERVISED` line is the contract `dori status` keeps. */
+export function formatSupervised(health: readonly SupervisorHealth[]): string[] {
+  return health.map((h) => (h.name === "watchdog" ? formatWatchdog(h) : formatSupervisor(h)));
 }
 export function formatEnsureUp(h: EnsureUpHealth, off: boolean): string {
   if (off) return `ENSURE-UP off (${ENSURE_UP_OFF})`;

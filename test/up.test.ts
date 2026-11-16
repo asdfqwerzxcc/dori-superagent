@@ -103,7 +103,7 @@ describe("dori up", () => {
     const d = w.deps();
     const root = d.store.root;
     mkdirSync(join(root, "state"), { recursive: true });
-    writeFileSync(join(root, "state", "loops-heartbeat"), new Date().toISOString());
+    writeFileSync(join(root, "state", "supervisor-heartbeat"), new Date().toISOString());
     d.store.setRole("duty-loop", { runtime: "herdr", id: "w1:p8" });
     d.store.setRole("hourly-loop", { runtime: "herdr", id: "w1:p9" });
     const { out } = await captureIo(async () => {

@@ -14,7 +14,7 @@ import { runMigrate } from "./migrate.ts";
 import { refText } from "./refs.ts";
 import { ConfigError as RuntimeConfigError, RuntimeChoiceError } from "./runtime/select.ts";
 import { parseRef } from "./runtime/types.ts";
-import { formatEnsureUp, formatSupervisor } from "./supervisors.ts";
+import { formatEnsureUp, formatSupervised } from "./supervisors.ts";
 import { restartSupervisors } from "./supervisor-run.ts";
 import { RESERVED_KEYS, type Role } from "./store-types.ts";
 
@@ -150,7 +150,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       return runMigrate(d, a);
     case "restart": {
       const r = await restartSupervisors(d.store.root);
-      for (const h of r.health) console.log(formatSupervisor(h));
+      for (const line of formatSupervised(r.health)) console.log(line);
       console.log(formatEnsureUp(r.ensureUp, r.off));
       const ws = r.wsHeartbeatAgeMs === undefined ? "missing" : `${Math.round(r.wsHeartbeatAgeMs / 1000)}s`;
       console.log(`${r.ok ? "RESTARTED" : "RESTART INCOMPLETE"} killed=${r.killed.length} ms=${r.elapsedMs} ws=${ws}`);

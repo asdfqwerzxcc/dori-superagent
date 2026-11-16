@@ -26,7 +26,7 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori migrate [--to hc|herdr] (--lane K | --role lead|duty|duty-loop|hourly-loop | --all) [--dry-run]
                [--wait-minutes N] [--resume]  hand sessions over to another runtime; MIGRATED, SKIP, DEFERRED,
                                               or MIGRATE_ROLLBACK (exit 3) per session
-  dori restart                                restart the gateway and loops supervisors; waits for fresh heartbeats
+  dori restart                                restart the supervisor tree; waits for a fresh heartbeat and all five units
   dori status
 
 --text may be omitted to read the message from stdin.

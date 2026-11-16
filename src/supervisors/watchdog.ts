@@ -7,22 +7,21 @@ import {
   ensureUpOff,
   entryFor,
   heartbeatPath,
-  LOOPS_STALE_MS,
   stateDir,
   STALE_MS,
   WS_HEARTBEAT,
   writeSupervisorRecord,
 } from "../supervisors.ts";
-import { killTree, listProcesses, matchPids, spawnDetached } from "../supervisor-run.ts";
+import { killSupervisorTree, killTree, listProcesses, matchPids, spawnDetached } from "../supervisor-run.ts";
 
 const CHECK_MS = 20_000;
 const GRACE_MS = 90_000;
 const ENSURE_UP_STALE_MS = 180_000;
 
 /**
- * The slow safety net under the supervisors: a gateway whose heartbeat or Discord socket went stale is killed and
- * restarted, and so is a loops supervisor that stopped beating. Each check has its own grace window, so a restarting
- * gateway never suppresses the loops check. Output: `WATCHDOG_*` lines, also appended to state/gateway-watchdog.log.
+ * The slow safety net under the one supervisor: a stale supervisor heartbeat or Discord socket is killed together
+ * with its child command lines and started again. A dead child alone is the supervisor's job, not the watchdog's.
+ * Output: `WATCHDOG_*` lines, also appended to state/gateway-watchdog.log.
  */
 export async function runWatchdog(): Promise<never> {
   const home = process.env["DORI_HOME"] ?? join(homedir(), ".dori");
@@ -54,40 +53,27 @@ export async function runWatchdog(): Promise<never> {
 
   log(`WATCHDOG_START pid=${process.pid}`);
   beat();
-  let gatewayGraceUntil = Date.now() + GRACE_MS;
-  let loopsGraceUntil = Date.now() + GRACE_MS;
+  let graceUntil = Date.now() + GRACE_MS;
   const secs = (ms: number | undefined) =>
     ms === undefined || !Number.isFinite(ms) ? "missing" : `${Math.round(ms / 1000)}s`;
 
   for (;;) {
     await Bun.sleep(CHECK_MS);
     beat();
-    const procs = await listProcesses();
     const now = Date.now();
-
-    const gatewayAge = ageMs(heartbeatPath(home, "gateway"), now);
+    const supervisorAge = ageMs(heartbeatPath(home, "supervisor"), now);
     const wsAge = ageMs(join(state, WS_HEARTBEAT), now);
-    if (now >= gatewayGraceUntil && ((gatewayAge ?? Infinity) > STALE_MS || (wsAge ?? Infinity) > STALE_MS)) {
-      log(`WATCHDOG_STALE supervisor=${secs(gatewayAge)} ws=${secs(wsAge)}`);
-      for (const pid of matchPids(procs, "gateway-supervisor.ts", "supervisors/gateway.ts", "discord-gateway.ts"))
-        await killTree(pid);
+    if (now >= graceUntil && ((supervisorAge ?? Infinity) > STALE_MS || (wsAge ?? Infinity) > STALE_MS)) {
+      log(`WATCHDOG_STALE supervisor=${secs(supervisorAge)} ws=${secs(wsAge)}`);
+      const killed = await killSupervisorTree(await listProcesses());
+      log(`WATCHDOG_KILL pids=${killed.join(",") || "-"}`);
       await Bun.sleep(2000);
-      const pid = spawnDetached(entryFor(home, "gateway"), home);
+      const pid = spawnDetached(entryFor(home, "supervisor"), home);
       log(`WATCHDOG_SPAWN supervisor pid=${pid ?? "?"}`);
-      gatewayGraceUntil = Date.now() + GRACE_MS;
-    }
-
-    const loopsAge = ageMs(heartbeatPath(home, "loops"), now);
-    if (now >= loopsGraceUntil && (loopsAge ?? Infinity) > LOOPS_STALE_MS) {
-      log(`WATCHDOG_LOOPS_STALE age=${secs(loopsAge)}`);
-      for (const pid of matchPids(procs, "loops-supervisor.ts", "supervisors/loops.ts")) await killTree(pid);
-      await Bun.sleep(2000);
-      const pid = spawnDetached(entryFor(home, "loops"), home);
-      log(`WATCHDOG_SPAWN loops pid=${pid ?? "?"}`);
-      loopsGraceUntil = Date.now() + GRACE_MS;
+      graceUntil = Date.now() + GRACE_MS;
     }
     if (!ensureUpOff(home)) {
-      const up = ensureUpHealth(home, Date.now());
+      const up = ensureUpHealth(home, now);
       if (up.pid !== undefined && (up.heartbeatAgeMs ?? Infinity) > ENSURE_UP_STALE_MS) {
         log(`WATCHDOG_ENSURE_UP_STALE pid=${up.pid} hb=${secs(up.heartbeatAgeMs)}`);
         await killTree(up.pid);

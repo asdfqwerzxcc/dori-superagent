@@ -4,14 +4,14 @@ import { Refusal } from "../src/refusal.ts";
 import { StaleRole, resolveLiveTarget } from "../src/target.ts";
 import { World, href } from "./fake.ts";
 import { captureIo } from "./inbox-setup.ts";
-import { beat, loopsRecord } from "./supervisor-fixtures.ts";
+import { beat, supervisorRecord } from "./supervisor-fixtures.ts";
 
 describe("role honesty", () => {
   test("a role whose pane is gone is a StaleRole, and the hint names the supervisor that runs it", async () => {
     const w = new World();
     const d = w.deps();
-    beat(d.store.root, "loops-heartbeat");
-    loopsRecord(d.store.root);
+    beat(d.store.root, "supervisor-heartbeat");
+    supervisorRecord(d.store.root);
     d.store.setRole("duty", href("w1:p9"));
     const failure: unknown = await resolveLiveTarget(d, "duty").then(
       () => undefined,
@@ -19,14 +19,14 @@ describe("role honesty", () => {
     );
     expect(failure).toBeInstanceOf(StaleRole);
     expect((failure as Error).message).toContain("w1:p9");
-    expect((failure as Error).message).toContain(`loops supervisor (pid ${process.pid}, duty pid ${process.pid})`);
+    expect((failure as Error).message).toContain(`under the supervisor (pid ${process.pid}, duty pid ${process.pid})`);
   });
 
   test("a role nobody registered is refused with the supervised process, not a silent guess", async () => {
     const w = new World();
     const d = w.deps();
-    beat(d.store.root, "loops-heartbeat");
-    loopsRecord(d.store.root, ["duty", "loop"]);
+    beat(d.store.root, "supervisor-heartbeat");
+    supervisorRecord(d.store.root, ["duty", "loop"]);
     const failure: unknown = await resolveLiveTarget(d, "hourly-loop").then(
       () => undefined,
       (e: unknown) => e,
@@ -34,7 +34,7 @@ describe("role honesty", () => {
     expect(failure).toBeInstanceOf(Refusal);
     expect(failure).not.toBeInstanceOf(StaleRole);
     expect((failure as Error).message).toContain("no hourly-loop session registered");
-    expect((failure as Error).message).toContain("the hourly loop runs under the loops supervisor");
+    expect((failure as Error).message).toContain("the hourly loop runs under the supervisor");
   });
 
   test("a healthy role resolves and a lane key never pays for the probe", async () => {
@@ -50,14 +50,14 @@ describe("role honesty", () => {
     const w = new World();
     const d = w.deps();
     d.store.setRole("lead", href("w9:p1"));
-    beat(d.store.root, "loops-heartbeat");
-    loopsRecord(d.store.root);
+    beat(d.store.root, "supervisor-heartbeat");
+    supervisorRecord(d.store.root);
     const { out } = await captureIo(async () => {
       await status(d);
       return 0;
     });
     expect(out).toContain("STALE lead=w9:p1: pane not found");
-    expect(out).toContain("SUPERVISED loops    up");
+    expect(out).toContain("SUPERVISED supervisor up");
     expect(out).toContain("ENSURE-UP DOWN");
   });
 });

@@ -13,6 +13,7 @@ import {
   stateDir,
   SUPERVISORS,
   supervisorHealth,
+  UNIT_PATTERNS,
   WS_HEARTBEAT,
   type EnsureUpHealth,
   type SupervisorHealth,
@@ -23,18 +24,19 @@ import {
 export type Proc = { readonly pid: number; readonly command: string };
 
 const SHIM: Readonly<Record<SupervisorName, string>> = {
-  gateway: "gateway-supervisor.ts",
-  loops: "loops-supervisor.ts",
+  supervisor: "supervisor.ts",
   watchdog: "gateway-watchdog.ts",
 };
 const SOURCE: Readonly<Record<SupervisorName, string>> = {
-  gateway: "gateway.ts",
-  loops: "loops.ts",
+  supervisor: "supervisor.ts",
   watchdog: "watchdog.ts",
 };
 
-/** What a process list is searched for: the installed shim or the repo entry that a dev checkout runs directly. */
-const entryPatterns = (name: SupervisorName): readonly string[] => [SHIM[name], `supervisors/${SOURCE[name]}`];
+/** What a process list is searched for: the installed shim, or the repo entry a dev checkout runs directly. */
+const entryPatterns = (name: SupervisorName): readonly string[] =>
+  name === "supervisor"
+    ? [SHIM[name], `supervisors/${SOURCE[name]}`]
+    : [SHIM[name], `supervisors/${SOURCE[name]}`, "supervisors\\watchdog.ts"];
 export const matchPids = (procs: readonly Proc[], ...patterns: readonly string[]): number[] =>
   procs.filter((p) => patterns.some((s) => p.command.includes(s))).map((p) => p.pid);
 
@@ -97,6 +99,19 @@ export async function killTree(pid: number): Promise<void> {
     }
 }
 
+/**
+ * Kills the supervisor and every unit whose command line is one of the five children. Matching by command line, not
+ * by the recorded pid, is what makes this safe after the supervisor itself has been dead long enough for Windows to
+ * reuse a pid.
+ */
+export async function killSupervisorTree(procs: readonly Proc[] = []): Promise<number[]> {
+  const listed = procs.length > 0 ? procs : await listProcesses();
+  const pids = [...matchPids(listed, ...entryPatterns("supervisor")), ...matchPids(listed, ...UNIT_PATTERNS)];
+  const killed = [...new Set(pids)].filter((pid) => pid !== process.pid);
+  for (const pid of killed) await killTree(pid);
+  return killed;
+}
+
 /** True once each file was written at or after `since` (one second of slack for coarse filesystem timestamps). */
 export async function waitFresh(
   paths: readonly string[],
@@ -139,7 +154,7 @@ export async function ensureSupervisors(home: string, waitMs = 30_000): Promise<
   return supervisorHealth(home);
 }
 
-/** Waits for the ensure-up loop to appear (the loops supervisor starts it), or returns its absent state at the deadline. */
+/** Waits for the ensure-up loop to appear (the supervisor starts it), or returns its absent state at the deadline. */
 export async function waitEnsureUp(home: string, wanted: boolean, timeoutMs = 15_000): Promise<EnsureUpHealth> {
   if (!wanted) return ensureUpHealth(home);
   const deadline = Date.now() + timeoutMs;
@@ -168,7 +183,8 @@ export async function superviseHome(
   const health = opts.supervisors === false ? supervisorHealth(home) : await ensureSupervisors(home);
   const off = ensureUpOff(home);
   let ensureUp = await waitEnsureUp(home, !off, opts.supervisors === false ? 0 : 15_000);
-  if (!off && !ensureUp.alive) {
+  // The supervisor owns ensure-up; only a pane-mode `dori up` starts it outside a supervisor.
+  if (opts.supervisors === false && !off && !ensureUp.alive) {
     spawnDetached(ensureUpEntry(home), home);
     ensureUp = await waitEnsureUp(home, true, 10_000);
   }
@@ -186,40 +202,30 @@ export type RestartResult = {
 };
 
 /**
- * One command for the whole supervised half of the stack: kills every supervisor tree, starts them again, and waits
- * until the gateway heartbeat, the Discord socket heartbeat (`gateway-ws-heartbeat`) and the loops heartbeat are all
- * newer than the moment the restart began. The ensure-up loop comes back with the loops supervisor.
+ * One command for the supervised half of the stack: kills the supervisor tree and any orphaned unit, starts one
+ * supervisor again, and waits until the supervisor heartbeat, the Discord socket heartbeat (`gateway-ws-heartbeat`)
+ * and all five units are up and newer than the moment the restart began.
  */
 export async function restartSupervisors(home: string, timeoutMs = 120_000): Promise<RestartResult> {
   const started = Date.now();
-  const procs = await listProcesses();
-  const killed = [...new Set(SUPERVISORS.flatMap((name) => matchPids(procs, ...entryPatterns(name)))).values()].filter(
-    (pid) => pid !== process.pid,
-  );
-  for (const pid of killed) await killTree(pid);
+  const killed = await killSupervisorTree();
   // The trees are dead before the replacements start, or the watchdog's duplicate check sees the old one and exits.
   for (let i = 0; i < 40 && killed.some(pidAlive); i++) await Bun.sleep(250);
-  for (const name of SUPERVISORS) spawnDetached(entryFor(home, name), home);
+  await ensureSupervisors(home, timeoutMs);
 
-  const ok = await waitFresh(
-    [heartbeatPath(home, "gateway"), join(stateDir(home), WS_HEARTBEAT), heartbeatPath(home, "loops")],
-    started,
-    { timeoutMs },
-  );
+  const ok = await waitFresh([heartbeatPath(home, "supervisor"), join(stateDir(home), WS_HEARTBEAT)], started, {
+    timeoutMs,
+  });
   const wanted = !ensureUpOff(home);
   const ensureUp = await waitEnsureUp(home, wanted, ok ? 15_000 : 0);
   const health = supervisorHealth(home);
-  const gateway = health.find((h) => h.name === "gateway");
-  const loops = health.find((h) => h.name === "loops");
-  const children = (loops?.units ?? []).filter((u) => ["duty", "loop", "update-check"].includes(u.name) && u.alive);
-  const gatewayChild = (gateway?.units ?? []).some((u) => u.name === "discord-gateway" && u.alive);
-  const all =
-    ok &&
-    gateway?.alive === true &&
-    gatewayChild &&
-    loops?.alive === true &&
-    children.length === 3 &&
-    (!wanted || ensureUp.alive);
+  const supervisor = health.find((h) => h.name === "supervisor");
+  const units = supervisor?.units ?? [];
+  const expected = wanted
+    ? ["discord-gateway", "duty", "loop", "update-check", "ensure-up"]
+    : ["discord-gateway", "duty", "loop", "update-check"];
+  const unitsUp = expected.every((name) => units.some((u) => u.name === name && u.alive));
+  const all = ok && supervisor?.alive === true && unitsUp && (!wanted || ensureUp.alive);
   const wsAge = ageMs(join(stateDir(home), WS_HEARTBEAT));
   return {
     ok: all,
