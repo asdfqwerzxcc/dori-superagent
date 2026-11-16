@@ -159,6 +159,31 @@ describe("lane worktree at start", () => {
     expect(gitCalls(w)).toContain(`-C ${repo} branch -D lane/no-tree`);
   });
 
+  test("a worktree root that cannot be created refuses the start loudly and writes nothing", async () => {
+    const { w, d, brief } = setup();
+    const repo = join(d.store.root, "main");
+    w.git = repoGit(repo);
+    const blocked = join(d.store.root, "blocked-root");
+    writeFileSync(blocked, "a file where the worktree root must be a directory");
+    const panes = w.panes.size;
+    process.env["DORI_WORKTREES_DIR"] = blocked;
+    try {
+      const failure: unknown = await startLane(d, "blocked-tree", brief, { group: "w1" }).then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(failure).toBeInstanceOf(Refusal);
+      const message = (failure as Error).message;
+      expect(message).toContain("cannot create a worktree for lane blocked-tree");
+      expect(message).toContain(blocked);
+      expect(message).toContain(`nothing was written to ${repo}`);
+      expect(w.panes.size).toBe(panes);
+      expect(d.store.lane("blocked-tree")).toBeUndefined();
+    } finally {
+      delete process.env["DORI_WORKTREES_DIR"];
+    }
+  });
+
   test("stale locks are named and left in place, and long paths off warns", async () => {
     const { w, d, brief } = setup();
     const repo = join(d.store.root, "main");

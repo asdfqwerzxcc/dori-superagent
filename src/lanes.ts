@@ -4,7 +4,7 @@ import { shq } from "./delivery.ts";
 import { prompt, type Deps } from "./harness.ts";
 import { laneGate } from "./lane-gate.ts";
 import { repoHead, resolveLaneRepo } from "./lane-repo.ts";
-import { assertCleanWorktree, createLaneWorktree, discardWorktree, dropLane, landWorktree } from "./lane-worktree.ts";
+import { assertCleanWorktree, createLaneWorktree, discardWorktree, dropLane, landWorktree, worktreeRoot } from "./lane-worktree.ts";
 import { settled, tellLead, type SendResult } from "./inbox.ts";
 import { Refusal } from "./refusal.ts";
 import { runHook } from "./hooks.ts";
@@ -30,8 +30,21 @@ export async function startLane(
   const cwd = resolve(opts.cwd ?? process.cwd());
   const repo = await resolveLaneRepo(d, cwd);
   const baseSha = repo === undefined ? undefined : await repoHead(d, repo);
-  const worktree =
-    repo !== undefined && baseSha !== undefined ? await createLaneWorktree(d, key, repo, baseSha) : undefined;
+  let worktree: string | undefined;
+  if (repo !== undefined && baseSha !== undefined) {
+    try {
+      worktree = await createLaneWorktree(d, key, repo, baseSha);
+    } catch (e) {
+      // Isolation is not optional: a lane that cannot get its own tree is refused with the reason, and the main
+      // checkout is left exactly as it was. Starting the lane in the shared tree is the one thing we never do.
+      if (e instanceof Refusal) throw e;
+      const why = e instanceof Error ? e.message : String(e);
+      throw new Refusal(
+        `cannot create a worktree for lane ${key} under ${worktreeRoot(d)}: ${why}\n` +
+          `the lane was not started and nothing was written to ${repo}; fix the reason, then retry: dori start ${key}`,
+      );
+    }
+  }
   const laneCwd = worktree ?? cwd;
   const briefPath = d.store.briefPath(key);
   const footer = prompt("lane-footer.md", { key, dori: d.doriCmd });
