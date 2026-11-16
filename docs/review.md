@@ -54,13 +54,15 @@ check list never green. This layer never runs for local-only work, and nothing i
 command to run:
 
 ```
-lane <key> at <sha> has no review receipt; run: dori review --lane <key> (or dori done <key> --force)
+lane <key> at <sha> has no review receipt; run: dori review --lane <key> (or dori done --drop <key> --reason <text>)
 ```
 
 A lane that committed nothing (`base` equals `tip`) closes without a receipt: an investigation lane has no diff to
 review. A lane started before this gate has no recorded base; it closes with an explicit `(no review gate: ...)` note
-instead of being reviewed against a guessed base. `dori done <key> --force` closes a lane without a CLEAR receipt and
-prints that it did, together with the refusal reason; the escape hatch is explicit, never silent.
+instead of being reviewed against a guessed base. There is no force path: a BLOCK or a missing receipt is resolved by
+reviewing again, or by `dori done --drop <key> --reason <text>`, which closes the lane, removes its worktree and branch
+without landing, records `dropped` with the reason, and never touches `main`. The escape hatch is explicit, never
+silent.
 
 ## `dori status`
 
@@ -74,5 +76,8 @@ Each lane commits in its own worktree on branch `lane/<key>`, so `base..tip` is 
 cannot add to it, and a lane cannot dirty the main checkout. `dori done` checks the tree is clean, closes the pane,
 fast-forwards `main` when it still sits at the recorded base, then removes the worktree and the branch. If `main` moved,
 `done` refuses with `main moved: rebase required` and keeps both; `dori done --drop <key> --reason <text>` removes them
-without landing. A LOST lane keeps its tree and branch for inspection. Receipts and diffs are per lane key and per tip
-commit, so they never collide.
+without landing. A LOST lane keeps its tree and branch for inspection and refuses a restart until it is dropped.
+`dori worktrees list` names every lane tree with its lane status and orphan reason, `dori worktrees prune` removes
+orphan trees and their branches (naming a dirty tree and leaving it, never forcing), and `dori status` adds one
+`WORKTREES <n> orphan` line when any exist. Receipts and diffs are per lane key and per tip commit, so they never
+collide.
