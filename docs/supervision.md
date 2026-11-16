@@ -55,8 +55,17 @@ Measured on this host (Windows, herdr 0.9.5, 2026-11-16):
 The `DoriGatewayGuard` scheduled task runs `bin/ensure-gateway.ps1` every minute and is the cover for "the watchdog
 itself dies". The merged supervisor keeps `state/gateway-heartbeat` fresh in the same 30 s beat as
 `state/supervisor-heartbeat`, so the old guard never sees a missing gateway. The script matches only `bin/supervisor.ts`
-(or the repo's `src/supervisors/supervisor.ts`), reads `supervisor-heartbeat` with `gateway-heartbeat` as a fallback,
-and starts `bin/supervisor.ts`; it no longer matches or starts the pre-merge `gateway-supervisor.ts`.
+(or the repo's `src/supervisors/supervisor.ts`), reads `supervisor-heartbeat`, and starts `bin/supervisor.ts`; it no
+longer matches or starts the pre-merge `gateway-supervisor.ts`. `state/gateway-heartbeat` remains a compatibility write
+for pre-merge launchers and monitors.
+
+Verified on this host (2026-11-16):
+
+- Fresh guard run while the stack was healthy: task result 0; supervisor `10584` and children
+  `6040,6060,10868,11176,19364` unchanged; one supervisor, one gateway.
+- After `supervisor-heartbeat` was aged 200 s: the guard replaced `10584` with `17900`, the old children exited, and the
+  new units were `6544,18500,2036,19272,15744`; no `gateway-supervisor.ts` / `loops-supervisor.ts` process appeared;
+  `GATEWAY_READY` at 10:57:58 and `gateway-heartbeat` fresh on the new supervisor.
 
 ## ensure-up
 
