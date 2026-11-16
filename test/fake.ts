@@ -50,6 +50,12 @@ export class World {
   /** number of upcoming `pane send-keys` calls that fail (exit 1) */
   keyFails = 0;
   gh: (argv: readonly string[]) => { code: number; stdout: string } = () => ({ code: 1, stdout: "" });
+  /** answers for `git`; the default is "not a repository", as a lane started outside a checkout sees it. */
+  git: (argv: readonly string[]) => { code: number; stdout: string; stderr?: string } = () => ({
+    code: 128,
+    stdout: "",
+    stderr: "not a git repository",
+  });
   usage: TelemetryEvent[] = [];
   dutyCounts: DutyCounts[] = [];
   touches = 0;
@@ -97,6 +103,7 @@ export class World {
       if (killed) return { code: 143, stdout: "", stderr: "terminated" };
     }
     if (cmd === "gh") return { ...this.gh(argv), stderr: "" };
+    if (cmd === "git") return { stderr: "", ...this.git(argv) };
     if (cmd === "hc") return this.hc.exec(cmd, argv);
     if (cmd !== "herdr") return { stderr: "", ...this.reviewer(argv) };
     const ok = (result: unknown) => ({ code: 0, stdout: JSON.stringify({ result }), stderr: "" });
