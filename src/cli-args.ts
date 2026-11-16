@@ -49,6 +49,7 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "once",
   "force",
   "drop",
+  "rebase",
   "dry-run",
   "to-shell",
   "all",

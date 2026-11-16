@@ -106,6 +106,9 @@ export async function scanWorktrees(d: Deps, opts: { dirty?: boolean } = {}): Pr
       if (cache.locks.index !== undefined) locks.add(cache.locks.index);
     }
     const registered = cache?.registered.has(norm(path)) ?? false;
+    // A directory git does not know and that holds nothing is not a worktree: an empty leftover from a teardown the
+    // OS refused to finish must not be reported as an orphan lane tree that nobody can prune.
+    if (exists && !registered && !liveStatus(lane) && readdirSync(path).length === 0) continue;
     const dirty =
       opts.dirty === false || !exists || !registered ? "" : ((await gitOut(d, path, ["status", "--porcelain"])) ?? "");
     const headLock = cache?.locks.head.get(norm(path));

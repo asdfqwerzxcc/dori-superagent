@@ -159,7 +159,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
         throw new Refusal("done no longer takes --force; use: dori done --drop <key> --reason <text>");
       const drop = one(a, "drop") === "true";
       const reason = one(a, "reason");
-      const rebase = one(a, "rebase") === "true";
+      const rebase = a.flags.has("rebase") || one(a, "rebase") === "true";
       if (drop && reason === undefined) throw new Refusal("done --drop needs --reason <text>");
       const note = await done(d, need(x, "lane key"), {
         ...(drop && reason !== undefined ? { drop: reason } : {}),
