@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Deps } from "./harness.ts";
-import { branchOf, worktreeRoot } from "./lane-worktree.ts";
+import { branchOf, teardownTolerated, worktreeRoot } from "./lane-worktree.ts";
 import type { Lane } from "./store-types.ts";
 
 export type WorktreeEntry = {
@@ -176,7 +176,7 @@ export async function pruneWorktrees(d: Deps): Promise<void> {
     const unlock = await d.exec("git", ["-C", entry.repo, "worktree", "unlock", entry.path]);
     if (unlock.code === 0) console.log(`UNLOCKED ${entry.key} ${entry.path}`);
     const remove = await d.exec("git", ["-C", entry.repo, "worktree", "remove", entry.path]);
-    if (remove.code !== 0) {
+    if (!teardownTolerated("remove", remove.code, remove.stderr)) {
       console.log(`FAILED ${entry.key} ${entry.path}: ${(remove.stderr || remove.stdout).trim()}`);
       continue;
     }

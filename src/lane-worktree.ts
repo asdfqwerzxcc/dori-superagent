@@ -106,10 +106,12 @@ export async function assertCleanWorktree(d: Deps, lane: Lane): Promise<void> {
 }
 
 /** `unlock` on a tree that was never locked, or `remove` on one already gone, is success rather than a refusal. */
-function teardownTolerated(kind: "unlock" | "remove", code: number, stderr: string): boolean {
+export function teardownTolerated(kind: "unlock" | "remove", code: number, stderr: string): boolean {
   if (code === 0) return true;
   const s = stderr.toLowerCase();
-  return kind === "unlock" ? s.includes("is not locked") : s.includes("is not a working tree") || s.includes("no such file");
+  // A tree git no longer knows is already torn down; a tree that was never locked needs no unlock.
+  if (s.includes("is not a working tree") || s.includes("no such file")) return true;
+  return kind === "unlock" ? s.includes("is not locked") : false;
 }
 
 /** Unlocks, removes and deletes the branch of a lane's own worktree; `-d` keeps an unlanded branch, `-D` drops it. */
