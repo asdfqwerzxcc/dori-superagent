@@ -11,6 +11,8 @@ export const REVIEW_TIMEOUT_MS = 600_000;
 export const REVIEW_PROGRESS_MS = 30_000;
 /** After the kill, how long to wait for the process to report an exit code; the timeout stands either way. */
 const KILL_GRACE_MS = 250;
+/** A reviewer that prints its verdict and then hangs is done answering; one short grace, then kill it. */
+const VERDICT_GRACE_MS = 2_000;
 
 export type ReviewVerdict = "CLEAR" | "BLOCK";
 
@@ -31,6 +33,8 @@ export type ReviewOutcome =
       readonly stderr: string;
       readonly code?: number;
       readonly durationMs: number;
+      /** True when a complete `VERDICT:` line was printed before the kill; the caller may accept it. */
+      readonly verdictSeen: boolean;
     };
 
 export type ReviewerRun = {
@@ -43,11 +47,17 @@ export type ReviewerRun = {
   readonly label: string;
   /** Time left for this process; zero or less reports a timeout without spawning. */
   readonly timeoutMs: number;
+  /** How long to keep reading after a verdict line before killing a process that will not exit. */
+  readonly verdictGraceMs?: number;
   readonly progressMs?: number;
   /** Progress sink; defaults to one stderr line per tick. Tests collect these instead of capturing stderr. */
   readonly onProgress?: (line: string) => void;
   readonly now?: () => number;
 };
+
+/** True when the buffer ends on a complete VERDICT line, the contract's final line. */
+const verdictIsLastLine = (text: string): boolean =>
+  /^VERDICT:\s*(CLEAR|BLOCK)\b/.test(text.trimEnd().split("\n").at(-1) ?? "");
 
 /** The last VERDICT line a reviewer printed, ignoring anything else it said. */
 export function reviewVerdict(stdout: string): ReviewVerdict | undefined {
@@ -83,11 +93,18 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewOutcome> {
   let stderr = "";
   let proc: { kill(): void } | undefined;
   let timedOut = false;
+  let killedAfterVerdict = false;
+  let verdictTimer: ReturnType<typeof setTimeout> | undefined;
   let fireTimeout: (() => void) | undefined;
+  let fireVerdict: (() => void) | undefined;
   const timedOutAt = new Promise<void>((resolve) => {
     fireTimeout = resolve;
   });
-  if (run.timeoutMs < 1) return { kind: "timeout", stdout, stderr, durationMs: Date.now() - startedAt };
+  const verdictSettledAt = new Promise<void>((resolve) => {
+    fireVerdict = resolve;
+  });
+  if (run.timeoutMs < 1)
+    return { kind: "timeout", stdout, stderr, durationMs: Date.now() - startedAt, verdictSeen: false };
   const deadline = setTimeout(() => {
     timedOut = true;
     try {
@@ -117,6 +134,17 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewOutcome> {
     onStdout: (chunk) => {
       stdout += chunk;
       append(run.log, chunk);
+      if (verdictTimer !== undefined || !verdictIsLastLine(stdout)) return;
+      verdictTimer = setTimeout(
+        () => {
+          killedAfterVerdict = true;
+          try {
+            proc?.kill();
+          } catch {}
+          fireVerdict?.();
+        },
+        Math.max(1, run.verdictGraceMs ?? VERDICT_GRACE_MS),
+      );
     },
     onStderr: (chunk) => {
       stderr += chunk;
@@ -128,11 +156,14 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewOutcome> {
   const outcome = await Promise.race([
     pending.then((res) => ({ kind: "exit" as const, res })),
     timedOutAt.then(() => ({ kind: "timeout" as const })),
+    verdictSettledAt.then(() => ({ kind: "verdict" as const })),
   ]).finally(() => {
     clearTimeout(deadline);
+    clearTimeout(verdictTimer);
     clearInterval(beat);
   });
-  if (outcome.kind === "exit" && !timedOut) return { kind: "exit", ...outcome.res, durationMs: Date.now() - startedAt };
+  if (outcome.kind === "exit" && !timedOut && !killedAfterVerdict)
+    return { kind: "exit", ...outcome.res, durationMs: Date.now() - startedAt };
   // The kill may not have reaped the process yet; one short grace captures its exit code when it is there.
   let graceTimer: ReturnType<typeof setTimeout> | undefined;
   const settled = await Promise.race([
@@ -150,6 +181,7 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewOutcome> {
     stdout,
     stderr,
     durationMs: Date.now() - startedAt,
+    verdictSeen: reviewVerdict(stdout) !== undefined,
     ...(settled === undefined ? {} : { code: settled.code }),
   };
 }

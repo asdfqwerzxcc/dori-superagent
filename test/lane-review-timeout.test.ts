@@ -102,6 +102,35 @@ describe("lane review deadline", () => {
     expect(d.store.lane("crash")!.tipSha).toBe(base);
   });
 
+  test("a reviewer that prints its verdict and then hangs is accepted after a short grace", async () => {
+    const { w, d } = await lane("after-verdict");
+    let killed = false;
+    w.reviewer = (_argv, options) => {
+      options?.onStdout?.("findings\nVERDICT: CLEAR\n");
+      options?.onSpawn?.({
+        kill: () => {
+          killed = true;
+        },
+      });
+      return new Promise(() => {});
+    };
+
+    const started = Date.now();
+    expect(
+      await reviewLane(d, "after-verdict", undefined, {
+        timeoutMs: 5_000,
+        progressMs: 10,
+        verdictGraceMs: 20,
+      }),
+    ).toEqual({ verdict: "CLEAR", base, tip });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(killed).toBe(true);
+    const receipt = d.store.laneReceipt("after-verdict", tip)!;
+    expect(receipt.verdict).toBe("CLEAR");
+    expect(receipt.summary).toContain("killed after");
+    expect(receipt.summary).toContain("VERDICT: CLEAR");
+  });
+
   test("a diff over the size cap is split by path and the receipt names every chunk", async () => {
     const section = (path: string, fill: string) =>
       `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n+${fill}\n`;

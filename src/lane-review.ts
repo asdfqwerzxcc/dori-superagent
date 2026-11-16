@@ -10,7 +10,11 @@ import { reviewLogPath, reviewTimeoutFromEnv, reviewVerdict, type ReviewVerdict,
 import { KEY_RE, type LaneVerdict } from "./store-types.ts";
 
 export type LaneReview = { readonly verdict: ReviewVerdict; readonly base: string; readonly tip: string };
-export type LaneReviewOptions = { readonly timeoutMs?: number; readonly progressMs?: number };
+export type LaneReviewOptions = {
+  readonly timeoutMs?: number;
+  readonly progressMs?: number;
+  readonly verdictGraceMs?: number;
+};
 
 /**
  * Reviews one lane's own commits: the merge-base of its recorded start commit and the current tip, diffed at that tip.
@@ -148,8 +152,9 @@ export async function reviewLane(
       label: run.label,
       timeoutMs,
       ...(opts.progressMs === undefined ? {} : { progressMs: opts.progressMs }),
+      ...(opts.verdictGraceMs === undefined ? {} : { verdictGraceMs: opts.verdictGraceMs }),
     });
-    const verdict = outcome.kind === "exit" ? reviewVerdict(outcome.stdout) : undefined;
+    const verdict = reviewVerdict(outcome.stdout);
     return {
       run,
       argv,

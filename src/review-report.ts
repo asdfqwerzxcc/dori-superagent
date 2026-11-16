@@ -29,8 +29,10 @@ const exitLine = (outcome: ReviewOutcome): string =>
     ? `timed out${outcome.code === undefined ? " (killed)" : ` (killed, exit ${outcome.code})`}`
     : `exit ${outcome.code}`;
 
-export const failed = (r: LaneResult): boolean =>
-  r.outcome.kind !== "exit" || r.outcome.code !== 0 || r.outcome.stdout.trim() === "" || r.verdict === undefined;
+export const failed = (r: LaneResult): boolean => {
+  if (r.verdict === undefined) return true;
+  return r.outcome.kind === "exit" && r.outcome.code !== 0;
+};
 
 export const failureKind = (r: LaneResult): string =>
   r.outcome.kind === "timeout"
@@ -81,12 +83,16 @@ export const failureSummary = (results: readonly LaneResult[], diag: string, not
 
 export const successSummary = (results: readonly LaneResult[], notes: readonly string[] = []): string => {
   const retryNotes = results.map(retryNote).join("");
+  const killNotes = results
+    .filter((r) => r.outcome.kind === "timeout")
+    .map((r) => `--- ${r.run.label}: verdict printed; killed after ${r.outcome.durationMs} ms\n`)
+    .join("");
   const head = [...(hasChunks(results) ? [digest(results)] : []), ...notes].join("\n");
   const body = results
     .map((r) => r.outcome.stdout.trim())
     .filter((s) => s !== "")
     .join("\n");
   return hasChunks(results)
-    ? `${head}\n${retryNotes}${body}`.slice(0, 4000)
-    : `${head}${retryNotes}${body}`.slice(-4000);
+    ? `${head}\n${killNotes}${retryNotes}${body}`.slice(0, 4000)
+    : `${head}${killNotes}${retryNotes}${body}`.slice(-4000);
 };

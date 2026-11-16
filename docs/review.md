@@ -60,6 +60,10 @@ A failed run also writes one JSON diagnostic, `receipts/lane_<key>@<tip>-<uuid>.
 `chunk`. The same compact JSON is in the refusal line. That is what turns a zero-byte answer into a diagnosis: the exit
 code, the duration, the stderr and the argv (including the model) are all on disk.
 
+A reviewer that prints its `VERDICT:` line and then fails to exit is done answering: the CLI reads for a short grace
+(2 s), kills the process, accepts the verdict, and says `verdict printed; killed after ...` in the receipt. Only a process
+that reaches the deadline without a verdict writes `reviewer_timeout`.
+
 A reviewer that printed something but no `VERDICT` line writes no receipt; the diagnostic above is its record and the
 command fails. A zero-byte answer is always `reviewer_empty`, never a pending review. A verdict printed only to stderr is
 not accepted: it is a `reviewer_empty` receipt whose diagnostic keeps that stderr.
