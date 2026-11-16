@@ -1,10 +1,16 @@
-// Receipt summaries for a lane review: the digest names every chunk and its model, and a retry names the attempt that
-// failed before the fallback ran. The same text feeds the receipt and the refusal line.
+// Receipt summaries for a lane review: the digest names every reviewed chunk and its model, a retry names the attempt
+// that failed before the fallback ran, and a re-split note names the chunk that returned nothing and its sub-chunks.
 
 import type { DiffChunk } from "./review-chunks.ts";
 import type { ReviewOutcome, ReviewVerdict } from "./review-run.ts";
 
-export type LaneRun = { readonly label: string; readonly text: string; readonly chunk?: DiffChunk };
+export type LaneRun = {
+  readonly label: string;
+  readonly text: string;
+  readonly chunk?: DiffChunk;
+  readonly chunkTotal?: number;
+  readonly resplit?: true;
+};
 
 export type LaneResult = {
   readonly run: LaneRun;
@@ -38,16 +44,20 @@ export const failureKind = (r: LaneResult): string =>
 const detail = (r: LaneResult): string =>
   `${r.run.label}${r.model === undefined ? "" : ` [${r.model}]`}: ${exitLine(r.outcome)}\nstderr:\n${tail(r.outcome.stderr)}\nstdout:\n${tail(r.outcome.stdout)}`;
 
-const digest = (chunks: readonly DiffChunk[], results: readonly LaneResult[]): string =>
-  `chunks: ${chunks
-    .map((c, i) => {
-      const r = results[i];
-      const state =
-        r === undefined ? "not run" : (r.verdict ?? (r.outcome.kind === "timeout" ? "timed out" : "no output"));
-      return `${c.index}/${chunks.length} [${c.paths.join(", ")}] ${c.bytes} B/${c.lines} changed -> ${state}${
-        r?.model === undefined ? "" : ` (${r.model})`
-      }`;
+const state = (r: LaneResult): string =>
+  r.verdict ??
+  (r.outcome.kind === "timeout" ? "timed out" : r.outcome.stdout.trim() === "" ? "no output" : "no verdict");
+
+const digest = (results: readonly LaneResult[]): string =>
+  `chunks: ${results
+    .map((r, i) => {
+      const chunk = r.run.chunk;
+      if (chunk === undefined) return "";
+      return `${i + 1}/${results.length} [${chunk.label ?? chunk.paths.join(", ")}] ${chunk.bytes} B/${
+        chunk.lines
+      } changed -> ${state(r)}${r.model === undefined ? "" : ` (${r.model})`}`;
     })
+    .filter((line) => line !== "")
     .join("; ")}`;
 
 const retryNote = (r: LaneResult): string =>
@@ -57,24 +67,26 @@ const retryNote = (r: LaneResult): string =>
         r.retryDiagnostic === undefined ? "" : `; primary diagnostic ${r.retryDiagnostic}`
       }\n`;
 
-export const failureSummary = (
-  chunks: readonly DiffChunk[] | undefined,
-  results: readonly LaneResult[],
-  diag: string,
-): string =>
+const hasChunks = (results: readonly LaneResult[]): boolean => results.some((r) => r.run.chunk !== undefined);
+
+export const failureSummary = (results: readonly LaneResult[], diag: string, notes: readonly string[] = []): string =>
   [
-    ...(chunks === undefined ? [] : [digest(chunks, results)]),
+    ...(hasChunks(results) ? [digest(results)] : []),
+    ...notes,
     ...results.map((r) => `${retryNote(r)}--- ${detail(r)}`),
     `diagnostic: ${diag}`,
   ]
     .join("\n")
     .slice(0, 4000);
 
-export const successSummary = (chunks: readonly DiffChunk[] | undefined, results: readonly LaneResult[]): string => {
-  const notes = results.map(retryNote).join("");
-  return chunks === undefined
-    ? `${notes}${results.at(-1)?.outcome.stdout.trim() ?? ""}`.slice(-4000)
-    : `${digest(chunks, results)}\n${notes}${results
-        .map((r) => `--- ${r.run.label}\n${r.outcome.stdout.trim()}`)
-        .join("\n")}`.slice(0, 4000);
+export const successSummary = (results: readonly LaneResult[], notes: readonly string[] = []): string => {
+  const retryNotes = results.map(retryNote).join("");
+  const head = [...(hasChunks(results) ? [digest(results)] : []), ...notes].join("\n");
+  const body = results
+    .map((r) => r.outcome.stdout.trim())
+    .filter((s) => s !== "")
+    .join("\n");
+  return hasChunks(results)
+    ? `${head}\n${retryNotes}${body}`.slice(0, 4000)
+    : `${head}${retryNotes}${body}`.slice(-4000);
 };

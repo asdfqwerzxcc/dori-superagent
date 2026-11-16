@@ -3,7 +3,7 @@ import { prompt, type Deps } from "./harness.ts";
 import { loadReviewSettings, substitute } from "./hooks.ts";
 import { asSha, gitOut, laneGit, laneHead, laneRepo } from "./lane-repo.ts";
 import { Refusal } from "./refusal.ts";
-import { planReview } from "./review-chunks.ts";
+import { type DiffChunk, planReview, resplitChunk } from "./review-chunks.ts";
 import { diagnosticLine, type ReviewDiagnostic, reviewDiagnostic, writeReviewDiagnostic } from "./review-diagnostic.ts";
 import { failed, failureKind, failureSummary, type LaneResult, type LaneRun, successSummary } from "./review-report.ts";
 import { reviewLogPath, reviewTimeoutFromEnv, reviewVerdict, type ReviewVerdict, runReviewer } from "./review-run.ts";
@@ -69,27 +69,35 @@ export async function reviewLane(
 
   const plan = hook === undefined ? planReview(diff.stdout) : undefined;
   const chunks = plan?.chunked ? plan.chunks : undefined;
+  let chunkSlot = 0;
+  const chunkRun = (chunk: DiffChunk, total: number, resplit = false): LaneRun => {
+    const chunkPath = d.store.receipts.laneChunkDiffPath(key, tip, ++chunkSlot);
+    writeFileSync(chunkPath, chunk.text);
+    const text = prompt("review-lane-chunk.md", {
+      key,
+      base,
+      tip,
+      brief: lane.brief,
+      repo,
+      chunk: String(chunk.index),
+      chunks: String(total),
+      chunkPaths: chunk.label ?? chunk.paths.join(", "),
+      chunkDiff: chunkPath,
+    });
+    return {
+      label: `review lane ${key} chunk ${chunk.index}/${total}`,
+      text,
+      chunk,
+      chunkTotal: total,
+      ...(resplit ? { resplit: true as const } : {}),
+    };
+  };
   const runs: LaneRun[] = [];
   if (chunks === undefined) {
     const text = prompt("review-lane.md", { key, base, tip, brief: lane.brief, diff: diffPath, repo });
     runs.push({ label: `review lane ${key} at ${tip}`, text });
   } else {
-    for (const chunk of chunks) {
-      const chunkPath = d.store.receipts.laneChunkDiffPath(key, tip, chunk.index);
-      writeFileSync(chunkPath, chunk.text);
-      const text = prompt("review-lane-chunk.md", {
-        key,
-        base,
-        tip,
-        brief: lane.brief,
-        repo,
-        chunk: String(chunk.index),
-        chunks: String(chunks.length),
-        chunkPaths: chunk.paths.join(", "),
-        chunkDiff: chunkPath,
-      });
-      runs.push({ label: `review lane ${key} chunk ${chunk.index}/${chunks.length}`, text, chunk });
-    }
+    for (const chunk of chunks) runs.push(chunkRun(chunk, chunks.length));
   }
 
   appendFileSync(logPath, `review lane ${key} at ${tip} (base ${base})\n`);
@@ -103,7 +111,9 @@ export async function reviewLane(
       r.argv,
       r.outcome,
       hook === undefined ? (r.model ?? null) : null,
-      r.run.chunk === undefined || chunks === undefined ? undefined : `${r.run.chunk.index}/${chunks.length}`,
+      r.run.chunk === undefined || r.run.chunkTotal === undefined
+        ? undefined
+        : `${r.run.chunk.index}/${r.run.chunkTotal}`,
     );
     return { diagnostic, path: writeReviewDiagnostic(d.store.root, key, tip, diagnostic) };
   };
@@ -149,8 +159,23 @@ export async function reviewLane(
     };
   };
 
-  for (const run of runs) {
+  const notes: string[] = [];
+  const queue = [...runs];
+  for (let i = 0; i < queue.length; i++) {
+    const run = queue[i]!;
     let result = await attempt(run, model);
+    const empty = result.outcome.kind === "exit" && result.outcome.stdout.trim() === "";
+    if (empty && run.chunk !== undefined && run.resplit !== true) {
+      const subChunks = resplitChunk(run.chunk);
+      if (subChunks.length > 1) {
+        const parent = diagnose(result);
+        notes.push(
+          `--- re-split ${run.label} [${run.chunk.label ?? run.chunk.paths.join(", ")}] after empty output; ${subChunks.length} sub-chunks; diagnostic ${parent.path}`,
+        );
+        queue.splice(i + 1, 0, ...subChunks.map((chunk) => chunkRun(chunk, subChunks.length, true)));
+        continue;
+      }
+    }
     if (failed(result) && fallback !== undefined && fallback !== model) {
       const primary = result;
       const primaryDiag = diagnose(primary);
@@ -162,7 +187,7 @@ export async function reviewLane(
     if (!failed(result)) continue;
     const outcome = result.outcome;
     const { diagnostic, path: diagPath } = diagnose(result);
-    const summary = failureSummary(chunks, results, diagPath);
+    const summary = failureSummary(results, diagPath, notes);
     if (outcome.kind === "timeout")
       fail("reviewer_timeout", summary, `reviewer for lane ${key} timed out`, diagnostic, diagPath);
     if (outcome.stdout.trim() === "")
@@ -183,7 +208,7 @@ export async function reviewLane(
   }
 
   const verdict: ReviewVerdict = results.some((r) => r.verdict === "BLOCK") ? "BLOCK" : "CLEAR";
-  const summary = successSummary(chunks, results);
+  const summary = successSummary(results, notes);
   d.store.saveLaneReceipt({
     lane: key,
     verdict,

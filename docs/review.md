@@ -28,9 +28,10 @@ The lane record also carries the current `tipSha`, refreshed at each review.
    only the lane's work;
 2. refreshes the tip and diffs exactly `base..tip`;
 3. saves the full diff to `lane-reviews/lane_<key>@<tip>.diff` and renders `prompts/review-lane.md` with the brief path, the
-   base, the tip, that diff and the worktree as `repo`; a diff over 40 KB or 3000 changed lines is split by path into
+   base, the tip, that diff and the worktree as `repo`; a diff over 16 KB or 200 changed lines is split by path into
    chunks (`lane-reviews/lane_<key>@<tip>.chunk-<n>.diff`), each rendered with `prompts/review-lane-chunk.md` and
-   reviewed in sequence;
+   reviewed in sequence; a chunk that returns an empty answer is split once more, by path (or by hunks when one file
+   remains), and its sub-chunks are reviewed before the review is called empty;
 4. runs the reviewer non-interactively (`omo -p --no-session --model M`, or `hooks.reviewCommand` when configured) with a
    10-minute deadline per attempt (`DORI_REVIEW_TIMEOUT_MS` overrides it), streams its stdout/stderr to
    `state/reviews/<key>.log`, and prints one "still running" line every 30 s; a failed attempt (timeout, non-zero exit,
@@ -50,8 +51,9 @@ review again.
 
 A reviewer that outlives the deadline is killed and writes a receipt whose verdict is `reviewer_timeout`, carrying the
 partial stdout, the stderr and the exit code (when the killed process reported one). A reviewer that exits with an empty
-stdout writes a `reviewer_empty` receipt, also carrying stderr and the exit code. Both are failed reviews: `dori done`
-refuses them and never treats the lane as approved. The full output stays in `state/reviews/<key>.log`.
+stdout on a chunk is first re-split; only a sub-chunk that is still empty (or a single chunk that cannot be split) writes
+a `reviewer_empty` receipt, also carrying stderr and the exit code. Both are failed reviews: `dori done` refuses them and
+never treats the lane as approved. The full output stays in `state/reviews/<key>.log`.
 
 A failed run also writes one JSON diagnostic, `receipts/lane_<key>@<tip>-<uuid>.diagnostic.json` (mode 0600), with
 `exitCode`, `durationMs`, `stdoutTail`, `stderrTail`, `argv` (the prompt elided) and `model`; a chunked review adds

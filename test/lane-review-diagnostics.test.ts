@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { reviewLane } from "../src/lane-review.ts";
+import { resplitChunk } from "../src/review-chunks.ts";
 import { startLane } from "../src/lanes.ts";
 import { fakeGit, type Repo } from "./fake-git.ts";
 import { setup } from "./harness-setup.ts";
@@ -20,9 +21,9 @@ type Diagnostic = {
   chunk?: string;
 };
 
-async function lane(key: string) {
+async function lane(key: string, repoDiff: string = diff) {
   const { w, d, brief } = setup();
-  const repo: Repo = { head: base, mergeBase: base, diff };
+  const repo: Repo = { head: base, mergeBase: base, diff: repoDiff };
   fakeGit(w, repo);
   await startLane(d, key, brief, { group: "w1" });
   repo.head = tip;
@@ -95,6 +96,49 @@ describe("lane review diagnostics", () => {
     expect(diag.model).toBe("primary/m");
     expect(diag.stderrTail).toContain("primary empty");
     expect(diag.argv).toContain("primary/m");
+  });
+
+  test("an empty chunk is re-split once and every final chunk carries a verdict", async () => {
+    const section = (path: string, fill: string) =>
+      `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n+${fill}\n`;
+    const multi =
+      section("src/a.ts", "a".repeat(6_000)) +
+      section("src/b.ts", "b".repeat(6_000)) +
+      section("src/c.ts", "c".repeat(6_000));
+    const { w, d } = await lane("resplit", multi);
+    w.reviewer = (argv) => {
+      const text = argv.at(-1) ?? "";
+      return text.includes("src/a.ts") && text.includes("src/b.ts") && !text.includes("src/c.ts")
+        ? { code: 0, stdout: "" }
+        : { code: 0, stdout: "VERDICT: CLEAR" };
+    };
+
+    expect(await reviewLane(d, "resplit", "some/model")).toEqual({ verdict: "CLEAR", base, tip });
+    expect(w.calls.filter((c) => c.cmd === "omo")).toHaveLength(4);
+    const receipt = d.store.laneReceipt("resplit", tip)!;
+    expect(receipt.verdict).toBe("CLEAR");
+    expect(receipt.reviewer).toContain("some/model");
+    expect(receipt.summary).toContain("re-split");
+    expect(receipt.summary).toContain("src/a.ts");
+    expect(receipt.summary).toContain("src/b.ts");
+    expect(receipt.summary).toContain("src/c.ts");
+    expect(receipt.summary.match(/-> CLEAR/g)).toHaveLength(3);
+    const diag = diagnostic(d, "resplit");
+    expect(diag.stdoutTail).toBe("");
+    expect(diag.chunk).toBe("1/2");
+    expect(diag.model).toBe("some/model");
+  });
+
+  test("resplitChunk splits a single-file chunk by hunks", () => {
+    const text =
+      "diff --git a/src/x.ts b/src/x.ts\n--- a/src/x.ts\n+++ b/src/x.ts\n@@ -1 +1 @@\n+a\n@@ -10 +10 @@\n+b\n";
+    const chunk = { index: 1, paths: ["src/x.ts"], text, bytes: Buffer.byteLength(text), lines: 2 };
+    const sub = resplitChunk(chunk);
+    expect(sub).toHaveLength(2);
+    expect(sub[0]!.label).toContain("hunks 1-1");
+    expect(sub[1]!.label).toContain("hunks 2-2");
+    expect(sub[0]!.text).toContain("@@ -1");
+    expect(sub[1]!.text).toContain("@@ -10");
   });
 
   test("a hook reviewer's failure diagnostic names the hook argv and the full diff", async () => {
