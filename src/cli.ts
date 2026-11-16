@@ -5,6 +5,7 @@ import { pluginCommand } from "./cli-plugins.ts";
 import { status, up } from "./cli-up.ts";
 import { done, ready, report, startLane } from "./lanes.ts";
 import { mergeGate, review } from "./gate.ts";
+import { reviewLane } from "./lane-gate.ts";
 import { need, one, parse, textOf, USAGE } from "./cli-args.ts";
 import { defaultDeps, ROLES, type Deps } from "./harness.ts";
 import { ConfigError, hooksSettled } from "./hooks.ts";
@@ -137,6 +138,13 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "backlog":
       return runBacklog(d, a, x);
     case "review": {
+      const lane = one(a, "lane");
+      if (lane !== undefined) {
+        if (x !== undefined) throw new Refusal("give a PR or --lane, not both");
+        const r = await reviewLane(d, lane, one(a, "model"));
+        console.log(`REVIEW_LANE ${lane} tip=${r.tip} verdict=${r.verdict}`);
+        return r.verdict === "CLEAR" ? 0 : 1;
+      }
       const r = await review(d, need(x, "PR"), one(a, "model"));
       console.log(`REVIEW ${x} head=${r.sha} verdict=${r.verdict}`);
       return r.verdict === "CLEAR" ? 0 : 1;
@@ -144,10 +152,11 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "merge":
       console.log(await mergeGate(d, need(x, "PR"), { dryRun: one(a, "dry-run") === "true" }));
       return 0;
-    case "done":
-      await done(d, need(x, "lane key"));
-      console.log(`DONE ${x}`);
+    case "done": {
+      const note = await done(d, need(x, "lane key"), { force: one(a, "force") === "true" });
+      console.log(`DONE ${x}${note === undefined ? "" : ` (${note})`}`);
       return 0;
+    }
     case "migrate":
       return runMigrate(d, a);
     case "restart": {

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { shq } from "./delivery.ts";
 import { prompt, type Deps } from "./harness.ts";
+import { laneGate, repoHead, resolveLaneRepo } from "./lane-gate.ts";
 import { settled, tellLead, type SendResult } from "./inbox.ts";
 import { Refusal } from "./refusal.ts";
 import { runHook } from "./hooks.ts";
@@ -23,6 +24,8 @@ export async function startLane(
   if (existing && existing.status !== "done" && existing.status !== "lost")
     throw new Refusal(`lane ${key} is already open in ${refText(existing.sessionRef)}`);
   const cwd = resolve(opts.cwd ?? process.cwd());
+  const repo = await resolveLaneRepo(d, cwd);
+  const baseSha = repo === undefined ? undefined : await repoHead(d, repo);
   const briefPath = d.store.briefPath(key);
   const footer = prompt("lane-footer.md", { key, dori: d.doriCmd });
   await Bun.write(briefPath, `${readFileSync(briefFile, "utf8").trimEnd()}\n\n${footer}`);
@@ -50,6 +53,7 @@ export async function startLane(
     tabId: ref.container ?? "",
     brief: briefPath,
     cwd,
+    ...(repo !== undefined && baseSha !== undefined ? { repo, baseSha, tipSha: baseSha } : {}),
     status: "working",
     createdAt: now,
     lastActivityAt: now,
@@ -112,16 +116,24 @@ export async function ready(
   return sent;
 }
 
-export async function done(d: Deps, key: string): Promise<void> {
+export async function done(d: Deps, key: string, opts: { force?: boolean } = {}): Promise<string | undefined> {
   const lane = d.store.lane(key);
   if (!lane) throw new Refusal(`no lane ${key}`);
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
+  const gate = await laneGate(d, lane);
+  if (!gate.ok && !opts.force) throw new Refusal(gate.reason);
   const rt = d.runtimes.for(lane.sessionRef);
   const { status: st } = await rt.probe(lane.sessionRef);
   if (st === "working" || st === "blocked" || st === "error")
     throw new Refusal(`lane ${key} pane is ${st}; let it finish first`);
   if (st !== "gone") await rt.close(lane.sessionRef);
+  const note = gate.ok ? gate.note : `forced past the review gate: ${gate.reason}`;
   lane.status = "done";
-  lane.log.push({ at: d.now(), kind: "done", text: "closed by lead" });
+  lane.log.push({
+    at: d.now(),
+    kind: "done",
+    text: note === undefined ? "closed by lead" : `closed by lead (${note})`,
+  });
   d.store.saveLane(lane);
+  return note;
 }
