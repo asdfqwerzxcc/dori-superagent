@@ -4,7 +4,7 @@ import { shq } from "./delivery.ts";
 import { prompt, type Deps } from "./harness.ts";
 import { laneGate } from "./lane-gate.ts";
 import { repoHead, resolveLaneRepo } from "./lane-repo.ts";
-import { assertCleanWorktree, createLaneWorktree, discardWorktree, dropLane, landWorktree, rebaseLaneWorktree, worktreeRoot } from "./lane-worktree.ts";
+import { assertCleanWorktree, createLaneWorktree, discardWorktree, dropLane, landWorktree, paneWorktreeMismatch, rebaseLaneWorktree, worktreeRoot } from "./lane-worktree.ts";
 import { settled, tellLead, type SendResult } from "./inbox.ts";
 import { Refusal } from "./refusal.ts";
 import { runHook } from "./hooks.ts";
@@ -30,6 +30,13 @@ export async function startLane(
   const cwd = resolve(opts.cwd ?? process.cwd());
   const repo = await resolveLaneRepo(d, cwd);
   const baseSha = repo === undefined ? undefined : await repoHead(d, repo);
+  // A repo we found but cannot read a HEAD from (an empty repository) must not turn into a lane that silently works in
+  // the shared checkout: that is exactly the fallback isolation exists to prevent.
+  if (repo !== undefined && baseSha === undefined)
+    throw new Refusal(
+      `cannot read HEAD in ${repo}, so a lane worktree cannot be based on it; the lane was not started and nothing ` +
+        `was written to ${repo} (an empty repository needs one commit first)`,
+    );
   let worktree: string | undefined;
   if (repo !== undefined && baseSha !== undefined) {
     try {
@@ -164,6 +171,14 @@ export async function done(d: Deps, key: string, opts: DoneOptions = {}): Promis
   if (!lane) throw new Refusal(`no lane ${key}`);
   if (opts.drop !== undefined) return dropLane(d, lane, opts.drop);
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
+  // A pane that runs outside its own worktree commits into the shared checkout; landing it would publish exactly the
+  // commits isolation cannot vouch for.
+  const mismatch = await paneWorktreeMismatch(d, lane);
+  if (mismatch !== undefined)
+    throw new Refusal(
+      `lane ${key}: ${mismatch}; its commits cannot be attributed to the lane worktree. Move the pane into the ` +
+        `worktree, or drop the lane: dori done --drop ${key} --reason <text>`,
+    );
   if (opts.rebase === true) {
     const before = lane.baseSha;
     const rebased = await rebaseLaneWorktree(d, lane);

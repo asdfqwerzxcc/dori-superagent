@@ -159,6 +159,27 @@ describe("lane worktree at start", () => {
     expect(gitCalls(w)).toContain(`-C ${repo} branch -D lane/no-tree`);
   });
 
+  test("a repository whose HEAD cannot be read refuses the start instead of sharing the checkout", async () => {
+    const { w, d, brief } = setup();
+    const repo = join(d.store.root, "main");
+    w.git = (argv) => {
+      const args = argv[0] === "-C" ? argv.slice(2) : argv;
+      if (args[0] === "rev-parse" && args.includes("--show-toplevel")) return { code: 0, stdout: `${repo}\n`, stderr: "" };
+      if (args[0] === "rev-parse" && args.includes("--verify")) return { code: 1, stdout: "", stderr: "" };
+      if (args[0] === "rev-parse") return { code: 1, stdout: "", stderr: "fatal: ambiguous argument 'HEAD'" };
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const panes = w.panes.size;
+    const failure: unknown = await startLane(d, "empty-repo", brief, { group: "w1" }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(failure).toBeInstanceOf(Refusal);
+    expect((failure as Error).message).toContain("cannot read HEAD");
+    expect(w.panes.size).toBe(panes);
+    expect(d.store.lane("empty-repo")).toBeUndefined();
+  });
+
   test("a worktree root that cannot be created refuses the start loudly and writes nothing", async () => {
     const { w, d, brief } = setup();
     const repo = join(d.store.root, "main");

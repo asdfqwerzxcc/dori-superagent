@@ -79,6 +79,22 @@ describe("lane worktrees", () => {
     expect(gits).not.toContain("-C /repo branch -d lane/moved");
   });
 
+  test("done refuses a lane whose pane runs outside its own worktree", async () => {
+    const { w, d, brief } = setup();
+    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
+    fakeGit(w, repo);
+    const lane = await startLane(d, "elsewhere", brief, { group: "w1" });
+    await ready(d, "elsewhere", "done", ["file:///x"]);
+    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
+    await reviewLane(d, "elsewhere");
+
+    const pane = w.panes.get(lane.paneId)!;
+    w.panes.set(lane.paneId, { ...pane, cwd: "/repo" });
+    await expect(done(d, "elsewhere")).rejects.toThrow("is not its worktree");
+    expect(d.store.lane("elsewhere")!.status).toBe("ready");
+    expect(gitCalls(w)).not.toContain("-C /repo merge --ff-only lane/elsewhere");
+  });
+
   test("done --rebase moves the lane onto main, re-records the base, then demands a fresh receipt", async () => {
     const { w, d, brief } = setup();
     const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
