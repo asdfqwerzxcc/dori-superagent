@@ -16,16 +16,19 @@ when no PR exists. A local commit is approved by layers 1 and 2; it is never mer
 
 ## Layer 1: the lane review
 
-`dori start` records the checkout it will commit in and the commit that checkout was at (`baseSha`); the lane record
-also carries the current `tipSha`, refreshed at each review. A lane started from a directory that is not a repository
-falls back to the harness checkout `$DORI_HOME/src`, where harness lanes commit.
+`dori start` records the main checkout as the landing target and its current commit as the lane's immutable base
+(`baseSha`), creates the lane's own worktree at `$DORI_HOME/worktrees/<key>` on branch `lane/<key>`, locks it, and opens
+the lane's pane there. The lane commits and the reviewer reads that worktree; `laneRepo` resolves to it. A lane started
+from a directory that is not a repository uses the harness checkout `$DORI_HOME/src` as its main checkout, as before.
+The lane record also carries the current `tipSha`, refreshed at each review.
 
 `dori review --lane <key> [--model M]` then:
 
-1. takes the merge-base of the recorded base and the current tip, so a moved branch still reviews only the lane's work;
+1. takes the merge-base of the recorded base and the current tip in the lane's worktree, so a moved branch still reviews
+   only the lane's work;
 2. refreshes the tip and diffs exactly `base..tip`;
 3. saves the full diff to `lane-reviews/lane_<key>@<tip>.diff` and renders `prompts/review-lane.md` with the brief path, the
-   base, the tip and that diff;
+   base, the tip, that diff and the worktree as `repo`;
 4. runs the reviewer non-interactively (`omo -p --no-session`, or `hooks.reviewCommand` when configured) and reads
    exactly one final `VERDICT: CLEAR|BLOCK` line;
 5. writes `receipts/lane_<key>@<tip>.json` with the verdict, base, tip, brief path, reviewer command and time.
@@ -67,6 +70,9 @@ BLOCK; `no receipt` means neither (including a lane from before the gate).
 
 ## Limits
 
-Lanes commit in one shared checkout, so `base..tip` is the whole history since the lane started: commits another lane
-landed in between are part of the diff. Record the base at start, keep lanes short, and re-review after every commit
-that moves the tip. Receipts and diffs are per lane key and per tip commit, so they never collide.
+Each lane commits in its own worktree on branch `lane/<key>`, so `base..tip` is the lane's own history: another lane
+cannot add to it, and a lane cannot dirty the main checkout. `dori done` checks the tree is clean, closes the pane,
+fast-forwards `main` when it still sits at the recorded base, then removes the worktree and the branch. If `main` moved,
+`done` refuses with `main moved: rebase required` and keeps both; `dori done --drop <key> --reason <text>` removes them
+without landing. A LOST lane keeps its tree and branch for inspection. Receipts and diffs are per lane key and per tip
+commit, so they never collide.
