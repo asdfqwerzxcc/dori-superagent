@@ -153,7 +153,13 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       console.log(await mergeGate(d, need(x, "PR"), { dryRun: one(a, "dry-run") === "true" }));
       return 0;
     case "done": {
-      const note = await done(d, need(x, "lane key"), { force: one(a, "force") === "true" });
+      const drop = one(a, "drop") === "true";
+      const reason = one(a, "reason");
+      if (drop && reason === undefined) throw new Refusal("done --drop needs --reason <text>");
+      const note = await done(d, need(x, "lane key"), {
+        force: one(a, "force") === "true",
+        ...(drop && reason !== undefined ? { drop: reason } : {}),
+      });
       console.log(`DONE ${x}${note === undefined ? "" : ` (${note})`}`);
       return 0;
     }

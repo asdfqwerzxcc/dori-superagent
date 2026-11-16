@@ -1,14 +1,16 @@
 import type { SessionRef } from "./runtime/types.ts";
 
-export type LaneStatus = "working" | "waiting" | "ready" | "done" | "lost";
+export type LaneStatus = "working" | "waiting" | "ready" | "done" | "lost" | "dropped";
 
 /**
  * One lane record. `sessionRef` is the session it runs in, on whichever runtime opened it; `paneId`/`tabId` are written
  * beside it (the ref's id and container) so an older binary still reads the file. `migratedFrom`: the sessions it ran in
  * before a `dori migrate`. `migration`: a handover is in progress, and the duty loop leaves the record alone.
  * `sessionPath`: the agent's own session file, when its command records one; `dori migrate --resume` needs it.
- * `repo`/`baseSha`/`tipSha`: the checkout the lane commits in and the commits the review gate pins; a lane from before
- * the gate has none, and `dori review --lane` refuses it rather than guessing a base.
+ * `repo`/`baseSha`/`tipSha`: the main checkout the lane lands in, the commit it started from and the commit the review
+ * gate pins. `worktree`: the lane's own checkout, created at start under `<home>/worktrees/<key>`; the lane commits
+ * there and `laneRepo` prefers it. A lane without a repository has neither. A lane from before the gate has no base,
+ * and `dori review --lane` refuses it rather than guessing one.
  */
 export type Lane = {
   key: string;
@@ -20,6 +22,7 @@ export type Lane = {
   tabId: string;
   brief: string;
   cwd: string;
+  worktree?: string;
   repo?: string;
   baseSha?: string;
   tipSha?: string;
@@ -28,7 +31,7 @@ export type Lane = {
   lastActivityAt: number;
   nudges: number;
   final?: { text: string; evidence: string[]; at: number };
-  log: { at: number; kind: "start" | "report" | "ready" | "nudge" | "done" | "lost"; text: string }[];
+  log: { at: number; kind: "start" | "report" | "ready" | "nudge" | "done" | "lost" | "dropped"; text: string }[];
 };
 
 /** The sessions `dori up` opens; roles.json maps each to a ref string (a bare herdr pane id, or `hc:t7`). */

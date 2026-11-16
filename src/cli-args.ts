@@ -24,6 +24,7 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori review --lane <key> [--model M]        fresh reviewer over a lane's own diff -> lane receipt
   dori merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks -> squash merge
   dori done <key> [--force]                   lead closes a READY lane; needs a CLEAR lane receipt unless it committed nothing
+  dori done --drop <key> --reason TEXT        remove a lane's worktree and branch without landing it on main
   dori migrate [--to hc|herdr] (--lane K | --role lead|duty|duty-loop|hourly-loop | --all) [--dry-run]
                [--wait-minutes N] [--resume]  hand sessions over to another runtime; MIGRATED, SKIP, DEFERRED,
                                               or MIGRATE_ROLLBACK (exit 3) per session
@@ -41,7 +42,16 @@ export type Args = { pos: string[]; flags: Map<string, string[]> };
 
 // Flags that never take a value. Every other flag takes the next argument verbatim, even one starting with "--", so a
 // relayed value such as `--from "$SENDER"` or `--text "$MSG"` can never turn into a flag like --to-shell (#66).
-const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(["once", "force", "dry-run", "to-shell", "all", "resume", "help"]);
+const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
+  "once",
+  "force",
+  "drop",
+  "dry-run",
+  "to-shell",
+  "all",
+  "resume",
+  "help",
+]);
 
 export function parse(argv: readonly string[]): Args {
   const pos: string[] = [];

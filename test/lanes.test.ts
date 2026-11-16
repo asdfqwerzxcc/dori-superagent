@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { Refusal } from "../src/refusal.ts";
 import { done, ready, startLane } from "../src/lanes.ts";
 import { href } from "./fake.ts";
 import { setup } from "./harness-setup.ts";
+import { captureIo } from "./inbox-setup.ts";
 
 describe("lanes", () => {
   test("start opens a tab, launches omo with the brief, and tells the lead", async () => {
@@ -83,5 +85,107 @@ describe("startLane group fallback", () => {
     const group = run.find((a) => a.startsWith("dori.group="))!;
     expect(group).toMatch(/^dori\.group=[0-9a-f]{8}$/);
     expect(run.join(" ")).not.toContain("w9");
+  });
+});
+
+describe("lane worktree at start", () => {
+  const base = "a".repeat(40);
+  const gitCalls = (w: ReturnType<typeof setup>["w"]) =>
+    w.calls.filter((c) => c.cmd === "git").map((c) => c.argv.join(" "));
+
+  function repoGit(repo: string, opts: { addFails?: string; longpaths?: string } = {}) {
+    return (argv: readonly string[]) => {
+      const args = argv[0] === "-C" ? argv.slice(2) : argv;
+      const [cmd, sub] = args;
+      if (cmd === "rev-parse" && args.includes("--show-toplevel")) return { code: 0, stdout: `${repo}\n` };
+      if (cmd === "rev-parse") return { code: 0, stdout: `${base}\n` };
+      if (cmd === "config") return { code: 0, stdout: `${opts.longpaths ?? "true"}\n` };
+      if (cmd === "worktree" && sub === "add")
+        return opts.addFails === undefined
+          ? { code: 0, stdout: "", stderr: "" }
+          : { code: 128, stdout: "", stderr: opts.addFails };
+      return { code: 0, stdout: "", stderr: "" };
+    };
+  }
+
+  test("start creates, locks and asserts the worktree, and the pane opens in it", async () => {
+    const { w, d, brief } = setup();
+    const repo = join(d.store.root, "main");
+    w.git = repoGit(repo);
+    const lane = await startLane(d, "own-tree", brief, { group: "w1" });
+    const wt = join(d.store.root, "worktrees", "own-tree");
+
+    expect(lane.worktree).toBe(wt);
+    expect(lane.repo).toBe(repo);
+    expect(lane.baseSha).toBe(base);
+    const calls = gitCalls(w);
+    expect(calls).toContain(`-C ${repo} worktree add -b lane/own-tree ${wt} ${base}`);
+    expect(calls).toContain(`-C ${repo} worktree lock --reason dori lane own-tree ${wt}`);
+    expect(calls).toContain(`-C ${repo} merge-base --is-ancestor ${base} lane/own-tree`);
+    const tab = w.calls.find((c) => c.cmd === "herdr" && c.argv[0] === "tab" && c.argv[1] === "create")!;
+    expect(tab.argv).toContain(wt);
+  });
+
+  test("start without a repository keeps the caller's cwd and records no worktree", async () => {
+    const { w, d, brief } = setup();
+    const lane = await startLane(d, "plain", brief, { group: "w1" });
+    expect(lane.worktree).toBeUndefined();
+    expect(lane.repo).toBeUndefined();
+    const calls = gitCalls(w);
+    expect(calls.some((c) => c.includes("worktree"))).toBe(false);
+    const tab = w.calls.find((c) => c.cmd === "herdr" && c.argv[0] === "tab" && c.argv[1] === "create")!;
+    expect(tab.argv).toContain(lane.cwd);
+  });
+
+  test("a failed worktree add refuses the start with git's reason and leaves no pane or branch", async () => {
+    const { w, d, lead, brief } = setup();
+    const repo = join(d.store.root, "main");
+    const wt = join(d.store.root, "worktrees", "no-tree");
+    w.git = repoGit(repo, { addFails: `fatal: '${wt}' already exists\n` });
+    const panes = w.panes.size;
+
+    const failure: unknown = await startLane(d, "no-tree", brief, { group: "w1" }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(failure).toBeInstanceOf(Refusal);
+    expect((failure as Error).message).toContain("worktree_unavailable");
+    expect((failure as Error).message).toContain("already exists");
+    expect(w.panes.size).toBe(panes);
+    expect(d.store.lane("no-tree")).toBeUndefined();
+    expect(lead.received).toEqual([]);
+    expect(gitCalls(w)).toContain(`-C ${repo} branch -D lane/no-tree`);
+  });
+
+  test("stale locks are named and left in place, and long paths off warns", async () => {
+    const { w, d, brief } = setup();
+    const repo = join(d.store.root, "main");
+    const gitDir = join(repo, ".git");
+    mkdirSync(join(gitDir, "worktrees", "old"), { recursive: true });
+    const indexLock = join(gitDir, "index.lock");
+    const headLock = join(gitDir, "worktrees", "old", "HEAD.lock");
+    writeFileSync(indexLock, "");
+    writeFileSync(headLock, "");
+    w.git = repoGit(repo, { longpaths: "" });
+
+    const { code, out } = await captureIo(async () => {
+      await startLane(d, "warned", brief, { group: "w1" });
+      return 0;
+    });
+    expect(code).toBe(0);
+    expect(out).toContain(`stale git lock ${indexLock}`);
+    expect(out).toContain(`stale git lock ${headLock}`);
+    expect(out).toContain("core.longpaths is not true");
+    expect(existsSync(indexLock)).toBe(true);
+    expect(existsSync(headLock)).toBe(true);
+  });
+
+  test("a dropped lane key can be started again", async () => {
+    const { d, brief } = setup();
+    await startLane(d, "again", brief, { group: "w1" });
+    await done(d, "again", { drop: "restart" });
+    expect(d.store.lane("again")!.status).toBe("dropped");
+    const again = await startLane(d, "again", brief, { group: "w1" });
+    expect(again.status).toBe("working");
   });
 });

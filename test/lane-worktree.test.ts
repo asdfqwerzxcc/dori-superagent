@@ -1,0 +1,110 @@
+import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
+import { laneRepo, reviewLane } from "../src/lane-gate.ts";
+import { done, ready, startLane } from "../src/lanes.ts";
+import { fakeGit, type Repo } from "./fake-git.ts";
+import type { World } from "./fake.ts";
+import { setup } from "./harness-setup.ts";
+
+const base = "a".repeat(40);
+const tip = "b".repeat(40);
+const diff = "diff --git a/src/x.ts b/src/x.ts\n+export const x = 1;\n";
+
+describe("lane worktrees", () => {
+  const wtPath = (d: ReturnType<typeof setup>["d"], key: string) => join(d.store.root, "worktrees", key);
+  const gitCalls = (w: World) => w.calls.filter((c) => c.cmd === "git").map((c) => c.argv.join(" "));
+
+  test("start records the worktree, review reads it, and done lands then removes it", async () => {
+    const { w, d, brief } = setup();
+    const repo: Repo = { head: base, worktreeHead: base, mergeBase: base, diff };
+    fakeGit(w, repo);
+    const lane = await startLane(d, "own-tree", brief, { group: "w1" });
+    const wt = wtPath(d, "own-tree");
+    expect(lane.worktree).toBe(wt);
+    expect(laneRepo(lane)).toBe(wt);
+
+    repo.worktreeHead = tip;
+    await ready(d, "own-tree", "landed", ["file:///x"]);
+    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
+    expect(await reviewLane(d, "own-tree")).toEqual({ verdict: "CLEAR", base, tip });
+
+    expect(await done(d, "own-tree")).toBeUndefined();
+    const gits = gitCalls(w);
+    expect(gits).toContain("-C /repo merge --ff-only lane/own-tree");
+    expect(gits).toContain(`-C /repo worktree unlock ${wt}`);
+    expect(gits).toContain(`-C /repo worktree remove ${wt}`);
+    expect(gits).toContain("-C /repo branch -d lane/own-tree");
+    expect(gits).toContain(`-C ${wt} status --porcelain`);
+    expect(d.store.lane("own-tree")!.status).toBe("done");
+    expect(d.store.lane("own-tree")!.log.at(-1)!.text).toContain("landed lane/own-tree on main");
+  });
+
+  test("done refuses a dirty worktree before it closes the pane or touches main", async () => {
+    const { w, d, brief } = setup();
+    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff, dirty: " M src/x.ts\n" };
+    fakeGit(w, repo);
+    const lane = await startLane(d, "dirty", brief, { group: "w1" });
+    await ready(d, "dirty", "done", ["file:///x"]);
+    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
+    await reviewLane(d, "dirty");
+
+    await expect(done(d, "dirty")).rejects.toThrow("M src/x.ts");
+    expect(d.store.lane("dirty")!.status).toBe("ready");
+    expect(w.panes.has(lane.paneId)).toBe(true);
+    const gits = gitCalls(w);
+    expect(gits).not.toContain("-C /repo merge --ff-only lane/dirty");
+    expect(gits).not.toContain(`-C /repo worktree remove ${wtPath(d, "dirty")}`);
+  });
+
+  test("done refuses when main moved and keeps the branch and worktree", async () => {
+    const { w, d, brief } = setup();
+    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
+    fakeGit(w, repo);
+    const lane = await startLane(d, "moved", brief, { group: "w1" });
+    await ready(d, "moved", "done", ["file:///x"]);
+    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
+    await reviewLane(d, "moved");
+
+    repo.head = "c".repeat(40);
+    repo.ancestor = false;
+    await expect(done(d, "moved")).rejects.toThrow("main moved: rebase required");
+    expect(d.store.lane("moved")!.worktree).toBe(wtPath(d, "moved"));
+    expect(d.store.lane("moved")!.status).toBe("ready");
+    expect(w.panes.has(lane.paneId)).toBe(false);
+    const gits = gitCalls(w);
+    expect(gits).not.toContain(`-C /repo worktree remove ${wtPath(d, "moved")}`);
+    expect(gits).not.toContain("-C /repo branch -d lane/moved");
+  });
+
+  test("a retried done removes a branch main already contains without merging twice", async () => {
+    const { w, d, brief } = setup();
+    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
+    fakeGit(w, repo);
+    await startLane(d, "retry", brief, { group: "w1" });
+    await ready(d, "retry", "done", ["file:///x"]);
+    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
+    await reviewLane(d, "retry");
+
+    repo.head = "c".repeat(40);
+    repo.ancestor = true;
+    expect(await done(d, "retry")).toBeUndefined();
+    expect(gitCalls(w)).not.toContain("-C /repo merge --ff-only lane/retry");
+    expect(d.store.lane("retry")!.status).toBe("done");
+  });
+
+  test("done --drop removes the worktree and branch without merging", async () => {
+    const { w, d, brief } = setup();
+    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
+    fakeGit(w, repo);
+    const lane = await startLane(d, "drop-me", brief, { group: "w1" });
+
+    expect(await done(d, "drop-me", { drop: "abandoned" })).toBe("dropped: abandoned");
+    expect(d.store.lane("drop-me")!.status).toBe("dropped");
+    expect(d.store.lane("drop-me")!.log.at(-1)).toMatchObject({ kind: "dropped", text: "abandoned" });
+    expect(w.panes.has(lane.paneId)).toBe(false);
+    const gits = gitCalls(w);
+    expect(gits).toContain(`-C /repo worktree remove ${wtPath(d, "drop-me")}`);
+    expect(gits).toContain("-C /repo branch -D lane/drop-me");
+    expect(gits).not.toContain("-C /repo merge --ff-only lane/drop-me");
+  });
+});

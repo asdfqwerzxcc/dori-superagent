@@ -22,9 +22,12 @@ const quietKey = (s: LoopStatus) =>
 
 /** An unchanged hourly status reaches the lead at most once every QUIET_HOURS; anything new goes straight through. */
 async function worthTelling(d: Deps, run: LoopRun): Promise<boolean> {
-  if (run.synced.length || run.findings.length || run.started.length || run.held.length || run.asked.length) return true;
+  if (run.synced.length || run.findings.length || run.started.length || run.held.length || run.asked.length)
+    return true;
   const key = quietKey(run.status as LoopStatus);
-  const prev = (await Bun.file(quietPath(d)).json().catch(() => undefined)) as { key?: string; at?: number } | undefined;
+  const prev = (await Bun.file(quietPath(d))
+    .json()
+    .catch(() => undefined)) as { key?: string; at?: number } | undefined;
   if (prev === undefined || prev.key !== key) return true;
   return d.now() - (prev.at ?? 0) >= QUIET_HOURS * HOUR;
 }
@@ -57,8 +60,8 @@ async function sync(d: Deps, run: LoopRun): Promise<void> {
           item.status = "done";
           log(d, item, "done", "lane done");
           run.synced.push(`${item.id} done (lane done)`);
-        } else if (!lane || lane.status === "lost") {
-          const why = lane ? "lane lost" : "lane record missing";
+        } else if (!lane || lane.status === "lost" || lane.status === "dropped") {
+          const why = lane ? `lane ${lane.status}` : "lane record missing";
           item.status = "open";
           item.attempts += 1;
           if (item.attempts >= MAX_ATTEMPTS) item.decision = `${why} ${item.attempts} times; retry, re-brief or drop?`;
@@ -87,7 +90,7 @@ async function sync(d: Deps, run: LoopRun): Promise<void> {
   }
 }
 
-const isOpenLane = (status: string): boolean => status !== "done" && status !== "lost";
+const isOpenLane = (status: string): boolean => status !== "done" && status !== "lost" && status !== "dropped";
 
 async function pull(
   d: Deps,

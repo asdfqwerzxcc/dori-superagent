@@ -3,12 +3,13 @@ import { resolve } from "node:path";
 import { shq } from "./delivery.ts";
 import { prompt, type Deps } from "./harness.ts";
 import { laneGate, repoHead, resolveLaneRepo } from "./lane-gate.ts";
+import { assertCleanWorktree, createLaneWorktree, discardWorktree, dropLane, landWorktree } from "./lane-worktree.ts";
 import { settled, tellLead, type SendResult } from "./inbox.ts";
 import { Refusal } from "./refusal.ts";
 import { runHook } from "./hooks.ts";
 import { refText } from "./refs.ts";
 import { groupId } from "./runtime/group.ts";
-import { openSession } from "./runtime/types.ts";
+import { openSession, type SessionRef } from "./runtime/types.ts";
 import { KEY_RE, reservedKey, type Lane } from "./store-types.ts";
 
 export async function startLane(
@@ -21,29 +22,46 @@ export async function startLane(
   const reserved = reservedKey(key);
   if (reserved) throw new Refusal(reserved);
   const existing = d.store.lane(key);
-  if (existing && existing.status !== "done" && existing.status !== "lost")
+  if (existing && existing.status !== "done" && existing.status !== "lost" && existing.status !== "dropped")
     throw new Refusal(`lane ${key} is already open in ${refText(existing.sessionRef)}`);
   const cwd = resolve(opts.cwd ?? process.cwd());
   const repo = await resolveLaneRepo(d, cwd);
   const baseSha = repo === undefined ? undefined : await repoHead(d, repo);
+  const worktree =
+    repo !== undefined && baseSha !== undefined ? await createLaneWorktree(d, key, repo, baseSha) : undefined;
+  const laneCwd = worktree ?? cwd;
   const briefPath = d.store.briefPath(key);
   const footer = prompt("lane-footer.md", { key, dori: d.doriCmd });
-  await Bun.write(briefPath, `${readFileSync(briefFile, "utf8").trimEnd()}\n\n${footer}`);
+  let ref: SessionRef;
+  try {
+    await Bun.write(briefPath, `${readFileSync(briefFile, "utf8").trimEnd()}\n\n${footer}`);
 
-  // The group is the caller's own when it runs in a session of the selected runtime (a lane opened from the lead's
-  // workspace stays there); otherwise herdr gets a new "dori" workspace and hc this home's group label.
-  const rt = d.runtimes.default;
-  const self = d.runtimes.selfAny(process.env);
-  const group =
-    opts.group ??
-    (self?.runtime === rt.kind ? self.group : undefined) ??
-    (rt.kind === "herdr" ? await rt.createGroup("dori", cwd) : groupId(d.store.root));
-  const kickoff = `Read your brief at ${briefPath} and execute it. Your lane key is ${key}.`;
-  const ref = await openSession(
-    rt,
-    { name: key, role: "lane", container: "tab", cwd, env: { DORI_LANE: key, DORI_HOME: d.store.root }, group },
-    `${d.agentCmd} ${shq(kickoff)}`,
-  );
+    // The group is the caller's own when it runs in a session of the selected runtime (a lane opened from the lead's
+    // workspace stays there); otherwise herdr gets a new "dori" workspace and hc this home's group label.
+    const rt = d.runtimes.default;
+    const self = d.runtimes.selfAny(process.env);
+    const group =
+      opts.group ??
+      (self?.runtime === rt.kind ? self.group : undefined) ??
+      (rt.kind === "herdr" ? await rt.createGroup("dori", laneCwd) : groupId(d.store.root));
+    const kickoff = `Read your brief at ${briefPath} and execute it. Your lane key is ${key}.`;
+    ref = await openSession(
+      rt,
+      {
+        name: key,
+        role: "lane",
+        container: "tab",
+        cwd: laneCwd,
+        env: { DORI_LANE: key, DORI_HOME: d.store.root },
+        group,
+      },
+      `${d.agentCmd} ${shq(kickoff)}`,
+    );
+  } catch (e) {
+    // No pane exists yet, so the tree this start made would only block a retry.
+    if (worktree !== undefined && repo !== undefined) await discardWorktree(d, repo, key, worktree);
+    throw e;
+  }
 
   const now = d.now();
   const lane: Lane = {
@@ -53,6 +71,7 @@ export async function startLane(
     tabId: ref.container ?? "",
     brief: briefPath,
     cwd,
+    ...(worktree !== undefined ? { worktree } : {}),
     ...(repo !== undefined && baseSha !== undefined ? { repo, baseSha, tipSha: baseSha } : {}),
     status: "working",
     createdAt: now,
@@ -70,7 +89,8 @@ export async function startLane(
 function openLane(d: Deps, key: string): Lane {
   const lane = d.store.lane(key);
   if (!lane) throw new Refusal(`no lane ${key}`);
-  if (lane.status === "done" || lane.status === "lost") throw new Refusal(`lane ${key} is ${lane.status}`);
+  if (lane.status === "done" || lane.status === "lost" || lane.status === "dropped")
+    throw new Refusal(`lane ${key} is ${lane.status}`);
   return lane;
 }
 
@@ -116,24 +136,33 @@ export async function ready(
   return sent;
 }
 
-export async function done(d: Deps, key: string, opts: { force?: boolean } = {}): Promise<string | undefined> {
+export type DoneOptions = {
+  /** Close without a CLEAR receipt, recording why. */
+  force?: boolean;
+  /** Remove the worktree and branch without landing, and mark the lane `dropped` with this reason. */
+  drop?: string;
+};
+
+export async function done(d: Deps, key: string, opts: DoneOptions = {}): Promise<string | undefined> {
   const lane = d.store.lane(key);
   if (!lane) throw new Refusal(`no lane ${key}`);
+  if (opts.drop !== undefined) return dropLane(d, lane, opts.drop);
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
   const gate = await laneGate(d, lane);
   if (!gate.ok && !opts.force) throw new Refusal(gate.reason);
+  // Check cleanliness BEFORE any git mutation: main must never advance while the tree cannot be removed.
+  await assertCleanWorktree(d, lane);
   const rt = d.runtimes.for(lane.sessionRef);
   const { status: st } = await rt.probe(lane.sessionRef);
   if (st === "working" || st === "blocked" || st === "error")
     throw new Refusal(`lane ${key} pane is ${st}; let it finish first`);
+  // Windows refuses `worktree remove` while the pane holds the directory, so close it first.
   if (st !== "gone") await rt.close(lane.sessionRef);
+  const landing = lane.worktree === undefined ? undefined : await landWorktree(d, lane);
   const note = gate.ok ? gate.note : `forced past the review gate: ${gate.reason}`;
+  const closed = note === undefined ? "closed by lead" : `closed by lead (${note})`;
   lane.status = "done";
-  lane.log.push({
-    at: d.now(),
-    kind: "done",
-    text: note === undefined ? "closed by lead" : `closed by lead (${note})`,
-  });
+  lane.log.push({ at: d.now(), kind: "done", text: landing === undefined ? closed : `${closed}; ${landing}` });
   d.store.saveLane(lane);
   return note;
 }

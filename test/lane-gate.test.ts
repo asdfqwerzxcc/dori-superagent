@@ -5,7 +5,7 @@ import { main } from "../src/cli.ts";
 import { status } from "../src/cli-up.ts";
 import { reviewLane } from "../src/lane-gate.ts";
 import { done, ready, startLane } from "../src/lanes.ts";
-import type { World } from "./fake.ts";
+import { fakeGit, type Repo } from "./fake-git.ts";
 import { setup } from "./harness-setup.ts";
 import { captureIo } from "./inbox-setup.ts";
 
@@ -13,18 +13,6 @@ const posixModes = process.platform !== "win32";
 const base = "a".repeat(40);
 const tip = "b".repeat(40);
 const diff = "diff --git a/src/x.ts b/src/x.ts\n+export const x = 1;\n";
-
-type Repo = { head: string; mergeBase?: string; diff?: string };
-
-function fakeGit(w: World, repo: Repo): void {
-  w.git = (argv) => {
-    if (argv.includes("--show-toplevel")) return { code: 0, stdout: "/repo\n" };
-    if (argv.includes("rev-parse")) return { code: 0, stdout: `${repo.head}\n` };
-    if (argv.includes("merge-base")) return { code: 0, stdout: `${repo.mergeBase ?? repo.head}\n` };
-    if (argv.includes("diff")) return { code: 0, stdout: repo.diff ?? diff };
-    return { code: 1, stdout: "", stderr: `unhandled git ${argv.join(" ")}` };
-  };
-}
 
 describe("lane review gate", () => {
   test("review --lane pins the tip, saves the diff and writes a CLEAR receipt", async () => {
@@ -172,7 +160,14 @@ describe("lane review gate", () => {
       return { code: 0, stdout: "VERDICT: CLEAR" };
     };
     await reviewLane(d, "hooked");
-    expect(seen).toEqual([d.store.laneDiffPath("hooked", tip), lane.brief, base, tip, "hooked", "/repo"]);
+    expect(seen).toEqual([
+      d.store.laneDiffPath("hooked", tip),
+      lane.brief,
+      base,
+      tip,
+      "hooked",
+      join(d.store.root, "worktrees", "hooked"),
+    ]);
     expect(d.store.laneReceipt("hooked", tip)!.reviewer).toBe(
       "hook: hook-review {diff} {brief} {base} {tip} {lane} {repo}",
     );

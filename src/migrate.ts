@@ -22,18 +22,19 @@ export type Target = { readonly lane?: string; readonly role?: Role; readonly al
 
 const AGENT_ROLES: readonly Role[] = ["lead", "duty"];
 const LOOP_ROLES: readonly Role[] = ["duty-loop", "hourly-loop"];
-const isOpen = (l: Lane): boolean => l.status !== "done" && l.status !== "lost";
+const isOpen = (l: Lane): boolean => l.status !== "done" && l.status !== "lost" && l.status !== "dropped";
 
 function laneSubject(d: Deps, key: string): Subject {
   const lane = d.store.lane(key);
   if (!lane || !isOpen(lane)) throw new Refusal(`no open lane ${key}`);
   const kickoff = (brief: string) => `Read your brief at ${brief} and execute it. Your lane key is ${key}.`;
   const save = (change: (l: Lane) => Lane): void => d.store.saveLane(change(d.store.lane(key) as Lane));
+  const cwd = lane.worktree ?? lane.cwd;
   return {
     name: key,
     kind: "lane",
     from: lane.sessionRef,
-    cwd: lane.cwd,
+    cwd,
     brief: () => readFileSync(lane.brief, "utf8"),
     footer: prompt("lane-footer.md", { key, dori: d.doriCmd }),
     logTail: lane.log.slice(-20).map((e) => `- ${new Date(e.at).toISOString()} ${e.kind}: ${e.text}`),
@@ -42,7 +43,7 @@ function laneSubject(d: Deps, key: string): Subject {
       name: key,
       role: "lane",
       container: "tab",
-      cwd: lane.cwd,
+      cwd,
       env: { DORI_LANE: key, DORI_HOME: d.store.root },
       ...(group === undefined ? {} : { group }),
     }),

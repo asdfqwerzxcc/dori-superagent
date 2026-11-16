@@ -21,8 +21,8 @@ async function gitOut(d: Deps, cwd: string, argv: readonly string[]): Promise<st
   return r.code === 0 ? r.stdout.trim() : undefined;
 }
 
-/** The checkout a lane's commits land in: the one recorded at start, else the lane's cwd (a lane from before the gate). */
-export const laneRepo = (lane: Lane): string => lane.repo ?? lane.cwd;
+/** The checkout a lane's commits live in: its own worktree, else the checkout recorded at start, else its cwd. */
+export const laneRepo = (lane: Lane): string => lane.worktree ?? lane.repo ?? lane.cwd;
 
 /** The checkout a starting lane will commit in: its cwd when that is a repo, else the harness checkout `<home>/src`. */
 export async function resolveLaneRepo(d: Deps, cwd: string): Promise<string | undefined> {
