@@ -1,0 +1,45 @@
+import { join } from "node:path";
+import { readJson, writeJson } from "./json-file.ts";
+import type { LaneReceipt, ReviewReceipt } from "./store-types.ts";
+
+const NAME_RE = /^[\w.-]+$/;
+const SHA_RE = /^[0-9a-f]{7,64}$/;
+
+/**
+ * PR and lane receipts under `<root>/receipts/` (and the lane diffs under `<root>/lane-reviews/`). A file name is a PR
+ * id or `lane_<key>` plus a commit sha; anything else is refused, so a receipt can never be written outside those dirs.
+ */
+export class Receipts {
+  constructor(private readonly root: string) {}
+
+  private path(dir: "receipts" | "lane-reviews", name: string, sha: string, ext: "json" | "diff"): string {
+    if (!NAME_RE.test(name) || !SHA_RE.test(sha)) throw new Error(`invalid receipt name ${name}@${sha}`);
+    return join(this.root, dir, `${name}@${sha}.${ext}`);
+  }
+
+  private prName(pr: string): string {
+    return pr.replaceAll("/", "__").replace("#", "_");
+  }
+
+  save(r: ReviewReceipt): void {
+    writeJson(this.path("receipts", this.prName(r.pr), r.sha, "json"), r);
+  }
+
+  receipt(pr: string, sha: string): ReviewReceipt | undefined {
+    return readJson<ReviewReceipt>(this.path("receipts", this.prName(pr), sha, "json"));
+  }
+
+  saveLane(r: LaneReceipt): void {
+    writeJson(this.path("receipts", `lane_${r.lane}`, r.tip, "json"), r);
+  }
+
+  /** The lane receipt pinned to `tip`: a receipt at another commit never describes this diff. */
+  lane(key: string, tip: string): LaneReceipt | undefined {
+    return readJson<LaneReceipt>(this.path("receipts", `lane_${key}`, tip, "json"));
+  }
+
+  /** Where `dori review --lane` keeps the diff it hands the reviewer, one file per lane and tip. */
+  laneDiffPath(key: string, tip: string): string {
+    return this.path("lane-reviews", `lane_${key}`, tip, "diff");
+  }
+}

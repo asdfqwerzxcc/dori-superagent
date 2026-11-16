@@ -7,6 +7,8 @@ export type LaneStatus = "working" | "waiting" | "ready" | "done" | "lost";
  * beside it (the ref's id and container) so an older binary still reads the file. `migratedFrom`: the sessions it ran in
  * before a `dori migrate`. `migration`: a handover is in progress, and the duty loop leaves the record alone.
  * `sessionPath`: the agent's own session file, when its command records one; `dori migrate --resume` needs it.
+ * `repo`/`baseSha`/`tipSha`: the checkout the lane commits in and the commits the review gate pins; a lane from before
+ * the gate has none, and `dori review --lane` refuses it rather than guessing a base.
  */
 export type Lane = {
   key: string;
@@ -18,6 +20,9 @@ export type Lane = {
   tabId: string;
   brief: string;
   cwd: string;
+  repo?: string;
+  baseSha?: string;
+  tipSha?: string;
   status: LaneStatus;
   createdAt: number;
   lastActivityAt: number;
@@ -52,6 +57,18 @@ export type ReviewReceipt = {
   sha: string;
   verdict: "CLEAR" | "BLOCK";
   model: string;
+  at: number;
+  summary: string;
+};
+
+/** The verdict a reviewer gave one lane diff: `receipts/lane_<key>@<tip>.json`. */
+export type LaneReceipt = {
+  lane: string;
+  verdict: "CLEAR" | "BLOCK";
+  base: string;
+  tip: string;
+  brief: string;
+  reviewer: string;
   at: number;
   summary: string;
 };

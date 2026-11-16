@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,7 +11,9 @@ import {
   readQueue,
   writeQueue,
 } from "./inbox-files.ts";
+import { writeJson, readJson } from "./json-file.ts";
 import { takeInboxLock } from "./inbox-lock.ts";
+import { Receipts } from "./receipts.ts";
 import { refFromText, refText, sameSession } from "./refs.ts";
 import type { SessionRef } from "./runtime/types.ts";
 import {
@@ -19,6 +21,7 @@ import {
   KEY_RE,
   type Item,
   type Lane,
+  type LaneReceipt,
   type LoopRun,
   type QueuedMessage,
   type ReviewReceipt,
@@ -42,36 +45,29 @@ const checkedId = (id: string): string => {
 };
 
 export class Store {
+  readonly receipts: Receipts;
+
   constructor(readonly root: string = process.env["DORI_HOME"] ?? join(homedir(), ".dori")) {
-    for (const d of ["lanes", "inbox", "briefs", "receipts", "backlog", "loop/runs", "duty"])
+    this.receipts = new Receipts(root);
+    for (const d of ["lanes", "inbox", "briefs", "receipts", "lane-reviews", "backlog", "loop/runs", "duty"])
       mkdirSync(join(root, d), { recursive: true });
   }
 
-  private readJson<T>(path: string): T | undefined {
-    return existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as T) : undefined;
-  }
-
-  private writeJson(path: string, value: unknown): void {
-    const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`);
-    renameSync(tmp, path);
-  }
-
   lane(key: string): Lane | undefined {
-    const raw = this.readJson<StoredLane>(join(this.root, "lanes", `${key}.json`));
+    const raw = readJson<StoredLane>(join(this.root, "lanes", `${key}.json`));
     return raw && upgrade(raw);
   }
 
   /** Writes `paneId`/`tabId` from `sessionRef` beside it, so an older binary still reads the record. */
   saveLane(lane: Lane): void {
     const { id, container } = lane.sessionRef;
-    this.writeJson(join(this.root, "lanes", `${lane.key}.json`), { ...lane, paneId: id, tabId: container ?? "" });
+    writeJson(join(this.root, "lanes", `${lane.key}.json`), { ...lane, paneId: id, tabId: container ?? "" });
   }
 
   lanes(): Lane[] {
     return readdirSync(join(this.root, "lanes"))
       .filter((f) => f.endsWith(".json"))
-      .map((f) => this.readJson<StoredLane>(join(this.root, "lanes", f)))
+      .map((f) => readJson<StoredLane>(join(this.root, "lanes", f)))
       .filter((l): l is StoredLane => l !== undefined)
       .map(upgrade)
       .sort((a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key));
@@ -83,21 +79,21 @@ export class Store {
 
   /** roles.json holds ref strings (refText), so an older binary still parses it; a bare value is a herdr pane. */
   roles(): Partial<Record<Role, SessionRef>> {
-    const raw = this.readJson<Partial<Record<Role, string>>>(join(this.root, "roles.json")) ?? {};
+    const raw = readJson<Partial<Record<Role, string>>>(join(this.root, "roles.json")) ?? {};
     return Object.fromEntries(Object.entries(raw).map(([role, text]) => [role, refFromText(text)]));
   }
 
   setRole(role: Role, ref: SessionRef): void {
-    const raw = this.readJson<Partial<Record<Role, string>>>(join(this.root, "roles.json")) ?? {};
-    this.writeJson(join(this.root, "roles.json"), { ...raw, [role]: refText(ref) });
+    const raw = readJson<Partial<Record<Role, string>>>(join(this.root, "roles.json")) ?? {};
+    writeJson(join(this.root, "roles.json"), { ...raw, [role]: refText(ref) });
   }
 
   /** Drops a role whose pane no longer runs it; `dori role <role> -` and `dori up` under supervisors both use this. */
   clearRole(role: Role): void {
-    const raw = this.readJson<Partial<Record<Role, string>>>(join(this.root, "roles.json")) ?? {};
+    const raw = readJson<Partial<Record<Role, string>>>(join(this.root, "roles.json")) ?? {};
     if (!(role in raw)) return;
     delete raw[role];
-    this.writeJson(join(this.root, "roles.json"), raw);
+    writeJson(join(this.root, "roles.json"), raw);
   }
 
   briefPath(key: string): string {
@@ -151,16 +147,24 @@ export class Store {
     return inboxRefs(this.root).filter((r) => this.queued(r).length > 0);
   }
 
-  private receiptPath(pr: string, sha: string): string {
-    return join(this.root, "receipts", `${pr.replaceAll("/", "__").replace("#", "_")}@${sha}.json`);
-  }
-
   saveReceipt(r: ReviewReceipt): void {
-    this.writeJson(this.receiptPath(r.pr, r.sha), r);
+    this.receipts.save(r);
   }
 
   receipt(pr: string, sha: string): ReviewReceipt | undefined {
-    return this.readJson(this.receiptPath(pr, sha));
+    return this.receipts.receipt(pr, sha);
+  }
+
+  saveLaneReceipt(r: LaneReceipt): void {
+    this.receipts.saveLane(r);
+  }
+
+  laneReceipt(key: string, tip: string): LaneReceipt | undefined {
+    return this.receipts.lane(key, tip);
+  }
+
+  laneDiffPath(key: string, tip: string): string {
+    return this.receipts.laneDiffPath(key, tip);
   }
 
   // ---------- backlog ----------
@@ -170,17 +174,17 @@ export class Store {
   }
 
   item(id: string): Item | undefined {
-    return this.readJson<Item>(join(this.root, "backlog", `${checkedId(id)}.json`));
+    return readJson<Item>(join(this.root, "backlog", `${checkedId(id)}.json`));
   }
 
   saveItem(item: Item): void {
-    this.writeJson(join(this.root, "backlog", `${checkedId(item.id)}.json`), item);
+    writeJson(join(this.root, "backlog", `${checkedId(item.id)}.json`), item);
   }
 
   items(): Item[] {
     return readdirSync(join(this.root, "backlog"))
       .filter((f) => f.endsWith(".json"))
-      .map((f) => this.readJson<Item>(join(this.root, "backlog", f)))
+      .map((f) => readJson<Item>(join(this.root, "backlog", f)))
       .filter((i): i is Item => i !== undefined)
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
   }
@@ -198,11 +202,11 @@ export class Store {
 
   /** The kill switch of the hourly loop (`loop/stop`) or of the duty loop (`duty/stop`). */
   stop(of: "loop" | "duty" = "loop"): { at: number; reason: string } | undefined {
-    return this.readJson(join(this.root, of, "stop"));
+    return readJson(join(this.root, of, "stop"));
   }
 
   setStop(at: number, reason: string, of: "loop" | "duty" = "loop"): void {
-    this.writeJson(join(this.root, of, "stop"), { at, reason });
+    writeJson(join(this.root, of, "stop"), { at, reason });
   }
 
   clearStop(of: "loop" | "duty" = "loop"): void {
@@ -210,7 +214,7 @@ export class Store {
   }
 
   lastRun(): LoopRun | undefined {
-    return this.readJson(this.loopPath("last-run.json"));
+    return readJson(this.loopPath("last-run.json"));
   }
 
   /** Writes the run record and the last-run stamp, keeping the newest KEEP_RUNS records. Pass `name` to rewrite a record. */
@@ -221,8 +225,8 @@ export class Store {
       name = `${stem}.json`;
       for (let n = 2; existsSync(join(dir, name)); n++) name = `${stem}-${n}.json`;
     }
-    this.writeJson(join(dir, name), run);
-    this.writeJson(this.loopPath("last-run.json"), run);
+    writeJson(join(dir, name), run);
+    writeJson(this.loopPath("last-run.json"), run);
     const files = readdirSync(dir)
       .filter((f) => f.endsWith(".json"))
       .sort();
