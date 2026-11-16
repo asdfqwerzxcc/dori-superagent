@@ -140,7 +140,7 @@ The loop only opens lanes and sends messages; it never merges, pushes or closes 
 
 `dori start <key> --brief FILE` writes the brief plus the lane rules to `~/.dori/briefs/<key>.md`, opens a tab, runs omo with a prompt that names the brief, records the lane as `working`, and sends the lead `[START <key>]`. From there the lane reports (`[REPORT <key>]`, or `[REPORT <key> WAITING]` when it is blocked outside its own pane) and ends with `[READY <key>]` plus its evidence links. A lane that stays idle gets a nudge at 10 and 20 minutes and is escalated to the lead at 40. A lane whose pane disappears before READY is reported as `[LOST <key>]`.
 
-State is JSON on disk under `~/.dori` (or `$DORI_HOME`): `lanes/`, `inbox/`, `briefs/`, `receipts/`, plus `backlog/` and `loop/` for the hourly loop and `duty/` for the duty loop's stop file. Besides the agent sessions, the harness adds one supervisor, its core children (the Discord gateway, duty, the hourly loop), one child per enabled plugin (ensure-up, update-check, gateway-catchup), and the watchdog; the only runtime dependency is Bun.
+State is JSON on disk under `~/.dori` (or `$DORI_HOME`): `lanes/`, `inbox/`, `briefs/`, `receipts/`, plus `backlog/` and `loop/` for the hourly loop and `duty/` for the duty loop's stop file. Besides the agent sessions, the harness adds one supervisor, its core children (the Discord gateway, duty, the hourly loop), one child per enabled plugin (ensure-up, update-check, gateway-catchup, silence-check), and the watchdog; the only runtime dependency is Bun.
 
 ### Two session runtimes
 

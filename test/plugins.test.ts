@@ -30,7 +30,7 @@ const homeWithState = (): string => {
 };
 
 const alive = (): boolean => true;
-const NAMES = ["ensure-up", "update-check", "gateway-catchup"];
+const NAMES = ["ensure-up", "update-check", "gateway-catchup", "silence-check"];
 
 describe("plugin registry", () => {
   test("the registry is the explicit list, resolved by name in registry order", () => {
@@ -38,6 +38,7 @@ describe("plugin registry", () => {
     expect(pluginByName("update-check")?.intervalMs).toBe(300_000);
     expect(pluginByName("ensure-up")?.intervalMs).toBe(20_000);
     expect(pluginByName("gateway-catchup")?.intervalMs).toBe(60_000);
+    expect(pluginByName("silence-check")?.intervalMs).toBe(60_000);
     expect(pluginByName("nope")).toBeUndefined();
   });
 
@@ -47,7 +48,7 @@ describe("plugin registry", () => {
     writePluginsConfig(home, setPluginEnabled(home, "gateway-catchup", false));
     expect(readPluginsConfig(home)).toEqual({ disabled: ["gateway-catchup"] });
     expect(isPluginEnabled(home, "gateway-catchup")).toBe(false);
-    expect(enabledPluginNames(home)).toEqual(["ensure-up", "update-check"]);
+    expect(enabledPluginNames(home)).toEqual(["ensure-up", "update-check", "silence-check"]);
     writePluginsConfig(home, setPluginEnabled(home, "gateway-catchup", true));
     expect(enabledPluginNames(home)).toEqual(NAMES);
     expect(isPluginEnabled(home, "unregistered")).toBe(false);
@@ -144,10 +145,11 @@ describe("plugin records, locks and lines", () => {
       `PLUGIN ensure-up up pid=${process.pid} hb=1s`,
       `PLUGIN update-check up pid=${process.pid} hb=1s (next 04:00)`,
       `PLUGIN gateway-catchup up pid=${process.pid} hb=1s`,
+      `PLUGIN silence-check up pid=${process.pid} hb=1s`,
     ]);
 
     writePluginsConfig(home, setPluginEnabled(home, "update-check", false));
-    expect(pluginLines(home, now + 1_000, alive)).toHaveLength(2);
+    expect(pluginLines(home, now + 1_000, alive)).toHaveLength(3);
     expect(pluginListLines(home, now + 1_000, alive)).toContain("PLUGIN update-check disabled");
 
     writeFileSync(join(home, "state", "ensure-up.off"), "");
@@ -182,12 +184,12 @@ describe("dori plugin and dori status", () => {
         .split("\n")
         .filter((line) => line.startsWith("PLUGIN "));
 
-    expect(await pluginLinesOf()).toHaveLength(3);
+    expect(await pluginLinesOf()).toHaveLength(4);
     expect((await captureIo(async () => main(["plugin", "disable", "update-check"], d))).out).toBe(
       "PLUGIN update-check disabled",
     );
     const after = await pluginLinesOf();
-    expect(after).toHaveLength(2);
+    expect(after).toHaveLength(3);
     expect(after.some((line) => line.includes("update-check"))).toBe(false);
     expect(JSON.parse(readFileSync(join(home, "state", "plugins.json"), "utf8"))).toEqual({
       disabled: ["update-check"],
@@ -197,7 +199,7 @@ describe("dori plugin and dori status", () => {
     expect((await captureIo(async () => main(["plugin", "enable", "update-check"], d))).out).toBe(
       "PLUGIN update-check enabled",
     );
-    expect(await pluginLinesOf()).toHaveLength(3);
+    expect(await pluginLinesOf()).toHaveLength(4);
   });
 
   test("a disabled ensure-up is not waited for by the supervised half", async () => {
@@ -218,6 +220,6 @@ describe("dori plugin and dori status", () => {
       (e: unknown) => e,
     );
     expect(String((failure as Error).message)).toContain("unknown plugin ghost");
-    expect(String((failure as Error).message)).toContain("ensure-up, update-check, gateway-catchup");
+    expect(String((failure as Error).message)).toContain("ensure-up, update-check, gateway-catchup, silence-check");
   });
 });

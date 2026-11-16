@@ -38,6 +38,7 @@ type PluginCtx = {
 | `ensure-up` | 20 s | `dori up` when no dori workspace holds two live agent panes. Reuses `src/supervisors/ensure-up.ts` and its `state/ensure-up.lock`, so the pane-mode and plugin paths share one lock. Honours `state/ensure-up.off`. |
 | `update-check` | 5 min | Checks git and the omo/senpi packages once a day at 04:00 local (`UPDATECHECK_AT_HOUR`); notifies the lead. The 5 min tick exists so a restart cannot skip or drift the 04:00 slot (the next slot is persisted in `state/update-check-next`). |
 | `gateway-catchup` | 60 s | Delivers what Discord holds past `state/gateway-last.json` that no inbound file covers. Channels = the keys of `gateway-last.json` (or `DORI_WATCH_CHANNELS` on a cold start). |
+| `silence-check` | 60 s | Alerts the lead when a human Discord message stays unanswered: rungs at 5 min, 15 min and every 30 min after that, one per message per rung, keyed by message id in `state/silence-check.json`. Any newer bot message clears it. The alert names the message and the four causes to check: a blocked turn, a stuck child, a prompt that never arrived, a missed catch-up. |
 
 ### Why `gateway-catchup` is an addition, not a move
 
@@ -61,6 +62,7 @@ is restarted after 5 s.
 | `state/plugins/<name>.json` | supervisor | `{ name, pid, startedAt, at }`, the record of the running child; removed when the child is stopped |
 | `state/plugins/<name>.tick` | plugin child | `{ pid, at }`, rewritten every 30 s; a hung child cannot fake it |
 | `state/plugins/<name>.lock` | plugin child | one child per plugin per home; a dead holder's lock is taken over |
+| `state/silence-check.json` | `silence-check` | `{ <channel>: { messageId, rung } }`, the last rung fired for that channel's newest unanswered human message |
 
 `dori status` prints one line per **enabled** plugin, so disabling removes exactly that line:
 
@@ -68,6 +70,7 @@ is restarted after 5 s.
 PLUGIN ensure-up up pid=8368 hb=2s
 PLUGIN update-check up pid=3140 hb=3s (next 04:00)
 PLUGIN gateway-catchup up pid=9977 hb=4s
+PLUGIN silence-check up pid=9981 hb=5s (1 channel)
 ```
 
 A plugin is `up` only when its recorded pid is alive **and** its freshest beat is inside the 90 s window. `dori plugin
@@ -99,3 +102,5 @@ The supervisor needs no edit: it spawns `PLUGINS.map(...)`.
   runner lock, and the `dori status` / `dori plugin list` lines.
 - `test/plugin-supervisor.test.ts`: a child restarted 5 s after exit, one plugin's crash not touching another's child, and
   disable stopping the running child.
+- `test/silence-check.test.ts`: the pure rung decision at fixed timestamps (4/6/16 min, duplicate, clear, older bot
+  message), the alert block, one alert per rung through the state file, and a Discord error logging one line.
