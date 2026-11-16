@@ -4,10 +4,9 @@ import { join } from "node:path";
 import { spawnExec, type Exec } from "./runtime/exec.ts";
 import {
   ageMs,
-  ensureUpEntry,
+  entryFor,
   ensureUpHealth,
   ensureUpOff,
-  entryFor,
   heartbeatPath,
   pidAlive,
   stateDir,
@@ -19,6 +18,8 @@ import {
   type SupervisorHealth,
   type SupervisorName,
 } from "./supervisors.ts";
+import { pluginRunEntry } from "./plugins/plugin.ts";
+import { enabledPluginNames, isPluginEnabled } from "./plugins/state.ts";
 
 /** A process the OS reports, with the command line `dori restart` matches against. */
 export type Proc = { readonly pid: number; readonly command: string };
@@ -76,9 +77,9 @@ export async function listProcesses(exec: Exec = spawnExec): Promise<Proc[]> {
   return windows ? parseCim(r.stdout) : parsePs(r.stdout);
 }
 
-/** Spawns a detached supervisor or ensure-up loop that outlives this call; undefined when it could not start. */
-export function spawnDetached(entry: string, cwd: string): number | undefined {
-  const child = spawn(process.execPath, [entry], {
+/** Spawns a detached supervisor or plugin child that outlives this call; undefined when it could not start. */
+export function spawnDetached(entry: string, cwd: string, args: readonly string[] = []): number | undefined {
+  const child = spawn(process.execPath, [entry, ...args], {
     cwd,
     detached: true,
     stdio: "ignore",
@@ -173,8 +174,8 @@ export type SupervisedState = {
 };
 
 /**
- * Ensures the supervisors (unless the caller is opening its own loop panes) and the ensure-up loop, then waits briefly for
- * the loop's first beat. `dori up` prints this; nothing here opens a workspace.
+ * Ensures the supervisors (unless the caller is opening its own loop panes) and the ensure-up plugin, then waits briefly
+ * for the first beat. `dori up` prints this; nothing here opens a workspace.
  */
 export async function superviseHome(
   home: string,
@@ -182,10 +183,11 @@ export async function superviseHome(
 ): Promise<SupervisedState> {
   const health = opts.supervisors === false ? supervisorHealth(home) : await ensureSupervisors(home);
   const off = ensureUpOff(home);
-  let ensureUp = await waitEnsureUp(home, !off, opts.supervisors === false ? 0 : 15_000);
-  // The supervisor owns ensure-up; only a pane-mode `dori up` starts it outside a supervisor.
-  if (opts.supervisors === false && !off && !ensureUp.alive) {
-    spawnDetached(ensureUpEntry(home), home);
+  const wantUp = !off && isPluginEnabled(home, "ensure-up");
+  let ensureUp = await waitEnsureUp(home, wantUp, opts.supervisors === false ? 0 : 15_000);
+  // The supervisor owns the ensure-up plugin; only a pane-mode `dori up` starts it outside a supervisor.
+  if (opts.supervisors === false && wantUp && !ensureUp.alive) {
+    spawnDetached(pluginRunEntry(), home, ["ensure-up"]);
     ensureUp = await waitEnsureUp(home, true, 10_000);
   }
   return { health, ensureUp, off };
@@ -216,14 +218,12 @@ export async function restartSupervisors(home: string, timeoutMs = 120_000): Pro
   const ok = await waitFresh([heartbeatPath(home, "supervisor"), join(stateDir(home), WS_HEARTBEAT)], started, {
     timeoutMs,
   });
-  const wanted = !ensureUpOff(home);
+  const wanted = !ensureUpOff(home) && isPluginEnabled(home, "ensure-up");
   const ensureUp = await waitEnsureUp(home, wanted, ok ? 15_000 : 0);
   const health = supervisorHealth(home);
   const supervisor = health.find((h) => h.name === "supervisor");
   const units = supervisor?.units ?? [];
-  const expected = wanted
-    ? ["discord-gateway", "duty", "loop", "update-check", "ensure-up"]
-    : ["discord-gateway", "duty", "loop", "update-check"];
+  const expected = ["discord-gateway", "duty", "loop", ...enabledPluginNames(home)];
   const unitsUp = expected.every((name) => units.some((u) => u.name === name && u.alive));
   const all = ok && supervisor?.alive === true && unitsUp && (!wanted || ensureUp.alive);
   const wsAge = ageMs(join(stateDir(home), WS_HEARTBEAT));

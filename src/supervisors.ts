@@ -64,16 +64,14 @@ export function entryFor(home: string, name: SupervisorName): string {
   const shim = join(home, "bin", SHIM[name]);
   return existsSync(shim) ? shim : join(import.meta.dir, "supervisors", SOURCE[name]);
 }
-export function ensureUpEntry(home: string): string {
-  const shim = join(home, "bin", "dori-ensure-up.ts");
-  return existsSync(shim) ? shim : join(import.meta.dir, "supervisors", "ensure-up.ts");
-}
 
-/** The five children's command lines; a restart and a new supervisor use them to clean orphans. */
+/** The children's command lines; a restart and a new supervisor use them to clean orphans. */
 export const UNIT_PATTERNS: readonly string[] = [
   "discord-gateway.ts",
   "cli.ts duty",
   "cli.ts loop",
+  "plugins/run.ts",
+  "plugins\\run.ts",
   "update-check.ts",
   "dori-ensure-up.ts",
   "supervisors/ensure-up.ts",
