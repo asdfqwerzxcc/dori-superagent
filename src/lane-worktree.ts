@@ -105,15 +105,27 @@ export async function assertCleanWorktree(d: Deps, lane: Lane): Promise<void> {
     throw new Refusal(`lane ${lane.key} worktree has uncommitted changes; commit or drop them first:\n${dirty}`);
 }
 
+/** `unlock` on a tree that was never locked, or `remove` on one already gone, is success rather than a refusal. */
+function teardownTolerated(kind: "unlock" | "remove", code: number, stderr: string): boolean {
+  if (code === 0) return true;
+  const s = stderr.toLowerCase();
+  return kind === "unlock" ? s.includes("is not locked") : s.includes("is not a working tree") || s.includes("no such file");
+}
+
 /** Unlocks, removes and deletes the branch of a lane's own worktree; `-d` keeps an unlanded branch, `-D` drops it. */
 async function removeWorktree(d: Deps, lane: Lane, branchFlag: "-d" | "-D"): Promise<void> {
   const repo = lane.repo;
   const path = lane.worktree;
   if (repo === undefined || path === undefined) throw new Refusal(`lane ${lane.key} has no recorded worktree`);
   const unlock = await d.exec("git", ["-C", repo, "worktree", "unlock", path]);
-  if (unlock.code !== 0) throw new Refusal(`cannot unlock ${path}: ${gitWhy(unlock)}; branch and worktree kept`);
-  const remove = await d.exec("git", ["-C", repo, "worktree", "remove", path]);
-  if (remove.code !== 0) throw new Refusal(`cannot remove ${path}: ${gitWhy(remove)}; branch kept`);
+  if (!teardownTolerated("unlock", unlock.code, unlock.stderr))
+    throw new Refusal(`cannot unlock ${path}: ${gitWhy(unlock)}; branch and worktree kept`);
+  let remove = await d.exec("git", ["-C", repo, "worktree", "remove", path]);
+  // Windows can refuse the removal for a moment after the lane's last process exits; one retry is enough.
+  if (!teardownTolerated("remove", remove.code, remove.stderr))
+    remove = await d.exec("git", ["-C", repo, "worktree", "remove", path]);
+  if (!teardownTolerated("remove", remove.code, remove.stderr))
+    throw new Refusal(`cannot remove ${path}: ${gitWhy(remove)}; branch kept`);
   const del = await d.exec("git", ["-C", repo, "branch", branchFlag, branchOf(lane.key)]);
   if (del.code !== 0) throw new Refusal(`cannot delete ${branchOf(lane.key)}: ${gitWhy(del)}`);
 }
