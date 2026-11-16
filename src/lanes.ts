@@ -22,7 +22,9 @@ export async function startLane(
   const reserved = reservedKey(key);
   if (reserved) throw new Refusal(reserved);
   const existing = d.store.lane(key);
-  if (existing && existing.status !== "done" && existing.status !== "lost" && existing.status !== "dropped")
+  if (existing?.status === "lost")
+    throw new Refusal(`lane ${key} is lost; its worktree and branch are kept: dori done --drop ${key} --reason <text>`);
+  if (existing && existing.status !== "done" && existing.status !== "dropped")
     throw new Refusal(`lane ${key} is already open in ${refText(existing.sessionRef)}`);
   const cwd = resolve(opts.cwd ?? process.cwd());
   const repo = await resolveLaneRepo(d, cwd);
@@ -137,8 +139,6 @@ export async function ready(
 }
 
 export type DoneOptions = {
-  /** Close without a CLEAR receipt, recording why. */
-  force?: boolean;
   /** Remove the worktree and branch without landing, and mark the lane `dropped` with this reason. */
   drop?: string;
 };
@@ -149,7 +149,7 @@ export async function done(d: Deps, key: string, opts: DoneOptions = {}): Promis
   if (opts.drop !== undefined) return dropLane(d, lane, opts.drop);
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
   const gate = await laneGate(d, lane);
-  if (!gate.ok && !opts.force) throw new Refusal(gate.reason);
+  if (!gate.ok) throw new Refusal(gate.reason);
   // Check cleanliness BEFORE any git mutation: main must never advance while the tree cannot be removed.
   await assertCleanWorktree(d, lane);
   const rt = d.runtimes.for(lane.sessionRef);
@@ -159,7 +159,7 @@ export async function done(d: Deps, key: string, opts: DoneOptions = {}): Promis
   // Windows refuses `worktree remove` while the pane holds the directory, so close it first.
   if (st !== "gone") await rt.close(lane.sessionRef);
   const landing = lane.worktree === undefined ? undefined : await landWorktree(d, lane);
-  const note = gate.ok ? gate.note : `forced past the review gate: ${gate.reason}`;
+  const note = gate.note;
   const closed = note === undefined ? "closed by lead" : `closed by lead (${note})`;
   lane.status = "done";
   lane.log.push({ at: d.now(), kind: "done", text: landing === undefined ? closed : `${closed}; ${landing}` });

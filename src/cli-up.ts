@@ -10,6 +10,7 @@ import { RuntimeChoiceError } from "./runtime/select.ts";
 import { superviseHome, type SupervisedState } from "./supervisor-run.ts";
 import { pluginLines } from "./plugins/state.ts";
 import { formatEnsureUp, formatSupervised, supervisorHealth } from "./supervisors.ts";
+import { scanWorktrees } from "./worktrees.ts";
 
 const supervisorAlive = (root: string): boolean =>
   supervisorHealth(root).some((h) => h.name === "supervisor" && h.alive);
@@ -135,5 +136,11 @@ export async function status(d: Deps): Promise<void> {
     console.log(
       `${l.key.padEnd(24)} ${l.status.padEnd(8)} ${l.sessionRef.runtime.padEnd(5)} ${refText(l.sessionRef).padEnd(14)} review=${review.padEnd(10)} active ${age}m ago  ${last ? `${last.kind}: ${last.text.slice(0, 60)}` : ""}`,
     );
+  }
+  try {
+    const { orphans } = await scanWorktrees(d, { dirty: false });
+    if (orphans > 0) console.log(`WORKTREES ${orphans} orphan`);
+  } catch {
+    // The lane table has already printed; a broken worktree root must not hide it.
   }
 }

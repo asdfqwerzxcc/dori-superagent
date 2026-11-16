@@ -107,4 +107,20 @@ describe("lane worktrees", () => {
     expect(gits).toContain("-C /repo branch -D lane/drop-me");
     expect(gits).not.toContain("-C /repo merge --ff-only lane/drop-me");
   });
+
+  test("a BLOCK receipt cannot land; --drop removes it and main stays put", async () => {
+    const { w, d, brief } = setup();
+    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
+    fakeGit(w, repo);
+    await startLane(d, "blocked", brief, { group: "w1" });
+    await ready(d, "blocked", "done", ["file:///x"]);
+    w.reviewer = () => ({ code: 0, stdout: "HIGH src/x.ts:1 bug\nVERDICT: BLOCK" });
+    await reviewLane(d, "blocked");
+
+    await expect(done(d, "blocked")).rejects.toThrow("is BLOCK");
+    expect(d.store.lane("blocked")!.status).toBe("ready");
+    expect(await done(d, "blocked", { drop: "blocked" })).toBe("dropped: blocked");
+    expect(d.store.lane("blocked")!.status).toBe("dropped");
+    expect(gitCalls(w)).not.toContain("-C /repo merge --ff-only lane/blocked");
+  });
 });

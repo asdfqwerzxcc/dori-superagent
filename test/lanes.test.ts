@@ -93,11 +93,13 @@ describe("lane worktree at start", () => {
   const gitCalls = (w: ReturnType<typeof setup>["w"]) =>
     w.calls.filter((c) => c.cmd === "git").map((c) => c.argv.join(" "));
 
-  function repoGit(repo: string, opts: { addFails?: string; longpaths?: string } = {}) {
+  function repoGit(repo: string, opts: { addFails?: string; branchExists?: boolean; longpaths?: string } = {}) {
     return (argv: readonly string[]) => {
       const args = argv[0] === "-C" ? argv.slice(2) : argv;
       const [cmd, sub] = args;
       if (cmd === "rev-parse" && args.includes("--show-toplevel")) return { code: 0, stdout: `${repo}\n` };
+      if (cmd === "rev-parse" && args.includes("--verify"))
+        return opts.branchExists === true ? { code: 0, stdout: `${base}\n` } : { code: 1, stdout: "", stderr: "" };
       if (cmd === "rev-parse") return { code: 0, stdout: `${base}\n` };
       if (cmd === "config") return { code: 0, stdout: `${opts.longpaths ?? "true"}\n` };
       if (cmd === "worktree" && sub === "add")
@@ -187,5 +189,50 @@ describe("lane worktree at start", () => {
     expect(d.store.lane("again")!.status).toBe("dropped");
     const again = await startLane(d, "again", brief, { group: "w1" });
     expect(again.status).toBe("working");
+  });
+
+  test("a lost lane key is refused until it is dropped", async () => {
+    const { d, brief } = setup();
+    await startLane(d, "lost-key", brief, { group: "w1" });
+    const lane = d.store.lane("lost-key")!;
+    lane.status = "lost";
+    d.store.saveLane(lane);
+
+    await expect(startLane(d, "lost-key", brief, { group: "w1" })).rejects.toThrow("is lost");
+    expect(await done(d, "lost-key", { drop: "lost" })).toBe("dropped: lost");
+    const again = await startLane(d, "lost-key", brief, { group: "w1" });
+    expect(again.status).toBe("working");
+  });
+
+  test("a failed add leaves a branch it did not create in place", async () => {
+    const { w, d, brief } = setup();
+    const repo = join(d.store.root, "main");
+    const wt = join(d.store.root, "worktrees", "kept");
+    w.git = repoGit(repo, { addFails: `fatal: '${wt}' already exists\n`, branchExists: true });
+
+    const failure: unknown = await startLane(d, "kept", brief, { group: "w1" }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(failure).toBeInstanceOf(Refusal);
+    expect(gitCalls(w)).not.toContain(`-C ${repo} branch -D lane/kept`);
+  });
+
+  test("DORI_WORKTREES_DIR overrides the worktree root", async () => {
+    const { w, d, brief } = setup();
+    const repo = join(d.store.root, "main");
+    const elsewhere = join(d.store.root, "elsewhere");
+    w.git = repoGit(repo);
+    const saved = process.env["DORI_WORKTREES_DIR"];
+    process.env["DORI_WORKTREES_DIR"] = elsewhere;
+    try {
+      const lane = await startLane(d, "env-root", brief, { group: "w1" });
+      const wt = join(elsewhere, "env-root");
+      expect(lane.worktree).toBe(wt);
+      expect(gitCalls(w)).toContain(`-C ${repo} worktree add -b lane/env-root ${wt} ${base}`);
+    } finally {
+      if (saved === undefined) delete process.env["DORI_WORKTREES_DIR"];
+      else process.env["DORI_WORKTREES_DIR"] = saved;
+    }
   });
 });

@@ -96,7 +96,7 @@ describe("lane review gate", () => {
     expect(d.store.lane("fix-login")!.status).toBe("done");
   });
 
-  test("a lane that committed nothing closes; a forced close records its reason", async () => {
+  test("a lane that committed nothing closes; a lane without a receipt closes only by --drop", async () => {
     const { w, d, brief } = setup();
     const repo: Repo = { head: base, mergeBase: base, diff };
     fakeGit(w, repo);
@@ -105,13 +105,17 @@ describe("lane review gate", () => {
     expect(await done(d, "investigate")).toBeUndefined();
     expect(d.store.lane("investigate")!.status).toBe("done");
 
-    await startLane(d, "force-me", brief, { group: "w1" });
-    await ready(d, "force-me", "done", ["file:///x"]);
+    await startLane(d, "unreviewed", brief, { group: "w1" });
+    await ready(d, "unreviewed", "done", ["file:///x"]);
     repo.head = tip;
-    const note = await done(d, "force-me", { force: true });
-    expect(note).toContain("no review receipt");
-    expect(d.store.lane("force-me")!.status).toBe("done");
-    expect(d.store.lane("force-me")!.log.at(-1)!.text).toContain("forced past the review gate");
+    await expect(done(d, "unreviewed")).rejects.toThrow("no review receipt");
+    expect(d.store.lane("unreviewed")!.status).toBe("ready");
+
+    expect(await done(d, "unreviewed", { drop: "unreviewed" })).toBe("dropped: unreviewed");
+    expect(d.store.lane("unreviewed")!.status).toBe("dropped");
+    expect(d.store.lane("unreviewed")!.log.at(-1)).toMatchObject({ kind: "dropped", text: "unreviewed" });
+    const gits = w.calls.filter((c) => c.cmd === "git").map((c) => c.argv.join(" "));
+    expect(gits).not.toContain("-C /repo merge --ff-only lane/unreviewed");
   });
 
   test("a lane from before the gate closes with an explicit note, never a silent pass", async () => {
@@ -186,6 +190,7 @@ describe("lane review gate", () => {
       out: `REVIEW_LANE fix-login tip=${tip} verdict=CLEAR`,
     });
     await expect(main(["review", "o/r#1", "--lane", "fix-login"], d)).rejects.toThrow("not both");
+    await expect(main(["done", "fix-login", "--force"], d)).rejects.toThrow("no longer takes --force");
     expect((await captureIo(() => main(["done", "fix-login"], d))).out).toBe("DONE fix-login");
   });
 });

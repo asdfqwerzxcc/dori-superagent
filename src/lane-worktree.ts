@@ -6,8 +6,11 @@ import { Refusal } from "./refusal.ts";
 import type { ExecResult } from "./runtime/exec.ts";
 import type { Lane } from "./store-types.ts";
 
-const branchOf = (key: string): string => `lane/${key}`;
+export const branchOf = (key: string): string => `lane/${key}`;
 const gitWhy = (r: ExecResult): string => (r.stderr || r.stdout).trim() || `git exited ${r.code}`;
+
+/** Where lane worktrees live: `DORI_WORKTREES_DIR` when set, else `<DORI_HOME>/worktrees`. */
+export const worktreeRoot = (d: Deps): string => process.env["DORI_WORKTREES_DIR"] || join(d.store.root, "worktrees");
 
 /** Warn about a lock a previous git process left behind; never delete it (another process may still hold it). */
 function warnStaleLocks(key: string, repo: string): void {
@@ -39,18 +42,22 @@ export async function discardWorktree(d: Deps, repo: string, key: string, path: 
 
 /**
  * Creates and locks the lane's own checkout on branch `lane/<key>` from `baseSha`, and proves the branch descends from
- * that base. A failure refuses the start: the branch the failed add may have created is removed, and there is no
- * fallback to the shared checkout.
+ * that base. A failure refuses the start: a branch this add created is removed, and there is no fallback to the shared
+ * checkout.
  */
 export async function createLaneWorktree(d: Deps, key: string, repo: string, baseSha: string): Promise<string> {
-  const path = join(d.store.root, "worktrees", key);
-  mkdirSync(join(d.store.root, "worktrees"), { recursive: true });
+  const root = worktreeRoot(d);
+  const path = join(root, key);
+  mkdirSync(root, { recursive: true });
   warnStaleLocks(key, repo);
   await warnLongPaths(d, key, repo);
-  const add = await d.exec("git", ["-C", repo, "worktree", "add", "-b", branchOf(key), path, baseSha]);
+  const branch = branchOf(key);
+  const existed = await d.exec("git", ["-C", repo, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+  const add = await d.exec("git", ["-C", repo, "worktree", "add", "-b", branch, path, baseSha]);
   if (add.code !== 0) {
-    // A failed add can leave the branch behind (D13); drop it so a retry is not "branch already exists".
-    await d.exec("git", ["-C", repo, "branch", "-D", branchOf(key)]);
+    // A failed add can leave the branch behind (D13). Only delete the branch this add created: a LOST lane's
+    // branch is kept until the operator drops it.
+    if (existed.code !== 0) await d.exec("git", ["-C", repo, "branch", "-D", branch]);
     throw new Refusal(`worktree_unavailable: ${gitWhy(add)}`);
   }
   const lock = await d.exec("git", ["-C", repo, "worktree", "lock", "--reason", `dori lane ${key}`, path]);
@@ -58,11 +65,11 @@ export async function createLaneWorktree(d: Deps, key: string, repo: string, bas
     await discardWorktree(d, repo, key, path);
     throw new Refusal(`worktree_unavailable: cannot lock ${path}: ${gitWhy(lock)}`);
   }
-  const ancestor = await d.exec("git", ["-C", repo, "merge-base", "--is-ancestor", baseSha, branchOf(key)]);
+  const ancestor = await d.exec("git", ["-C", repo, "merge-base", "--is-ancestor", baseSha, branch]);
   if (ancestor.code !== 0) {
     await discardWorktree(d, repo, key, path);
     throw new Refusal(
-      `worktree_unavailable: ${branchOf(key)} does not descend from ${baseSha.slice(0, 12)}: ${gitWhy(ancestor)}`,
+      `worktree_unavailable: ${branch} does not descend from ${baseSha.slice(0, 12)}: ${gitWhy(ancestor)}`,
     );
   }
   return path;

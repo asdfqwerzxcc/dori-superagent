@@ -4,6 +4,7 @@ import { runBacklog, runDuty, runLoop } from "./cli-loops.ts";
 import { pluginCommand } from "./cli-plugins.ts";
 import { status, up } from "./cli-up.ts";
 import { done, ready, report, startLane } from "./lanes.ts";
+import { listWorktrees, pruneWorktrees } from "./worktrees.ts";
 import { mergeGate, review } from "./gate.ts";
 import { reviewLane } from "./lane-gate.ts";
 import { need, one, parse, textOf, USAGE } from "./cli-args.ts";
@@ -32,6 +33,7 @@ const COMMANDS = new Set([
   "review",
   "merge",
   "done",
+  "worktrees",
   "status",
   "loop",
   "backlog",
@@ -153,14 +155,22 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       console.log(await mergeGate(d, need(x, "PR"), { dryRun: one(a, "dry-run") === "true" }));
       return 0;
     case "done": {
+      if (a.flags.has("force"))
+        throw new Refusal("done no longer takes --force; use: dori done --drop <key> --reason <text>");
       const drop = one(a, "drop") === "true";
       const reason = one(a, "reason");
       if (drop && reason === undefined) throw new Refusal("done --drop needs --reason <text>");
       const note = await done(d, need(x, "lane key"), {
-        force: one(a, "force") === "true",
         ...(drop && reason !== undefined ? { drop: reason } : {}),
       });
       console.log(`DONE ${x}${note === undefined ? "" : ` (${note})`}`);
+      return 0;
+    }
+    case "worktrees": {
+      const sub = need(x, "worktrees list|prune");
+      if (sub === "list") await listWorktrees(d);
+      else if (sub === "prune") await pruneWorktrees(d);
+      else throw new Refusal(`unknown worktrees command ${sub}\n\n${USAGE}`);
       return 0;
     }
     case "migrate":

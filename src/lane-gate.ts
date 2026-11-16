@@ -127,19 +127,19 @@ export async function laneGate(d: Deps, lane: Lane): Promise<LaneGate> {
   if (tip === undefined)
     return {
       ok: false,
-      reason: `lane ${lane.key}: cannot read HEAD in ${laneRepo(lane)}; fix the checkout, then run: dori review --lane ${lane.key} (or dori done ${lane.key} --force)`,
+      reason: `lane ${lane.key}: cannot read HEAD in ${laneRepo(lane)}; fix the checkout, then run: dori review --lane ${lane.key} (or dori done --drop ${lane.key} --reason <text>)`,
     };
   if (tip === lane.baseSha) return { ok: true };
   const receipt = d.store.laneReceipt(lane.key, tip);
   if (!receipt)
     return {
       ok: false,
-      reason: `lane ${lane.key} at ${tip.slice(0, 12)} has no review receipt; run: dori review --lane ${lane.key} (or dori done ${lane.key} --force)`,
+      reason: `lane ${lane.key} at ${tip.slice(0, 12)} has no review receipt; run: dori review --lane ${lane.key} (or dori done --drop ${lane.key} --reason <text>)`,
     };
   if (receipt.verdict !== "CLEAR")
     return {
       ok: false,
-      reason: `lane ${lane.key} at ${tip.slice(0, 12)} is ${receipt.verdict}; fix it, then run: dori review --lane ${lane.key} (or dori done ${lane.key} --force)`,
+      reason: `lane ${lane.key} at ${tip.slice(0, 12)} is ${receipt.verdict}; fix it, then run: dori review --lane ${lane.key} (or dori done --drop ${lane.key} --reason <text>)`,
     };
   return { ok: true };
 }

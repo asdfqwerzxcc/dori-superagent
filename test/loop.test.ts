@@ -97,6 +97,8 @@ describe("hourly loop", () => {
     expect(d.store.item("item-b")).toMatchObject({ status: "open", attempts: 1 });
     expect(d.store.item("item-b")!.decision).toBeUndefined();
 
+    // D16: a lost key is kept as evidence and refuses a restart until the operator drops it.
+    expect(await done(d, "item-b", { drop: "lost" })).toBe("dropped: lost");
     expect((await tick()).started).toEqual(["item-b (p5)"]);
     const again = d.store.lane("item-b")!;
     again.status = "lost";

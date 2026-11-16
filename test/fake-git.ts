@@ -10,6 +10,8 @@ export type Repo = {
   /** false makes `merge-base --is-ancestor` say the branch does not descend. */
   ancestor?: boolean;
   worktreeAdd?: { code: number; stdout: string; stderr?: string };
+  /** true makes `rev-parse --verify` report the lane branch as already present. */
+  branchExists?: boolean;
   longpaths?: string;
   mergeFails?: string;
 };
@@ -22,6 +24,8 @@ export function fakeGit(w: World, repo: Repo): void {
     const args = argv[0] === "-C" ? argv.slice(2) : argv;
     const [cmd, sub] = args;
     if (cmd === "rev-parse" && args.includes("--show-toplevel")) return { code: 0, stdout: "/repo\n" };
+    if (cmd === "rev-parse" && args.includes("--verify"))
+      return repo.branchExists === true ? { code: 0, stdout: `${repo.head}\n` } : { code: 1, stdout: "", stderr: "" };
     if (cmd === "rev-parse")
       return { code: 0, stdout: `${cwd === "/repo" ? repo.head : (repo.worktreeHead ?? repo.head)}\n` };
     if (cmd === "config") return { code: 0, stdout: `${repo.longpaths ?? "true"}\n` };
