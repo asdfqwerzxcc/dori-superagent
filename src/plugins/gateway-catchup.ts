@@ -1,81 +1,33 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  compareSnowflakes,
+  discordGet as getJson,
+  gatewayLastPath,
+  newerSnowflake,
+  readDiscordToken as readToken,
+  readGatewayLast as readLast,
+  watchedChannels,
+  type DiscordAttachment as Attachment,
+  type DiscordMessage as Message,
+} from "./discord.ts";
 import type { Plugin, PluginCtx } from "./plugin.ts";
 
-const API = "https://discord.com/api/v10";
 /** A message this fresh belongs to the socket path; the catch-up only claims what the socket cannot have seen. */
 const FRESH_MS = 10_000;
 
-type Attachment = { url?: string; filename?: string; content_type?: string; size?: number };
-type Author = { id?: string; username?: string; bot?: boolean };
-type Message = {
-  id: string;
-  content?: string;
-  timestamp?: string;
-  author?: Author;
-  channel_id?: string;
-  attachments?: Attachment[];
-  message_reference?: { message_id?: string };
-};
 type Reply = { id: string; author: string; content: string; attachments: number };
 type Saved = { filename: string; contentType: string; size: number; path: string };
 
-const lastPath = (home: string): string => join(home, "state", "gateway-last.json");
 const inboxDir = (home: string): string => join(home, "state", "inbound");
 const cliPath = (): string => join(import.meta.dir, "..", "cli.ts");
 
-function readLast(home: string): Record<string, string> {
-  try {
-    return JSON.parse(readFileSync(lastPath(home), "utf8")) as Record<string, string>;
-  } catch {
-    return {};
-  }
-}
-
 function remember(home: string, last: Record<string, string>, channel: string, id: string): void {
   const current = last[channel];
-  let newer: boolean;
-  try {
-    newer = current === undefined || BigInt(id) > BigInt(current);
-  } catch {
-    newer = true;
-  }
-  if (!newer) return;
+  if (current !== undefined && !newerSnowflake(id, current)) return;
   last[channel] = id;
   mkdirSync(join(home, "state"), { recursive: true });
-  writeFileSync(lastPath(home), JSON.stringify(last));
-}
-
-function readToken(home: string): string | undefined {
-  const env = process.env["DORI_DISCORD_TOKEN"];
-  if (env !== undefined && env.trim() !== "") return env.trim();
-  try {
-    return readFileSync(join(home, "discord.token"), "utf8").trim();
-  } catch {
-    return undefined;
-  }
-}
-
-/** The channels the gateway watched last (its keys), with DORI_WATCH_CHANNELS as the cold-start override. */
-function watchedChannels(last: Readonly<Record<string, string>>): string[] {
-  const env = process.env["DORI_WATCH_CHANNELS"];
-  if (env !== undefined && env.trim() !== "") {
-    return env
-      .split(",")
-      .map((c) => c.trim())
-      .filter((c) => c !== "");
-  }
-  return Object.keys(last);
-}
-
-async function getJson<T>(path: string, token: string): Promise<T | null> {
-  try {
-    const res = await fetch(`${API}${path}`, { headers: { Authorization: `Bot ${token}` } });
-    if (!res.ok) return null;
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
+  writeFileSync(gatewayLastPath(home), JSON.stringify(last));
 }
 
 async function resolveReply(channel: string, messageId: string | undefined, token: string): Promise<Reply | null> {
@@ -199,7 +151,7 @@ export async function catchUp(ctx: PluginCtx): Promise<CatchUpCounts> {
     if (since === undefined) continue;
     const batch = await getJson<Message[]>(`/channels/${channel}/messages?limit=50&after=${since}`, token);
     if (!Array.isArray(batch) || batch.length === 0) continue;
-    batch.sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+    batch.sort((a, b) => compareSnowflakes(a.id, b.id));
     counts.fetched += batch.length;
     for (const m of batch) {
       if (m.author?.bot === true) {
