@@ -3,7 +3,7 @@ import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { status } from "../src/cli-up.ts";
-import { reviewLane } from "../src/lane-gate.ts";
+import { reviewLane } from "../src/lane-review.ts";
 import { done, ready, startLane } from "../src/lanes.ts";
 import { fakeGit, type Repo } from "./fake-git.ts";
 import { setup } from "./harness-setup.ts";
@@ -61,7 +61,7 @@ describe("lane review gate", () => {
     fakeGit(second.w, repo2);
     await startLane(second.d, "quiet", second.brief, { group: "w1" });
     repo2.head = tip;
-    second.w.reviewer = () => ({ code: 0, stdout: "no verdict here" });
+    second.w.reviewer = () => ({ code: 0, stdout: "no verdict here", stderr: "provider warning" });
     const failure: unknown = await reviewLane(second.d, "quiet").then(
       () => undefined,
       (e: unknown) => e,
@@ -74,7 +74,9 @@ describe("lane review gate", () => {
     expect((failure as Error).message).toContain("no VERDICT");
     expect((failure as Error).message).toContain(diagnostic);
     if (posixModes) expect(statSync(diagnostic).mode & 0o777).toBe(0o600);
-    expect(readFileSync(diagnostic, "utf8")).toBe("no verdict here");
+    expect(readFileSync(diagnostic, "utf8")).toContain("no verdict here");
+    expect(readFileSync(diagnostic, "utf8")).toContain("provider warning");
+    expect(readFileSync(diagnostic, "utf8")).toContain("exit 0");
     expect(second.d.store.laneReceipt("quiet", tip)).toBeUndefined();
     expect(second.d.store.lane("quiet")!.tipSha).toBe(base);
   });

@@ -12,9 +12,13 @@ const SHA_RE = /^[0-9a-f]{7,64}$/;
 export class Receipts {
   constructor(private readonly root: string) {}
 
-  private path(dir: "receipts" | "lane-reviews", name: string, sha: string, ext: "json" | "diff"): string {
+  private checked(name: string, sha: string): string {
     if (!NAME_RE.test(name) || !SHA_RE.test(sha)) throw new Error(`invalid receipt name ${name}@${sha}`);
-    return join(this.root, dir, `${name}@${sha}.${ext}`);
+    return `${name}@${sha}`;
+  }
+
+  private path(dir: "receipts" | "lane-reviews", name: string, sha: string, ext: "json" | "diff"): string {
+    return join(this.root, dir, `${this.checked(name, sha)}.${ext}`);
   }
 
   private prName(pr: string): string {
@@ -41,5 +45,11 @@ export class Receipts {
   /** Where `dori review --lane` keeps the diff it hands the reviewer, one file per lane and tip. */
   laneDiffPath(key: string, tip: string): string {
     return this.path("lane-reviews", `lane_${key}`, tip, "diff");
+  }
+
+  /** The diff for one path-grouped chunk of a large lane review, reviewed in place of the whole diff. */
+  laneChunkDiffPath(key: string, tip: string, index: number): string {
+    if (!Number.isInteger(index) || index < 1) throw new Error(`invalid chunk index ${index}`);
+    return join(this.root, "lane-reviews", `${this.checked(`lane_${key}`, tip)}.chunk-${index}.diff`);
   }
 }

@@ -28,14 +28,30 @@ The lane record also carries the current `tipSha`, refreshed at each review.
    only the lane's work;
 2. refreshes the tip and diffs exactly `base..tip`;
 3. saves the full diff to `lane-reviews/lane_<key>@<tip>.diff` and renders `prompts/review-lane.md` with the brief path, the
-   base, the tip, that diff and the worktree as `repo`;
-4. runs the reviewer non-interactively (`omo -p --no-session`, or `hooks.reviewCommand` when configured) and reads
-   exactly one final `VERDICT: CLEAR|BLOCK` line;
-5. writes `receipts/lane_<key>@<tip>.json` with the verdict, base, tip, brief path, reviewer command and time.
+   base, the tip, that diff and the worktree as `repo`; a diff over 40 KB or 3000 changed lines is split by path into
+   chunks (`lane-reviews/lane_<key>@<tip>.chunk-<n>.diff`), each rendered with `prompts/review-lane-chunk.md` and
+   reviewed in sequence;
+4. runs the reviewer non-interactively (`omo -p --no-session`, or `hooks.reviewCommand` when configured) with a 10-minute
+   deadline (`DORI_REVIEW_TIMEOUT_MS` overrides it), streams its stdout/stderr to `state/reviews/<key>.log`, and prints
+   one "still running" line every 30 s;
+5. reads exactly one final `VERDICT: CLEAR|BLOCK` line per chunk (BLOCK wins when any chunk blocks) and writes
+   `receipts/lane_<key>@<tip>.json` with the verdict, base, tip, brief path, reviewer command, time and, for a chunked
+   review, a summary naming every chunk and its result.
+
+A `hooks.reviewCommand` reviewer still gets the deadline, the log and the failure receipts, but it runs once on the
+full diff: it owns its own arguments, so the path chunking applies to the built-in `omo` reviewer.
 
 The receipt names the exact tip, so it can never describe a different diff. A new commit after a review invalidates it:
-review again. A reviewer that prints no VERDICT line writes no receipt; its last 200 output lines are kept as
-`receipts/lane_<key>@<tip>-<uuid>.noverdict.txt` (mode 0600) and the command fails.
+review again.
+
+A reviewer that outlives the deadline is killed and writes a receipt whose verdict is `reviewer_timeout`, carrying the
+partial stdout, the stderr and the exit code (when the killed process reported one). A reviewer that exits with an empty
+stdout writes a `reviewer_empty` receipt, also carrying stderr and the exit code. Both are failed reviews: `dori done`
+refuses them and never treats the lane as approved. The full output stays in `state/reviews/<key>.log`.
+
+A reviewer that printed something but no `VERDICT` line writes no receipt; its last 200 output lines, its stderr and its
+exit code are kept as `receipts/lane_<key>@<tip>-<uuid>.noverdict.txt` (mode 0600) and the command fails. A zero-byte
+answer is always `reviewer_empty`, never a pending review.
 
 ## Layer 2: the lead review
 
@@ -57,18 +73,26 @@ command to run:
 lane <key> at <sha> has no review receipt; run: dori review --lane <key> (or dori done --drop <key> --reason <text>)
 ```
 
-A lane that committed nothing (`base` equals `tip`) closes without a receipt: an investigation lane has no diff to
+A failed review at that tip refuses the same way, naming the verdict and the log:
+
+```
+lane <key> at <sha> is reviewer_timeout; log: <home>/state/reviews/<key>.log; run: dori review --lane <key> (or dori done --drop <key> --reason <text>)
+```
+
+These verdicts (and `reviewer_empty`) are failures, not passes: the lane is never approved by a review that produced no
+answer. A lane that committed nothing (`base` equals `tip`) closes without a receipt: an investigation lane has no diff to
 review. A lane started before this gate has no recorded base; it closes with an explicit `(no review gate: ...)` note
-instead of being reviewed against a guessed base. There is no force path: a BLOCK or a missing receipt is resolved by
-reviewing again, or by `dori done --drop <key> --reason <text>`, which closes the lane, removes its worktree and branch
-without landing, records `dropped` with the reason, and never touches `main`. The escape hatch is explicit, never
-silent.
+instead of being reviewed against a guessed base. There is no force path: a BLOCK, a failed review or a missing receipt
+is resolved by reviewing again, or by `dori done --drop <key> --reason <text>`, which closes the lane, removes its
+worktree and branch without landing, records `dropped` with the reason, and never touches `main`. The escape hatch is
+explicit, never silent.
 
 ## `dori status`
 
-Each lane row ends with `review=reviewed`, `review=BLOCK` or `review=no receipt`, read from the receipt pinned to the
-lane's current tip. `reviewed` means a CLEAR receipt exists at that tip; `BLOCK` means the receipt at that tip says
-BLOCK; `no receipt` means neither (including a lane from before the gate).
+Each lane row ends with `review=reviewed`, `review=<verdict>` (for example `review=BLOCK`, `review=reviewer_timeout`)
+or `review=no receipt`, read from the receipt pinned to the lane's current tip. `reviewed` means a CLEAR receipt exists at
+that tip; any other verdict means that receipt refused the tip; `no receipt` means neither (including a lane from before
+the gate).
 
 ## Limits
 

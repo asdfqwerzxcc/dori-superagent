@@ -6,7 +6,7 @@ import { status, up } from "./cli-up.ts";
 import { done, ready, report, startLane } from "./lanes.ts";
 import { listWorktrees, pruneWorktrees } from "./worktrees.ts";
 import { mergeGate, review } from "./gate.ts";
-import { reviewLane } from "./lane-gate.ts";
+import { reviewLane } from "./lane-review.ts";
 import { need, one, parse, textOf, USAGE } from "./cli-args.ts";
 import { defaultDeps, ROLES, type Deps } from "./harness.ts";
 import { ConfigError, hooksSettled } from "./hooks.ts";

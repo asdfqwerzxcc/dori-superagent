@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Deps } from "./harness.ts";
-import { repoHead } from "./lane-gate.ts";
+import { repoHead } from "./lane-repo.ts";
 import { Refusal } from "./refusal.ts";
 import type { ExecResult } from "./runtime/exec.ts";
 import type { Lane } from "./store-types.ts";

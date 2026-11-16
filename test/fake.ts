@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Deps } from "../src/harness.ts";
-import type { Exec } from "../src/runtime/exec.ts";
+import type { Exec, ExecOptions } from "../src/runtime/exec.ts";
 import { HcRuntime } from "../src/runtime/hc/index.ts";
 import { HerdrRuntime } from "../src/runtime/herdr/index.ts";
 import { Runtimes } from "../src/runtime/registry.ts";
@@ -73,10 +73,14 @@ export class World {
     flush: async () => {},
   };
   /** every command other than herdr, hc and gh: the reviewer, and lifecycle hooks */
-  reviewer: (argv: readonly string[]) => { code: number; stdout: string; stderr?: string } = () => ({
-    code: 0,
-    stdout: "VERDICT: CLEAR",
-  });
+  reviewer: (
+    argv: readonly string[],
+    options?: ExecOptions,
+  ) => { code: number; stdout: string; stderr?: string } | Promise<{ code: number; stdout: string; stderr?: string }> =
+    () => ({
+      code: 0,
+      stdout: "VERDICT: CLEAR",
+    });
 
   addPane(id: string, status: AgentStatus = "idle"): Pane {
     const p = { status, received: [], ran: [] };
@@ -106,7 +110,7 @@ export class World {
     if (cmd === "gh") return { ...this.gh(argv), stderr: "" };
     if (cmd === "git") return { stderr: "", ...this.git(argv) };
     if (cmd === "hc") return this.hc.exec(cmd, argv);
-    if (cmd !== "herdr") return { stderr: "", ...this.reviewer(argv) };
+    if (cmd !== "herdr") return { stderr: "", ...(await this.reviewer(argv, options)) };
     const ok = (result: unknown) => ({ code: 0, stdout: JSON.stringify({ result }), stderr: "" });
     const [group, verb, id] = argv;
     if (group === "pane" && verb === "process-info") {

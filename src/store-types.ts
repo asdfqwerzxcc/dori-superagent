@@ -64,10 +64,14 @@ export type ReviewReceipt = {
   summary: string;
 };
 
+/** A reviewer's answer to one lane diff. `reviewer_timeout` and `reviewer_empty` are failed reviews: they are
+ * receipts like any other, and a `done` gate refuses them rather than treating a missing answer as pending. */
+export type LaneVerdict = "CLEAR" | "BLOCK" | "reviewer_timeout" | "reviewer_empty";
+
 /** The verdict a reviewer gave one lane diff: `receipts/lane_<key>@<tip>.json`. */
 export type LaneReceipt = {
   lane: string;
-  verdict: "CLEAR" | "BLOCK";
+  verdict: LaneVerdict;
   base: string;
   tip: string;
   brief: string;

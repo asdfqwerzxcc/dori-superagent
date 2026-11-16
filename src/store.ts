@@ -49,8 +49,10 @@ export class Store {
 
   constructor(readonly root: string = process.env["DORI_HOME"] ?? join(homedir(), ".dori")) {
     this.receipts = new Receipts(root);
-    for (const d of ["lanes", "inbox", "briefs", "receipts", "lane-reviews", "backlog", "loop/runs", "duty"])
+    for (const d of ["lanes", "inbox", "briefs", "receipts", "lane-reviews", "backlog", "duty"])
       mkdirSync(join(root, d), { recursive: true });
+    mkdirSync(join(root, "loop", "runs"), { recursive: true });
+    mkdirSync(join(root, "state", "reviews"), { recursive: true });
   }
 
   lane(key: string): Lane | undefined {

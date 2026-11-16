@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { status } from "../src/cli-up.ts";
-import { laneRepo, reviewLane } from "../src/lane-gate.ts";
+import { laneRepo } from "../src/lane-repo.ts";
+import { reviewLane } from "../src/lane-review.ts";
 import { done, ready, startLane } from "../src/lanes.ts";
 import { fakeGit, type Repo } from "./fake-git.ts";
 import type { World } from "./fake.ts";
