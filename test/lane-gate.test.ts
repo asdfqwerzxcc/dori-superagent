@@ -86,6 +86,7 @@ describe("lane review gate", () => {
     expect((failure as Error).message).toContain("no VERDICT");
     expect((failure as Error).message).toContain(diagnostic);
     if (posixModes) expect(statSync(diagnostic).mode & 0o777).toBe(0o600);
+    expect(readFileSync(diagnostic, "utf8")).toBe("no verdict here");
     expect(second.d.store.laneReceipt("quiet", tip)).toBeUndefined();
     expect(second.d.store.lane("quiet")!.tipSha).toBe(base);
   });
