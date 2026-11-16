@@ -16,6 +16,15 @@ import { scanWorktrees } from "./worktrees.ts";
 const supervisorAlive = (root: string): boolean =>
   supervisorHealth(root).some((h) => h.name === "supervisor" && h.alive);
 
+/**
+ * The lead is the pane that answers the human, so it must never hold its turn on a foreground child: the engine
+ * promotes one only at its prompt-cache budget (270 s at a 5m TTL) and prints nothing meanwhile, which is why an
+ * inbound message queued behind a 5m task call for 5m. On engines that know the marker an omitted
+ * `run_in_background` defaults to true while an explicit false still blocks; engines that predate it ignore the
+ * variable. Duty and the loops keep the engine default, so only the pane that talks to the human is affected.
+ */
+const LEAD_ENV = { OMO_TASK_DEFAULT_BACKGROUND: "1" } as const;
+
 const supervise = (d: Deps, supervisors: boolean): Promise<SupervisedState> =>
   d.supervise !== undefined ? d.supervise(d.store.root, { supervisors }) : superviseHome(d.store.root, { supervisors });
 
@@ -44,7 +53,7 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
   // herdr ignores the group of a workspace-root session and reports the new workspace as the lead ref's group.
   const lead = await openSession(
     rt,
-    { name: "dori", role: "lead", container: "workspace-root", cwd, env: {}, group: groupId(d.store.root) },
+    { name: "dori", role: "lead", container: "workspace-root", cwd, env: LEAD_ENV, group: groupId(d.store.root) },
     agent("lead.md"),
   );
   d.store.setRole("lead", lead);

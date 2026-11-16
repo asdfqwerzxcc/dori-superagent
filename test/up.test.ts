@@ -7,7 +7,7 @@ import { World } from "./fake.ts";
 import { captureIo } from "./inbox-setup.ts";
 
 describe("dori up", () => {
-  test("herdr: the same 8 calls as before runtimes existed, and all four roles registered", async () => {
+  test("herdr: eight calls, the lead alone carries the task background default, all four roles registered", async () => {
     const w = new World();
     const d = w.deps();
     const root = d.store.root;
@@ -31,7 +31,17 @@ describe("dori up", () => {
     ];
     expect(w.calls.map((c) => [c.cmd, ...c.argv])).toEqual(
       [
-        ["workspace", "create", "--label", "dori", "--cwd", "/w", "--no-focus"],
+        [
+          "workspace",
+          "create",
+          "--label",
+          "dori",
+          "--cwd",
+          "/w",
+          "--env",
+          "OMO_TASK_DEFAULT_BACKGROUND=1",
+          "--no-focus",
+        ],
         ["pane", "run", "w1:p2", prompt("lead.md")],
         [
           "tab",
@@ -53,6 +63,9 @@ describe("dori up", () => {
         ["pane", "run", "w1:p5", "dori loop"],
       ].map((argv) => ["herdr", ...argv]),
     );
+    // A lead that blocks its turn on a foreground child queues the human behind it; the other panes need no such guard.
+    expect(w.calls.filter((c) => c.argv.includes("OMO_TASK_DEFAULT_BACKGROUND=1"))).toHaveLength(1);
+    expect(w.calls[0]?.argv).toContain("OMO_TASK_DEFAULT_BACKGROUND=1");
     expect(JSON.parse(readFileSync(join(root, "roles.json"), "utf8"))).toEqual({
       lead: "w1:p2",
       duty: "w1:p3",
@@ -81,6 +94,8 @@ describe("dori up", () => {
       "dori.role=duty-loop",
       "dori.role=hourly-loop",
     ]);
+    expect(runs[0] ?? []).toContain("OMO_TASK_DEFAULT_BACKGROUND=1");
+    expect(runs.slice(1).some((a) => a.some((x) => x.startsWith("OMO_TASK_DEFAULT_BACKGROUND=")))).toBe(false);
     expect(runs.some((a) => a.some((x) => x.startsWith("HERDR_WORKSPACE_ID=")))).toBe(false);
     expect(w.calls.some((c) => c.cmd === "herdr")).toBe(false);
     expect(w.hc.calls.filter((c) => c[0] === "send").map((c) => c.at(-1))).toEqual([
