@@ -40,6 +40,8 @@ function template(name: string, value: unknown): ArgvTemplate {
 /** The config values a lane review reads: the hooks and the optional fallback model for a failed reviewer. */
 export type ReviewSettings = {
   readonly hooks: Hooks;
+  /** `reviewModel`: the reviewer to run when the caller passes no `--model`. */
+  readonly model?: string;
   /** `reviewFallbackModel`: one retry of the built-in reviewer when the first attempt produces no verdict. */
   readonly fallbackModel?: string;
 };
@@ -69,7 +71,14 @@ function readConfig(root: string): ReviewSettings {
   const fallback: unknown = Reflect.get(parsed, "reviewFallbackModel");
   if (fallback !== undefined && (typeof fallback !== "string" || fallback.trim() === ""))
     throw new ConfigError("config.json: reviewFallbackModel must be a non-empty string");
-  return { hooks, ...(fallback === undefined ? {} : { fallbackModel: fallback.trim() }) };
+  const model: unknown = Reflect.get(parsed, "reviewModel");
+  if (model !== undefined && (typeof model !== "string" || model.trim() === ""))
+    throw new ConfigError("config.json: reviewModel must be a non-empty string");
+  return {
+    hooks,
+    ...(model === undefined ? {} : { model: model.trim() }),
+    ...(fallback === undefined ? {} : { fallbackModel: fallback.trim() }),
+  };
 }
 
 /** Reads `hooks` from `<root>/config.json`. No file or no `hooks` key = no hooks; other keys are ignored. */

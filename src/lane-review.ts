@@ -58,6 +58,9 @@ export async function reviewLane(
   const settings = loadReviewSettings(d.store.root);
   const hook = settings.hooks.reviewCommand;
   const fallback = hook === undefined ? settings.fallbackModel : undefined;
+  // A configured `reviewModel` is the default reviewer, so a lane never has to spell --model and never falls onto an
+  // agent default that the provider may refuse.
+  const chosen = model ?? settings.model;
   const timeoutMs = opts.timeoutMs ?? reviewTimeoutFromEnv();
   const vars = { lane: key, key, base, tip, sha: tip, brief: lane.brief, diff: diffPath, repo };
   const argsFor = (text: string, m: string | undefined): readonly string[] => {
@@ -107,7 +110,7 @@ export async function reviewLane(
   appendFileSync(logPath, `review lane ${key} at ${tip} (base ${base})\n`);
   const reviewerField = (): string => {
     const retried = results.some((r) => r.retried !== undefined);
-    return `${reviewerFor(model)}${retried && fallback !== undefined ? `; retried with --model ${fallback}` : ""}`;
+    return `${reviewerFor(chosen)}${retried && fallback !== undefined ? `; retried with --model ${fallback}` : ""}`;
   };
   const results: LaneResult[] = [];
   const diagnose = (r: LaneResult): { diagnostic: ReviewDiagnostic; path: string } => {
@@ -168,7 +171,7 @@ export async function reviewLane(
   const queue = [...runs];
   for (let i = 0; i < queue.length; i++) {
     const run = queue[i]!;
-    let result = await attempt(run, model);
+    let result = await attempt(run, chosen);
     const empty = result.outcome.kind === "exit" && result.outcome.stdout.trim() === "";
     if (empty && run.chunk !== undefined && run.resplit !== true) {
       const subChunks = resplitChunk(run.chunk);
@@ -181,7 +184,7 @@ export async function reviewLane(
         continue;
       }
     }
-    if (failed(result) && fallback !== undefined && fallback !== model) {
+    if (failed(result) && fallback !== undefined && fallback !== chosen) {
       const primary = result;
       const primaryDiag = diagnose(primary);
       result = await attempt(run, fallback);
