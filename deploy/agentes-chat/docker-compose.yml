@@ -1,0 +1,289 @@
+# agentes.chat self-host deploy package.
+#
+# Based on the upstream compose file at release v0.1.2
+# (commit 1abdbe79f5c39f3f4749f02ae8ffa5f469993683):
+# https://github.com/agentes-chat/agentes-chat/blob/v0.1.2/docker-compose.yml
+#
+# Every image is pinned by tag and digest. Every setting lives in .env; this
+# file is not meant to be edited. See upgrade.md before changing a pin.
+#
+# Profiles, from COMPOSE_PROFILES in .env (comma-separated):
+#   (empty)     http://127.0.0.1:3000 on this machine only
+#   tailscale   private HTTPS on your tailnet (needs TS_AUTHKEY)
+#   https       a public DOMAIN with Caddy on ports 80 and 443
+#   speech      voice messages transcribed on this machine (Parakeet)
+#   embeddings  search vectors on this machine (x86-64 only)
+#
+# First start:
+#   cp .env.example .env
+#   # fill POSTGRES_PASSWORD, AGENTES_SECRET and PUBLIC_URL in .env
+#   docker compose up -d
+#
+# Upstream source of every option: SELF_HOSTING.md at v0.1.2, section
+# "Configuration".
+
+services:
+  postgres:
+    # pgvector: the first migration creates the vector extension.
+    image: pgvector/pgvector:0.8.7-pg18@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+    environment:
+      POSTGRES_USER: agentes
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (openssl rand -hex 24)}"
+      POSTGRES_DB: agentes
+    volumes:
+      # Postgres 18 images keep their data in /var/lib/postgresql/18/docker,
+      # under this mount.
+      - pgdata:/var/lib/postgresql
+    restart: unless-stopped
+    healthcheck:
+      # Over TCP: on first start the init server listens only on the Unix
+      # socket, then restarts.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U agentes -d agentes"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  agentes:
+    # Pinned to the v0.1.2 release. Keep AGENTES_IMAGE in .env equal to this
+    # value unless you are deliberately upgrading (see upgrade.md).
+    image: "${AGENTES_IMAGE:-ghcr.io/agentes-chat/agentes:0.1.2@sha256:d6bde5d5b68510a7d8a309b0491ec1431ffeeb815f019c2b9bdaf269e004ad4f}"
+    # The whole .env reaches the app, so optional upstream variables can go
+    # there. These entries make Compose fail fast when a required one is empty.
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "postgres://agentes:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/agentes"
+      FILES_DIR: /data/files
+      PUBLIC_URL: "${PUBLIC_URL:?set PUBLIC_URL in .env, the exact address people open}"
+      AGENTES_SECRET: "${AGENTES_SECRET:?set AGENTES_SECRET in .env (openssl rand -base64 48)}"
+      ALLOW_SIGNUP: "${ALLOW_SIGNUP:-false}"
+      EXTRA_TRUSTED_ORIGINS: "${EXTRA_TRUSTED_ORIGINS:-}"
+      OWNER_CLAIM_SHA256: "${OWNER_CLAIM_SHA256:-}"
+      TRUSTED_PROXIES: "${TRUSTED_PROXIES:-}"
+      SMTP_URL: "${SMTP_URL:-}"
+      EMAIL_FROM: "${EMAIL_FROM:-}"
+      GOOGLE_CLIENT_ID: "${GOOGLE_CLIENT_ID:-}"
+      GOOGLE_CLIENT_SECRET: "${GOOGLE_CLIENT_SECRET:-}"
+      TELEMETRY: "${TELEMETRY:-on}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      TYPESAFE_API_KEY: "${TYPESAFE_API_KEY:-}"
+      PLATFORM_ANTHROPIC_API_KEY: "${PLATFORM_ANTHROPIC_API_KEY:-}"
+      LOCAL_SPEECH_URL: "${LOCAL_SPEECH_URL:-}"
+      SPEECH_ENGINES: "${SPEECH_ENGINES:-}"
+      EMBEDDINGS_PROVIDER: "${EMBEDDINGS_PROVIDER:-none}"
+      EMBEDDINGS_URL: "${EMBEDDINGS_URL:-}"
+      EMBEDDING_MODEL: "${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}"
+      EMBEDDINGS_QUERY_TIMEOUT_MS: "${EMBEDDINGS_QUERY_TIMEOUT_MS:-1500}"
+    volumes:
+      - files:/data/files
+    ports:
+      # Loopback by default: Docker publishes ports through iptables, past any
+      # host firewall. Put a proxy or Tailscale in front for remote access.
+      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [default, speech, embeddings]
+    restart: unless-stopped
+    # What the app may take from the machine it shares with Postgres and the
+    # optional local services. Over it, the kernel stops this container alone
+    # and it restarts, instead of the machine swapping until something else
+    # is killed.
+    mem_limit: "${AGENTES_MEMORY:-8g}"
+    memswap_limit: "${AGENTES_MEMORY:-8g}"
+    # Above the 20 s that runs in progress get to finish on SIGTERM.
+    stop_grace_period: 40s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      # 200 only while the app and its database are up.
+      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:' + (process.env.PORT || 3000) + '/api/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+
+  speech:
+    # Voice messages' words on this machine. On with speech in
+    # COMPOSE_PROFILES and LOCAL_SPEECH_URL=http://speech:8000/v1.
+    image: "ghcr.io/agentes-chat/speech:0.1.2@sha256:ca0d6faa9f8afd0db003f4f9bba9529be072b22b3ba9ea30b9c6a4e58a3b1c5c"
+    profiles: ["speech"]
+    environment:
+      SPEECH_API_KEY: "${LOCAL_SPEECH_API_KEY:-}"
+      SPEECH_WORKERS: "${SPEECH_WORKERS:-2}"
+      SPEECH_THREADS: "${SPEECH_THREADS:-2}"
+      SPEECH_QUEUE: "${SPEECH_QUEUE:-4}"
+      SPEECH_WAIT_SECONDS: "${SPEECH_WAIT_SECONDS:-3}"
+      SPEECH_LANGUAGE_MIN: "${SPEECH_LANGUAGE_MIN:-0.7}"
+    networks: [speech]
+    # Docker refuses more CPUs than the machine has: set SPEECH_CPUS=2 on a
+    # 2-CPU server.
+    cpus: "${SPEECH_CPUS:-4}"
+    mem_limit: "${SPEECH_MEMORY:-4g}"
+    memswap_limit: "${SPEECH_MEMORY:-4g}"
+    restart: unless-stopped
+    healthcheck:
+      # 200 once the models are loaded.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 120s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  embeddings:
+    # Search's vectors on this machine, with Hugging Face's
+    # text-embeddings-inference on the CPU. On with embeddings in
+    # COMPOSE_PROFILES, EMBEDDINGS_PROVIDER=openai and
+    # EMBEDDINGS_URL=http://embeddings:8080/v1. x86-64 only.
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.4@sha256:2538ea1c9640d3763b15af668039d24172d063b42337b0c27796fc2be180c78d
+    profiles: ["embeddings"]
+    environment:
+      MODEL_ID: "${EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-0.6B}"
+      PORT: "8080"
+      HF_HOME: /data
+      MAX_BATCH_TOKENS: "${EMBEDDINGS_BATCH_TOKENS:-2048}"
+      RAYON_NUM_THREADS: "${EMBEDDINGS_THREADS:-2}"
+      OMP_NUM_THREADS: "${EMBEDDINGS_THREADS:-2}"
+      MKL_NUM_THREADS: "${EMBEDDINGS_THREADS:-2}"
+    volumes:
+      - embeddings-models:/data
+    networks: [embeddings]
+    cpus: "${EMBEDDINGS_CPUS:-2}"
+    mem_limit: "${EMBEDDINGS_MEMORY:-3g}"
+    memswap_limit: "${EMBEDDINGS_MEMORY:-3g}"
+    restart: unless-stopped
+    healthcheck:
+      # 200 once the model is loaded; the first start downloads it first.
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 600s
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp
+
+  tailscale:
+    # Joins the tailnet as TS_HOSTNAME and serves HTTPS with Tailscale's
+    # certificate, proxied to the app (WebSockets included). Userspace
+    # networking: no /dev/net/tun, no NET_ADMIN, nothing published on this
+    # machine.
+    image: tailscale/tailscale:v1.102.5@sha256:c507f3a2a6ab1cabd8d809b98edeb41edbd5c3fb6ad9632ffd098b4c7d0b4065
+    profiles: ["tailscale"]
+    environment:
+      TS_AUTHKEY: "${TS_AUTHKEY:-}"
+      TS_HOSTNAME: "${TS_HOSTNAME:-agentes}"
+      TS_EXTRA_ARGS: "${TS_EXTRA_ARGS:-}"
+      TS_STATE_DIR: /var/lib/tailscale
+      # The key logs in once; after that the node logs in from its state in
+      # the volume.
+      TS_AUTH_ONCE: "true"
+      TS_USERSPACE: "true"
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_ENABLE_HEALTH_CHECK: "true"
+      TS_LOCAL_ADDR_PORT: "127.0.0.1:9002"
+    configs:
+      - source: tailscale-serve-${TAILSCALE_FUNNEL:-false}
+        target: /config/serve.json
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+    restart: unless-stopped
+    healthcheck:
+      # 200 once the node has a tailnet address.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:9002/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  caddy:
+    # Certificate for DOMAIN, http -> https redirect, WebSockets, and
+    # X-Forwarded-For set to the client alone. Leave TRUSTED_PROXIES empty
+    # unless another proxy or CDN sits in front of Caddy.
+    image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    profiles: ["https"]
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy-data:/data
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # The caddy binary has this file capability; without it in the bounding
+    # set, exec fails.
+    cap_add:
+      - NET_BIND_SERVICE
+
+configs:
+  # Tailscale's serve config. The container fills in TS_CERT_DOMAIN, its
+  # ts.net name ($$ keeps Compose from reading it). TAILSCALE_FUNNEL in .env
+  # picks one: true opens it to the internet.
+  tailscale-serve-false:
+    content: |
+      {
+        "TCP": { "443": { "HTTPS": true } },
+        "Web": { "$${TS_CERT_DOMAIN}:443": { "Handlers": { "/": { "Proxy": "http://agentes:3000" } } } }
+      }
+  tailscale-serve-true:
+    content: |
+      {
+        "TCP": { "443": { "HTTPS": true } },
+        "Web": { "$${TS_CERT_DOMAIN}:443": { "Handlers": { "/": { "Proxy": "http://agentes:3000" } } } },
+        "AllowFunnel": { "$${TS_CERT_DOMAIN}:443": true }
+      }
+  # Caddy's, for DOMAIN (the image runs /etc/caddy/Caddyfile). Compose fills
+  # in DOMAIN.
+  caddyfile:
+    content: |
+      ${DOMAIN:-localhost} {
+        request_body /mcp* {
+          max_size 128KiB
+        }
+        reverse_proxy agentes:3000
+      }
+
+networks:
+  # The speech service's: the app reaches it there, and it reaches nothing
+  # else, the internet included.
+  speech:
+    internal: true
+  # The embeddings service's: the app reaches it there, and it reaches the
+  # internet for its model.
+  embeddings:
+
+volumes:
+  pgdata:
+  files:
+  embeddings-models:
+  caddy-data:
+  tailscale-state:
