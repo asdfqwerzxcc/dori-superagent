@@ -1,0 +1,105 @@
+# Verification transcript
+
+Date: 2026-11-17
+Upstream: https://github.com/agentes-chat/agentes-chat.git tag v0.1.2
+Pinned commit: 1abdbe79f5c39f3f4749f02ae8ffa5f469993683
+Host: win32 x64, Bun 1.4.4
+
+## Patch application (fresh clone of the pinned tag)
+
+Commands were run in a new `git clone --depth 1 --branch v0.1.2` of the upstream repository.
+Patch paths were absolute; they are shortened here to their file names.
+
+```
+$ git rev-parse HEAD
+1abdbe79f5c39f3f4749f02ae8ffa5f469993683
+[exit 0]
+
+$ git apply --check 0001-openrouter-images.patch
+
+[exit 0]
+
+$ git apply --check 0002-picker-refresh.patch
+
+[exit 0]
+
+$ git apply --check 0001-openrouter-images.patch 0002-picker-refresh.patch
+
+[exit 0]
+
+$ git am 0001-openrouter-images.patch
+Applying: fix(openrouter): send tool images to models that read them
+[exit 0]
+
+$ git am 0002-picker-refresh.patch
+Applying: fix(client): read the models list again when a key is added
+[exit 0]
+
+$ git log --oneline -3
+c2fc556 fix(client): read the models list again when a key is added
+c4d8f42 fix(openrouter): send tool images to models that read them
+1abdbe7 Merge pull request #612 from agentes-chat/chore/server-0.1.2
+[exit 0]
+
+$ git show --stat HEAD~2..HEAD
+c2fc556 fix(client): read the models list again when a key is added
+ packages/client/src/api/queries.ts | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+c4d8f42 fix(openrouter): send tool images to models that read them
+ packages/providers/src/catalog.ts          |  4 ++
+ packages/providers/src/openrouter.ts       | 64 ++++++++++++++++++++++++-------
+ packages/providers/src/types.ts            | 21 +++++++---
+ packages/providers/test/openrouter.test.ts | 48 ++++++++++++++++++++++
+ 4 files changed, 117 insertions(+), 20 deletions(-)
+[exit 0]
+```
+
+Each patch also passes `git apply --check` alone on the pristine tree. The two patches touch no
+common file, so either can be dropped.
+
+## Provider test
+
+The provider test file was run from `packages/providers` with the providers' dependencies
+installed (plus the client's, from the picker check). The root test preloads are for the web and
+design-system suites and are not needed for this file.
+
+```
+$ (cd packages/providers && bun test ./test/openrouter.test.ts --timeout 30000)
+bun test v1.4.4 (38afee6c8)
+
+test\openrouter.test.ts:
+(pass) OpenRouter's model list > windows, output caps, efforts, the least thinking and structured output from the list
+(pass) OpenRouter adapter (Chat Completions, scripted transport) > a tool result's picture and PDF go only to a model whose list says it reads that kind
+... 19 more passing tests ...
+
+ 21 pass
+ 0 fail
+ 152 expect() calls
+Ran 21 tests across 1 file. [512.00ms]
+[exit 0]
+```
+
+## Type checks
+
+```
+$ bun run --filter '@agenteschat/providers' typecheck
+@agenteschat/providers typecheck: Exited with code 0
+[exit 0]
+```
+
+```
+$ bun run --filter '@agenteschat/client' typecheck
+@agenteschat/client typecheck: src/api/queries.ts(5668,10): error TS2769: No overload matches this call.
+... one useQuery overload error at an unrelated call ...
+@agenteschat/client typecheck: Exited with code 2
+[exit 2]
+```
+
+The same error is present with `packages/client/src/api/queries.ts` checked out at the pinned
+commit, where it is line 5662 (the patch adds six lines above it). It is not in the changed
+`useModels` block and is not caused by this series.
+
+## Real host
+
+The three checks in `QA.md` were not run: this lane has no OpenRouter key, no running
+agentes.chat host, and no Docker or WSL. They are marked UNVERIFIED there.

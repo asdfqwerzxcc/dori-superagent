@@ -1,0 +1,319 @@
+From 6eafdc0948225402cd788ac667121011f9fab262 Mon Sep 17 00:00:00 2001
+From: jaejinaa <wowls7990@gmail.com>
+Date: Tue, 17 Nov 2026 21:19:34 +0900
+Subject: [PATCH 1/2] fix(openrouter): send tool images to models that read
+ them
+
+The model list already names each model's input modalities. Keep image and
+file in ModelInfo.inputImages and inputFiles, and send a tool result's
+pictures (as image_url parts) and PDFs (as file parts) in a following user
+message only while the model advertises that kind. A model that advertises
+neither keeps the existing text-only note and imagesLeftOut; one that
+advertises only one kind gets that kind and the note for the other.
+---
+ packages/providers/src/catalog.ts          |  4 ++
+ packages/providers/src/openrouter.ts       | 64 +++++++++++++++++-----
+ packages/providers/src/types.ts            | 21 +++++--
+ packages/providers/test/openrouter.test.ts | 48 ++++++++++++++++
+ 4 files changed, 117 insertions(+), 20 deletions(-)
+
+diff --git a/packages/providers/src/catalog.ts b/packages/providers/src/catalog.ts
+index 6e306fc3..375a4451 100644
+--- a/packages/providers/src/catalog.ts
++++ b/packages/providers/src/catalog.ts
+@@ -119,6 +119,10 @@ export interface ModelInfo {
+   efforts?: readonly string[];
+   /** It can't follow an `outputSchema`: never a pick for routing, the judge or summaries. */
+   structuredOutput?: false;
++  /** Reads pictures in tool results: OpenRouter's `architecture.input_modalities` lists `image`. */
++  inputImages?: true;
++  /** Reads PDFs in tool results: OpenRouter's `architecture.input_modalities` lists `file`. */
++  inputFiles?: true;
+   /**
+    * `false`: the pickers offer it only to a workspace with its provider's key (OpenRouter's long list, Command Code's).
+    * `true`: a long list's good pick, shown first, greyed without a key. Absent: a catalog model.
+diff --git a/packages/providers/src/openrouter.ts b/packages/providers/src/openrouter.ts
+index f2ae60e0..f8cd2ae6 100644
+--- a/packages/providers/src/openrouter.ts
++++ b/packages/providers/src/openrouter.ts
+@@ -14,17 +14,18 @@ import {
+   type ContentBlock,
+   deniedError,
+   estimateTokens,
+-  hasToolImages,
+   laidOut,
+   type ModelProvider,
+   type ModelRequest,
+   type ModelResult,
+   type ModelUsage,
+   type PartialUsage,
++  PDF_MEDIA_TYPE,
+   ProviderError,
+   promptChars,
+   type StopReason,
+   stableToolsFirst,
++  type ToolImage,
+   withoutImages,
+ } from "./types";
+ 
+@@ -165,6 +166,7 @@ export function parseOpenRouterModels(body: unknown): Record<string, ModelInfo>
+     if (typeof window !== "number" || !Number.isInteger(window) || window < MIN_CONTEXT) continue;
+     const params = strings(m.supported_parameters);
+     if (!strings(m.endpoints).includes(CHAT) || !params.includes("tools")) continue;
++    const inputs = strings(obj(m.architecture)?.input_modalities);
+     if (!strings(obj(m.architecture)?.output_modalities).includes("text")) continue;
+     let pricing = pricingOf(m);
+     if (!pricing) continue;
+@@ -202,6 +204,8 @@ export function parseOpenRouterModels(body: unknown): Record<string, ModelInfo>
+         ...(reasoning && !mandatory ? { leastThinking: "off" as const } : {}),
+         ...(mandatory && least === "minimal" ? { leastThinking: "minimal" as const } : {}),
+         ...(structured ? {} : { structuredOutput: false as const }),
++        ...(inputs.includes("image") ? { inputImages: true as const } : {}),
++        ...(inputs.includes("file") ? { inputFiles: true as const } : {}),
+         pick: pick !== undefined,
+         ...(pick?.tier ? { tier: pick.tier } : {}),
+         ...(pick?.recommended ? { recommended: true } : {}),
+@@ -332,9 +336,15 @@ interface Chunk {
+   }[];
+ }
+ 
++/** A user message's parts: text, and the pictures or PDFs a tool returned (`image_url`, `file`). */
++type Part =
++  | { type: "text"; text: string }
++  | { type: "image_url"; image_url: { url: string } }
++  | { type: "file"; file: { filename: string; file_data: string } };
++
+ type Message =
+   | { role: "system"; content: { type: "text"; text: string; cache_control?: { type: "ephemeral"; ttl?: "1h" } }[] }
+-  | { role: "user"; content: string }
++  | { role: "user"; content: string | Part[] }
+   | { role: "tool"; tool_call_id: string; content: string }
+   | {
+       role: "assistant";
+@@ -362,7 +372,7 @@ export function reasoningFor(
+   return best ? { effort: best } : undefined;
+ }
+ 
+-function toMessages(request: ModelRequest, claude: boolean): Message[] {
++function toMessages(request: ModelRequest, claude: boolean, keeps: (image: ToolImage) => boolean): Message[] {
+   const blocks = typeof request.system === "string" ? [{ text: request.system, cache: true }] : request.system;
+   const system = blocks
+     .filter((b) => b.text.length > 0)
+@@ -377,10 +387,11 @@ function toMessages(request: ModelRequest, claude: boolean): Message[] {
+         : {}),
+     }));
+   const out: Message[] = system.length > 0 ? [{ role: "system", content: system }] : [];
+-  // ponytail: images left out for every model; send them once the catalog knows which OpenRouter models read images.
+-  for (const m of withoutImages(request.messages, request.model)) {
++  // The list says which tool pictures and PDFs this model reads; the rest get the note `withoutImages` writes.
++  for (const m of withoutImages(request.messages, request.model, keeps)) {
+     const parts: ContentBlock[] = typeof m.content === "string" ? [{ type: "text", text: m.content }] : m.content;
+     const text = parts.flatMap((b) => (b.type === "text" && b.text ? [b.text] : [])).join("\n\n");
++    const pictures: Part[] = [];
+     if (m.role === "assistant") {
+       const calls = parts.flatMap((b) =>
+         b.type === "tool_use"
+@@ -400,15 +411,30 @@ function toMessages(request: ModelRequest, claude: boolean): Message[] {
+       continue;
+     }
+     for (const b of parts) {
+-      if (b.type === "tool_result")
+-        out.push({ role: "tool", tool_call_id: b.toolUseId, content: b.isError ? `ERROR: ${b.content}` : b.content });
++      if (b.type !== "tool_result") continue;
++      out.push({ role: "tool", tool_call_id: b.toolUseId, content: b.isError ? `ERROR: ${b.content}` : b.content });
++      // Chat Completions' `tool` message takes text only: the media follows as a user message's parts, named by call.
++      const images = b.images ?? [];
++      if (images.length === 0) continue;
++      pictures.push({ type: "text", text: `From tool call ${b.toolUseId}:` });
++      for (const i of images) {
++        pictures.push(
++          i.mediaType === PDF_MEDIA_TYPE
++            ? {
++                type: "file",
++                file: { filename: i.name ?? "file.pdf", file_data: `data:${PDF_MEDIA_TYPE};base64,${i.data}` },
++              }
++            : { type: "image_url", image_url: { url: `data:${i.mediaType};base64,${i.data}` } },
++        );
++      }
+     }
+     if (text) out.push({ role: "user", content: text });
++    if (pictures.length > 0) out.push({ role: "user", content: pictures });
+   }
+   return out;
+ }
+ 
+-function toBody(request: ModelRequest, compatible: boolean) {
++function toBody(request: ModelRequest, compatible: boolean, keeps: (image: ToolImage) => boolean) {
+   const claude = !compatible && isClaude(request.model);
+   const reasoning = compatible ? undefined : reasoningFor(request.effort, modelInfo(request.model));
+   // A workspace endpoint (#432): Chat Completions' own `reasoning_effort`, which OpenAI, vLLM, LiteLLM and most gateways
+@@ -416,7 +442,7 @@ function toBody(request: ModelRequest, compatible: boolean) {
+   const reasoningEffort = compatible && request.effort && request.effort !== "none" ? request.effort : undefined;
+   return {
+     model: request.model,
+-    messages: toMessages(request, claude),
++    messages: toMessages(request, claude, keeps),
+     max_tokens: request.maxTokens,
+     stream: true as const,
+     ...(request.tools && request.tools.length > 0
+@@ -516,9 +542,10 @@ function routerError(error: unknown, compatible: boolean): ProviderError {
+  * OpenRouter over Chat Completions, streaming, through the OpenAI SDK.
+  *
+  * - System blocks as one system message; tool calls and results as `tool_calls` and `tool` messages; tools (the
+- *   stable ones first, each part by name) sent on every call. Claude's ids get cache breakpoints (its system blocks
+- *   marked `cache`, an hour with `cacheTtl`, and automatic caching on top); every other model caches a prompt's prefix
+- *   by itself.
++ *   stable ones first, each part by name) sent on every call. A picture or PDF in a tool result goes as the parts of
++ *   a `user` message after it, only while the model's list says it reads that kind. Claude's ids get cache breakpoints
++ *   (its system blocks marked `cache`, an hour with `cacheTtl`, and automatic caching on top); every other model
++ *   caches a prompt's prefix by itself.
+  * - `effort` → `reasoning` at the nearest effort the model takes; `none` turns thinking off only where it can be.
+  *   Its `reasoning_details` come back as one `opaque` block, sent back unchanged in tool loops.
+  * - `outputSchema` → `response_format` (strict JSON Schema), only to upstream providers that honor it.
+@@ -544,6 +571,15 @@ export function createOpenRouterProvider(
+     id: compatible?.id ?? "openrouter",
+     async stream(input, { apiKey, onDelta }): Promise<ModelResult> {
+       const request = laidOut(input);
++      // Only a model whose list says it reads each kind gets it; another server's endpoint stays text-only.
++      const info = modelInfo(request.model);
++      const keeps = (image: ToolImage) =>
++        !compatible && (image.mediaType === PDF_MEDIA_TYPE ? info?.inputFiles === true : info?.inputImages === true);
++      const imagesLeftOut = request.messages.some(
++        (m) =>
++          typeof m.content !== "string" &&
++          m.content.some((b) => b.type === "tool_result" && b.images?.some((i) => !keeps(i))),
++      );
+       const partial: PartialUsage = {
+         inputTokens: null,
+         cacheReadTokens: 0,
+@@ -566,7 +602,7 @@ export function createOpenRouterProvider(
+           fetch: options.fetch,
+         });
+         const stream = await client.chat.completions.create(
+-          toBody(request, compatible !== undefined) as unknown as ChatCompletionCreateParamsStreaming,
++          toBody(request, compatible !== undefined, keeps) as unknown as ChatCompletionCreateParamsStreaming,
+           { signal: request.signal },
+         );
+         for await (const raw of stream) {
+@@ -645,7 +681,7 @@ export function createOpenRouterProvider(
+                 cacheWriteTokens: 0,
+               },
+           ...(cost !== undefined ? { costNanoUsd: cost } : {}),
+-          ...(hasToolImages(request.messages) ? { imagesLeftOut: true as const } : {}),
++          ...(imagesLeftOut ? { imagesLeftOut: true as const } : {}),
+         };
+       } catch (error) {
+         const mapped = request.signal?.aborted
+diff --git a/packages/providers/src/types.ts b/packages/providers/src/types.ts
+index 9022dbb2..0ec617ca 100644
+--- a/packages/providers/src/types.ts
++++ b/packages/providers/src/types.ts
+@@ -59,10 +59,15 @@ export const hasToolImages = (messages: ModelMessage[]) =>
+ 
+ /**
+  * The messages with tool results' pictures and PDFs left out, a note in their place: for endpoints that take text
+- * only (another company's Anthropic-compatible API, OpenRouter), where one would fail the whole request. The note
+- * names the AI (`model`) and the way out, so the agent tells the person the real cause.
++ * only (another company's Anthropic-compatible API, OpenRouter), where one would fail the whole request. `keep`
++ * names the images the endpoint does read (default: none). The note names the AI (`model`) and the way out, so the
++ * agent tells the person the real cause.
+  */
+-export const withoutImages = (messages: ModelMessage[], model?: string): ModelMessage[] =>
++export const withoutImages = (
++  messages: ModelMessage[],
++  model?: string,
++  keep: (image: ToolImage) => boolean = () => false,
++): ModelMessage[] =>
+   messages.map((m) =>
+     typeof m.content === "string"
+       ? m
+@@ -70,13 +75,17 @@ export const withoutImages = (messages: ModelMessage[], model?: string): ModelMe
+           ...m,
+           content: m.content.map((b) => {
+             if (b.type !== "tool_result" || !b.images?.length) return b;
+-            const { images, ...rest } = b;
+-            const pdf = images.some((i) => i.mediaType === PDF_MEDIA_TYPE);
+-            const picture = images.some((i) => i.mediaType !== PDF_MEDIA_TYPE);
++            const left = b.images.filter((i) => !keep(i));
++            if (left.length === 0) return b;
++            const kept = b.images.filter((i) => keep(i));
++            const { images: _left, ...rest } = b;
++            const pdf = left.some((i) => i.mediaType === PDF_MEDIA_TYPE);
++            const picture = left.some((i) => i.mediaType !== PDF_MEDIA_TYPE);
+             const what = pdf && picture ? "picture and the PDF" : pdf ? "PDF" : "picture";
+             const ai = model ? `this agent's AI (${model})` : "this agent's AI";
+             return {
+               ...rest,
++              ...(kept.length > 0 ? { images: kept } : {}),
+               content: `${b.content}\n[The ${what} is not shown to you: ${ai} reads text only through this connection. Tell the person exactly that, and that an AI that reads ${pdf ? "pictures and PDFs" : "pictures"} (Claude, GPT or Gemini), picked in this agent's settings, would see it. Never say the file came empty.]`,
+             };
+           }),
+diff --git a/packages/providers/test/openrouter.test.ts b/packages/providers/test/openrouter.test.ts
+index 2629e453..39ec0a3b 100644
+--- a/packages/providers/test/openrouter.test.ts
++++ b/packages/providers/test/openrouter.test.ts
+@@ -172,6 +172,11 @@ describe("OpenRouter's model list", () => {
+   test("windows, output caps, efforts, the least thinking and structured output from the list", () => {
+     const m = models();
+     expect(m["~z-ai/glm-latest"]).toMatchObject({ contextWindow: 1_048_576, maxOutputTokens: 943_718 });
++    // The list's architecture says which models read pictures and files; absent means text only.
++    expect(m["~deepseek/deepseek-flash-latest"]?.inputImages).toBe(true);
++    expect(m["~deepseek/deepseek-flash-latest"]?.inputFiles).toBeUndefined();
++    expect(m["~openai/gpt-luna-latest"]?.inputFiles).toBe(true);
++    expect(m["~z-ai/glm-latest"]?.inputImages).toBeUndefined();
+     // Thinking can't be turned off and goes no lower than low.
+     expect(m["~z-ai/glm-latest"]).toMatchObject({ reasoning: true, efforts: ["max", "high", "low"] });
+     expect(m["~z-ai/glm-latest"]?.leastThinking).toBeUndefined();
+@@ -311,6 +316,49 @@ describe("OpenRouter adapter (Chat Completions, scripted transport)", () => {
+     ]);
+   });
+ 
++  test("a tool result's picture and PDF go only to a model whose list says it reads that kind", async () => {
++    setOpenRouterModels(models());
++    const messages: ModelRequest["messages"] = [
++      { role: "user", content: "what is in the file?" },
++      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "read_file", input: {} }] },
++      {
++        role: "user",
++        content: [
++          {
++            type: "tool_result",
++            toolUseId: "t1",
++            content: "shot.png and doc.pdf",
++            images: [
++              { mediaType: "image/png", data: "UE5H" },
++              { mediaType: "application/pdf", data: "JVBERi0=", pages: 1, name: "doc.pdf" },
++            ],
++          },
++        ],
++      },
++    ];
++    const send = async (model: string) => {
++      const { fetcher, requests } = scripted({ body: sse([delta({ content: "a dog" }, "stop")]) });
++      const result = await call({ model, messages }, fetcher).result;
++      return { body: JSON.stringify(requests[0]?.body.messages), leftOut: result.imagesLeftOut };
++    };
++    const both = await send("~openai/gpt-luna-latest");
++    expect(both.body).toContain('"type":"image_url"');
++    expect(both.body).toContain('"type":"file"');
++    expect(both.body).toContain('"filename":"doc.pdf"');
++    expect(both.body).toContain("data:application/pdf;base64,JVBERi0=");
++    expect(both.leftOut).toBeUndefined();
++    const vision = await send("~deepseek/deepseek-flash-latest");
++    expect(vision.body).toContain('"type":"image_url"');
++    expect(vision.body).not.toContain('"type":"file"');
++    expect(vision.body).toContain("The PDF is not shown to you");
++    expect(vision.leftOut).toBe(true);
++    const textOnly = await send("~z-ai/glm-latest");
++    expect(textOnly.body).not.toContain('"type":"image_url"');
++    expect(textOnly.body).not.toContain('"type":"file"');
++    expect(textOnly.body).toContain("The picture and the PDF is not shown to you");
++    expect(textOnly.leftOut).toBe(true);
++  });
++
+   test("Claude gets cache breakpoints; a schema goes as strict JSON only to providers that honor it", async () => {
+     setOpenRouterModels(models());
+     const { fetcher, requests } = scripted({ body: sse([delta({ content: "{}" }, "stop")]) });
+-- 
+2.39.2.windows.1
+

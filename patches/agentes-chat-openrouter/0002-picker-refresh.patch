@@ -1,0 +1,35 @@
+From cd5adb8dbdebe21047c3b635e4df415534c38731 Mon Sep 17 00:00:00 2001
+From: jaejinaa <wowls7990@gmail.com>
+Date: Tue, 17 Nov 2026 21:19:34 +0900
+Subject: [PATCH 2/2] fix(client): read the models list again when a key is
+ added
+
+The agent model picker kept /models fresh for ten minutes, so a browser that
+loaded it before an OpenRouter key was added stayed empty. Read it again on
+mount and on window focus.
+---
+ packages/client/src/api/queries.ts | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/packages/client/src/api/queries.ts b/packages/client/src/api/queries.ts
+index 73e2391a..735bc5b8 100644
+--- a/packages/client/src/api/queries.ts
++++ b/packages/client/src/api/queries.ts
+@@ -781,7 +781,13 @@ export const useTeam = (orgId: string) => {
+ 
+ export const useModels = () => {
+   const api = useApi();
+-  const models = useQuery({ queryKey: keys.models, queryFn: () => api.agents.models(), staleTime: 10 * 60_000 });
++  // A key added in another tab or browser opens OpenRouter's list: read it again on mount and focus, not ten minutes on.
++  const models = useQuery({
++    queryKey: keys.models,
++    queryFn: () => api.agents.models(),
++    staleTime: 0,
++    refetchOnWindowFocus: true,
++  });
+   if (models.data?.planModels) learnPlanModels(models.data.planModels);
+   return models;
+ };
+-- 
+2.39.2.windows.1
+
