@@ -110,12 +110,14 @@ describe("queued lane review", () => {
     await expect(done(d, "fix-login")).rejects.toThrow("no review receipt");
   });
 
-  test("an unreadable job record refuses done, never stops the drain, and leaves the inline fallback working", async () => {
+  test("an unreadable or invalid job record refuses done, never stops the drain, and leaves the inline fallback working", async () => {
     const { w, d, lead } = await world(["fix-login", "quiet"]);
     await withWorker(d, () => captureIo(() => main(["review", "--lane", "quiet"], d)));
     const dir = join(d.store.root, "state", "review-queue");
     const corrupt = join(dir, `fix-login@${tip}.json`);
+    const invalid = join(dir, "not-a-job.json");
     writeFileSync(corrupt, "{ not json");
+    writeFileSync(invalid, `{"lane":"Bad Key","tip":"${tip}","base":"","requestedAt":null,"state":"queued"}`);
 
     const refusal = await done(d, "fix-login").then(
       () => undefined,
@@ -125,8 +127,11 @@ describe("queued lane review", () => {
     expect((refusal as Error).message).toContain("unreadable");
 
     const before = lead.received.length;
-    expect(await dutyTick(d)).toContainEqual({ action: "review-record-dropped", detail: `fix-login@${tip}.json` });
+    const events = await dutyTick(d);
+    expect(events).toContainEqual({ action: "review-record-dropped", detail: `fix-login@${tip}.json` });
+    expect(events).toContainEqual({ action: "review-record-dropped", detail: "not-a-job.json" });
     expect(existsSync(corrupt)).toBe(false);
+    expect(existsSync(invalid)).toBe(false);
     const receipt = join(d.store.root, "receipts", `lane_quiet@${tip}.json`);
     expect(lead.received.slice(before)).toEqual([`[REVIEW quiet] CLEAR at ${tip}; receipt ${receipt}`]);
 

@@ -80,8 +80,9 @@ QUEUED <key> <tip> <job>
 The record is `$DORI_HOME/state/review-queue/<key>@<tip>.json`, written atomically, holding `lane`, `tip`, `base`,
 `model` (when one was given), `requestedAt` and `state` (`queued`, then `running` while a worker has it). A second
 request for the same lane and tip returns that record instead of starting a second reviewer. A record that cannot be
-read is dropped by the next duty pass instead of blocking the queue; until then `dori done` refuses that lane and tip
-as in flight but unreadable and says to queue it again.
+read as a valid job (bad bytes or bad fields) is dropped by the next duty pass instead of blocking the queue; until
+then `dori done` refuses that lane and tip as in flight but unreadable and says to queue it again. The queue trusts
+the duty lock for liveness, so a worker that is alive but hung keeps a job waiting until it recovers or is replaced.
 
 `dori duty` drains the queue at the end of each pass: it runs the same reviewer as the inline path (same prompts,
 chunking, deadline, log, diagnostics and receipt), drops the job, and sends the lead one inbox message:

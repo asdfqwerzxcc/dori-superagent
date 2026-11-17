@@ -35,6 +35,14 @@ const queueDir = (root: string): string => join(root, "state", "review-queue");
 
 const validId = (lane: string, tip: string): boolean => KEY_RE.test(lane) && SHA_RE.test(tip);
 
+/** A record must hold a job this code can run: valid lane and tip, a base, a finite request time and a known state. */
+const validJob = (j: ReviewJob): boolean =>
+  validId(j.lane, j.tip) &&
+  typeof j.base === "string" &&
+  Number.isFinite(j.requestedAt) &&
+  (j.state === "queued" || j.state === "running") &&
+  (j.model === undefined || typeof j.model === "string");
+
 /** `<lane>@<tip>`: a job's id and its file name; both halves are checked so a record can never land outside the queue. */
 export function reviewJobId(lane: string, tip: string): string {
   if (!validId(lane, tip)) throw new Error(`invalid review job ${lane}@${tip}`);
@@ -44,24 +52,28 @@ export function reviewJobId(lane: string, tip: string): string {
 const jobPath = (root: string, lane: string, tip: string): string =>
   join(queueDir(root), `${reviewJobId(lane, tip)}.json`);
 
-/** A record read without trusting its bytes: a corrupt, half-written or unreadable record reads as absent. */
+/** A record read without trusting its bytes or its fields: anything not a valid job reads as absent. */
 const readJob = (path: string): ReviewJob | undefined => {
   try {
-    return readJson<ReviewJob>(path);
+    const job = readJson<ReviewJob>(path);
+    return job !== undefined && validJob(job) ? job : undefined;
   } catch {
     return undefined;
   }
 };
 
-/** Every pending job, oldest request first; a record that cannot be read is skipped here and dropped by the drain. */
-function reviewJobs(root: string): ReviewJob[] {
+/** Every readable job with the file it came from, oldest request first; the drain drops whatever reads as absent. */
+function reviewFiles(root: string): { path: string; job: ReviewJob }[] {
   const dir = queueDir(root);
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter((f) => f.endsWith(".json"))
-    .map((f) => readJob(join(dir, f)))
-    .filter((j): j is ReviewJob => j !== undefined)
-    .sort((a, b) => a.requestedAt - b.requestedAt || a.lane.localeCompare(b.lane));
+    .flatMap((f) => {
+      const path = join(dir, f);
+      const job = readJob(path);
+      return job === undefined ? [] : [{ path, job }];
+    })
+    .sort((a, b) => a.job.requestedAt - b.job.requestedAt || a.job.lane.localeCompare(b.job.lane));
 }
 
 /** The pending job for exactly this lane and tip, `corrupt` when a record exists but cannot be read, or undefined. */
@@ -123,7 +135,7 @@ const firstLine = (e: unknown): string => {
 export async function drainReviewQueue(d: Deps): Promise<ReviewEvent[]> {
   const events: ReviewEvent[] = [];
   const dir = queueDir(d.store.root);
-  // A record that cannot be read is dropped, not left to wedge every pass, so the queue heals itself.
+  // A record that cannot be read as a valid job is dropped, not left to wedge every pass, so the queue heals itself.
   for (const name of existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")) : []) {
     if (readJob(join(dir, name)) !== undefined) continue;
     rmSync(join(dir, name), { force: true });
@@ -137,20 +149,19 @@ export async function drainReviewQueue(d: Deps): Promise<ReviewEvent[]> {
       process.stderr.write(`dori: telling the lead about a queued review failed (${failureDetail(e)})\n`);
     }
   };
-  for (const listed of reviewJobs(d.store.root)) {
-    const path = jobPath(d.store.root, listed.lane, listed.tip);
-    const job = readJob(path);
+  for (const listed of reviewFiles(d.store.root)) {
+    const job = readJob(listed.path);
     if (job === undefined) continue;
-    writeJson(path, { ...job, state: "running" });
+    writeJson(listed.path, { ...job, state: "running" });
     try {
       const review = await reviewLane(d, job.lane, job.model);
-      rmSync(path, { force: true });
+      rmSync(listed.path, { force: true });
       const receipt = d.store.receipts.laneReceiptPath(job.lane, review.tip);
       await tell(`[REVIEW ${job.lane}] ${review.verdict} at ${review.tip}; receipt ${receipt}`);
       events.push({ lane: job.lane, action: "review-done", detail: `${review.verdict} at ${review.tip}` });
     } catch (e) {
       // A failed or timed-out review posts like a verdict: the lead must never wait for a message that will not come.
-      rmSync(path, { force: true });
+      rmSync(listed.path, { force: true });
       const why = firstLine(e);
       await tell(`[REVIEW ${job.lane}] failed at ${job.tip}: ${why}`);
       events.push({ lane: job.lane, action: "review-failed", detail: why });
