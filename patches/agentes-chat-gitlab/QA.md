@@ -114,8 +114,9 @@ to use a top-level `group/repo`. Supporting subgroups is a separate route change
 - Both patches apply to `1abdbe79f5c39f3f4749f02ae8ffa5f469993683` with `git apply --check` (exit 0) and
   apply with `git am` (exit 0). See `VERIFY.log`.
 - `bun test ./packages/engine/test/git.test.ts ./packages/engine/test/git-machine.test.ts ./packages/engine/test/connectors.test.ts`:
-  62 pass, 0 fail, 473 assertions, including the GitLab clone URL and git auth, the merge-base push and
-  its refusal, the GitLab-only machine sync, and the connection's sealed token.
+  64 pass, 0 fail, 485 assertions, including the GitLab clone URL and git auth, the merge-base push and
+  its refusal, the GitLab-only machine sync, both connections keeping GitHub's sync and tools, a GitLab
+  sync never asking for the GitHub App's bot identity, and the connection's sealed token.
 - `bun run --filter '@agenteschat/engine' typecheck`: exit 0.
 - `bun run --filter '@agenteschat/server' typecheck`: exit 0.
 - `bun test ./apps/server/test/connectors.test.ts`: the route with the optional `serverUrl` still passes.

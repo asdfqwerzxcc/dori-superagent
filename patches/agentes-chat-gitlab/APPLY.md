@@ -95,7 +95,7 @@ bun run --filter '@agenteschat/engine' typecheck
 bun run --filter '@agenteschat/server' typecheck
 ```
 
-The three test files pass with the series: 62 pass, 0 fail, 473 assertions (see `VERIFY.log`). The GitLab
+The three test files pass with the series: 64 pass, 0 fail, 485 assertions (see `VERIFY.log`). The GitLab
 cases are a stub upstream at `https://gitlab.test`: a clone goes to the instance's URL with HTTP Basic
 (`oauth2:<token>`, GitLab's git-over-HTTPS way), a push asks its merge-base API with `PRIVATE-TOKEN` and
 then forwards to receive-pack, and a merge base that is not the old tip refuses the push. The GitHub

@@ -56,7 +56,8 @@ different header (`PRIVATE-TOKEN`, or HTTP Basic with `oauth2:<token>`), so the 
 5. **The computer gets our credential, never GitLab's.** `machineGitSetup` prefers the GitHub connection
    and falls back to the GitLab one; `git.sync` then carries the same `agtgit1` token and a proxy base
    whose `connectionId` is the GitLab connection. GitHub App direct-fetch tokens are handed out only when
-   the chosen connection is GitHub, so a GitLab sync never receives a `ghs_` token.
+   the chosen connection is GitHub, and its bot identity is asked only then, so a GitLab sync never
+   receives a `ghs_` token and never authors its commits as the GitHub App's bot.
 6. **`git_clone` is the one GitLab git tool.** `createGitToolSource` chooses GitHub first, else GitLab,
    and for a GitLab connection exposes only `git_clone` (`gitlab:git.read`), whose description says
    GitLab and whose success text does not point at `open_pull_request`. `serverGitTool` recognizes the
@@ -96,9 +97,10 @@ changes.
 - `git apply --check` for each patch, then `git am` for both, on a pristine clone of
   `1abdbe79f5c39f3f4749f02ae8ffa5f469993683`: all exit 0. Transcript in `VERIFY.log`.
 - `bun test ./packages/engine/test/git.test.ts ./packages/engine/test/git-machine.test.ts ./packages/engine/test/connectors.test.ts`:
-  62 pass, 0 fail, 473 assertions. The new cases: the GitLab connection's base URL and sealed token, the
+  64 pass, 0 fail, 485 assertions. The new cases: the GitLab connection's base URL and sealed token, the
   clone's URL and git auth, the push's merge-base call with `PRIVATE-TOKEN` and forward, the merge-base
-  refusal, the GitLab-only machine sync, and `git_clone` as the only GitLab tool.
+  refusal, the GitLab-only machine sync, `git_clone` as the only GitLab tool, both connections keeping
+  GitHub's sync and its four tools, and a GitLab sync never asking for the GitHub App's bot identity.
 - `bun run --filter '@agenteschat/engine' typecheck`: exit 0.
 - `bun run --filter '@agenteschat/server' typecheck`: exit 0.
 - Real-host checks (a live GitLab clone, commit and push, and the GitHub regression) are in `QA.md` and

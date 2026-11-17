@@ -30,21 +30,21 @@ Applying: feat(gitlab): clone and push through the proxy
 [exit 0]
 
 $ git log --oneline -3
-a26d029 feat(gitlab): clone and push through the proxy
-9767f84 feat(gitlab): connect a self-hosted GitLab
+984a013 feat(gitlab): clone and push through the proxy
+9b1a0a7 feat(gitlab): connect a self-hosted GitLab
 1abdbe7 Merge pull request #612 from agentes-chat/chore/server-0.1.2
 [exit 0]
 
 $ git show --stat HEAD~2..HEAD
-a26d029 feat(gitlab): clone and push through the proxy
- packages/engine/src/git/machine.ts       |  37 +++++---
+984a013 feat(gitlab): clone and push through the proxy
+ packages/engine/src/git/machine.ts       |  42 +++++---
  packages/engine/src/git/proxy.ts         | 158 +++++++++++++++++++++----------
  packages/engine/src/git/tools.ts         |  23 +++--
  packages/engine/src/tools/gateway.ts     |   2 +-
- packages/engine/test/git-machine.test.ts |  55 +++++++++--
+ packages/engine/test/git-machine.test.ts | 140 +++++++++++++++++++++++++--
  packages/engine/test/git.test.ts         | 137 +++++++++++++++++++++++++--
- 6 files changed, 325 insertions(+), 87 deletions(-)
-9767f84 feat(gitlab): connect a self-hosted GitLab
+ 6 files changed, 413 insertions(+), 89 deletions(-)
+9b1a0a7 feat(gitlab): connect a self-hosted GitLab
  apps/server/src/routes/app/connectors.ts      |  3 +-
  packages/engine/src/connectors/catalog.ts     | 33 ++++++++++++++++
  packages/engine/src/connectors/connections.ts | 16 +++++++-
@@ -60,6 +60,9 @@ a26d029 feat(gitlab): clone and push through the proxy
 Each patch also passes `git apply --check` alone on the pristine tree. The two patches touch no common
 file, but the series is ordered: `0002` needs `0001`'s `git/gitlab.ts` at runtime.
 
+The two review fixes are in `0002`: `machineGitSetup` asks for the GitHub App's bot identity only when the
+chosen connection is GitHub, and two machine tests cover both connections and the GitLab bot path.
+
 ## Engine tests (patched tree)
 
 ```
@@ -74,20 +77,22 @@ packages\engine\test\git.test.ts:
 
 packages\engine\test\git-machine.test.ts:
 (pass) git on a connected machine through the proxy (ADR 0024 addendum) > a GitLab-only workspace: the credential is ours, git.sync points at its connection, git_clone is the one tool
+(pass) git on a connected machine through the proxy (ADR 0024 addendum) > both connected: git.sync and the git tools stay GitHub's
+(pass) git on a connected machine through the proxy (ADR 0024 addendum) > a GitLab sync never asks for the GitHub App bot identity
 ... existing machine tests ...
 
 packages\engine\test\connectors.test.ts:
 (pass) connections > a self-hosted GitLab connection keeps its base URL and token server side
 ... existing connector tests ...
 
- 62 pass
+ 64 pass
  0 fail
- 473 expect() calls
-Ran 62 tests across 3 files. [44.49s]
+ 485 expect() calls
+Ran 64 tests across 3 files. [61.71s]
 [exit 0]
 ```
 
-What the two stub-upstream runs prove:
+What the stub-upstream runs prove:
 
 - **GitLab path.** The connection's base URL is `https://gitlab.test`; the clone's info/refs and
   upload-pack requests arrive at `https://gitlab.test/acme/app.git/...` with HTTP Basic
@@ -100,6 +105,13 @@ What the two stub-upstream runs prove:
   `Basic base64("x-access-token:<GitHub token>")`, and a push still asks
   `/repos/acme/app/compare/<old>...<oid>` with `Bearer`. `git.test.ts` asserts the exact call list and
   header; no `private-token` header is sent on the GitHub path.
+- **Both connected.** `machineGitSetup` chooses the GitHub connection, with the same proxy base shape
+  (`/api/git/{org}/{github connection}/`), the same `agtgit1` machine credential and the normal agent
+  author, and `createGitToolSource` still offers the full GitHub list (`git_clone`,
+  `open_pull_request`, `delete_branches`, `request_branch_push`), not only `git_clone`.
+- **GitLab bot identity.** With a GitHub App installation row for the org and a fake GitHub API that
+  records every call, a GitLab sync makes no GitHub API call and authors the commit as the normal agent,
+  not as the GitHub App's bot.
 
 ## Type checks
 
@@ -112,6 +124,9 @@ $ bun run --filter '@agenteschat/server' typecheck
 @agenteschat/server typecheck: Exited with code 0
 [exit 0]
 ```
+
+The server type check ran on the same patched tree; the review fix touches `git/machine.ts` and its test
+only, no server file.
 
 ## Pre-existing failure, not caused by this series
 

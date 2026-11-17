@@ -1,20 +1,20 @@
-From 21428a574cb56cc0cc760cc476328d3ac88f7ff1 Mon Sep 17 00:00:00 2001
+From 87dc2c40802c0ec2467531d1b96719824579fef5 Mon Sep 17 00:00:00 2001
 From: jaejinaa <wowls7990@gmail.com>
 Date: Tue, 17 Nov 2026 22:24:51 +0900
 Subject: [PATCH 2/2] feat(gitlab): clone and push through the proxy
 
 The proxy takes the upstream host, the credential and the fast-forward check from the connection's connector: GitHub keeps its constants, githubToken and compare API byte for byte; GitLab uses the instance's base URL, HTTP Basic for git, PRIVATE-TOKEN for REST and its merge-base API. Scopes are derived per connector, and the computer sync picks the GitLab connection when no GitHub one is connected, handing it the same agtgit1 credential and never a GitLab token. git_clone is the one git tool offered on a GitLab connection; pull requests, branch deletion and branch approvals stay GitHub-only.
 ---
- packages/engine/src/git/machine.ts       |  37 ++++--
+ packages/engine/src/git/machine.ts       |  42 ++++--
  packages/engine/src/git/proxy.ts         | 158 +++++++++++++++--------
  packages/engine/src/git/tools.ts         |  23 ++--
  packages/engine/src/tools/gateway.ts     |   2 +-
- packages/engine/test/git-machine.test.ts |  55 +++++++-
+ packages/engine/test/git-machine.test.ts | 140 ++++++++++++++++++--
  packages/engine/test/git.test.ts         | 137 +++++++++++++++++++-
- 6 files changed, 325 insertions(+), 87 deletions(-)
+ 6 files changed, 413 insertions(+), 89 deletions(-)
 
 diff --git a/packages/engine/src/git/machine.ts b/packages/engine/src/git/machine.ts
-index b36e1a4..139d2ff 100644
+index b36e1a4..f21b264 100644
 --- a/packages/engine/src/git/machine.ts
 +++ b/packages/engine/src/git/machine.ts
 @@ -24,6 +24,7 @@ import { standingRefusal } from "../standing";
@@ -25,7 +25,7 @@ index b36e1a4..139d2ff 100644
  import { gitAccess } from "./proxy";
  import { agentRepositoryList, type CodeCheckout, codePrompt, repoInList } from "./repos";
  import { runCoAuthors } from "./signature";
-@@ -78,9 +79,10 @@ export function machineGitUnavailable(status: MachineStatus | null, orgId: strin
+@@ -78,9 +79,11 @@ export function machineGitUnavailable(status: MachineStatus | null, orgId: strin
  /**
   * The `proxy` and `author` of a `git.sync` for this agent on this machine:
   * a fresh proxy credential (6 h) bound to the machine and the agent. Null
@@ -34,12 +34,13 @@ index b36e1a4..139d2ff 100644
 - * authored as the app's bot, so GitHub shows them as the app's.
 + * when the org has no GitHub or GitLab connection or the agent has no git
 + * access. GitHub is preferred where both are connected, so its sync is
-+ * unchanged. With the GitHub App installed for the workspace (ADR 0156),
-+ * commits are authored as the app's bot, so GitHub shows them as the app's.
++ * unchanged. With the GitHub App installed for the workspace (ADR 0156), a
++ * GitHub sync's commits are authored as the app's bot, so GitHub shows them
++ * as the app's; a GitLab sync never asks for that bot.
   */
  export async function machineGitSetup(
    deps: MachineGitDeps,
-@@ -89,11 +91,13 @@ export async function machineGitSetup(
+@@ -89,11 +92,13 @@ export async function machineGitSetup(
    machineId: string,
    /** A tool's call: who the computer takes the agent for (`machineScope`), the right hand's seat included. */
    scope?: AgentScope,
@@ -56,7 +57,17 @@ index b36e1a4..139d2ff 100644
    const agent = await getAgentCached(deps.db, orgId, agentId);
    // Without a scope (a brain's turn) the right hand has no checkout: its locked turn prepares none (ADR 0137 §4).
    if (!agent || (scope ? await toolMachineId(deps.db, agent) : agent.machineId) !== machineId) return null;
-@@ -120,6 +124,7 @@ export async function machineGitSetup(
+@@ -113,13 +118,16 @@ export async function machineGitSetup(
+   });
+   const github = deps.github;
+   const bot =
+-    github && (await boundInstallations(deps.db, orgId)).length > 0 ? await botIdentity(github.app, github.http) : null;
++    connection.connector === "github" && github && (await boundInstallations(deps.db, orgId)).length > 0
++      ? await botIdentity(github.app, github.http)
++      : null;
+   return {
+     proxy: { base: gitProxyBase(deps.git.publicUrl, orgId, connection.id), token },
+     author: bot
        ? { name: `${agent.name} (agentes.chat)`, email: bot.email }
        : { name: `${agent.name} (agentes)`, email: agentCommitEmail(deps.git.publicUrl, agent.handle) },
      agent: scope ?? { id: agent.id, handle: agent.handle, name: agent.name },
@@ -64,7 +75,7 @@ index b36e1a4..139d2ff 100644
    };
  }
  
-@@ -207,9 +212,14 @@ export async function cloneOnMachine(
+@@ -207,9 +215,14 @@ export async function cloneOnMachine(
    if (unavailable || !status) throw unavailable;
    const setup = await machineGitSetup(deps, target.orgId, target.agentId, target.machineId, target.scope);
    if (!setup)
@@ -82,7 +93,7 @@ index b36e1a4..139d2ff 100644
    const reply = await deps.hub.call(
      target.machineId,
      {
-@@ -334,7 +344,7 @@ export async function prepareAgentCode(
+@@ -334,7 +347,7 @@ export async function prepareAgentCode(
      if (!status || machineGitUnavailable(status, turn.orgId)) return null;
      const setup = await machineGitSetup(deps, turn.orgId, turn.agentId, machineId);
      if (!setup) return null;
@@ -91,7 +102,7 @@ index b36e1a4..139d2ff 100644
      const sync = (repos: GitSyncRequest["repos"], existing: boolean) =>
        deps.hub.call(
          machineId,
-@@ -366,7 +376,7 @@ export async function prepareAgentCode(
+@@ -366,7 +379,7 @@ export async function prepareAgentCode(
      // straight from GitHub too instead of going back to the proxy.
      const wildcard = list.length === 0 || list.length > explicit.length;
      const found =
@@ -100,7 +111,7 @@ index b36e1a4..139d2ff 100644
          ? await checkoutsOnMachine(deps.hub, machineId, agent, options.signal)
          : [];
      const lowerExplicit = new Set(explicit.map((r) => r.toLowerCase()));
-@@ -376,7 +386,10 @@ export async function prepareAgentCode(
+@@ -376,7 +389,10 @@ export async function prepareAgentCode(
      );
      // Fresh each turn (GitHub's tokens last an hour; cached until a few minutes before), so the agent's own
      // `git fetch` keeps working between syncs.
@@ -445,7 +456,7 @@ index ddab03b..603f80b 100644
    ((tool.name === "delete_branches" || tool.name === "request_branch_push") && tool.scope === "github:git.write");
  /**
 diff --git a/packages/engine/test/git-machine.test.ts b/packages/engine/test/git-machine.test.ts
-index 9defbf7..b2b0b9f 100644
+index 9defbf7..d9da6a1 100644
 --- a/packages/engine/test/git-machine.test.ts
 +++ b/packages/engine/test/git-machine.test.ts
 @@ -55,6 +55,7 @@ afterEach(async () => {
@@ -456,14 +467,19 @@ index 9defbf7..b2b0b9f 100644
  const PUBLIC_URL = "https://agentes.test";
  const RUNNER = { hostname: "mac", os: "darwin", arch: "arm64", version: "0.10.0", workspace: "/Users/w/agentes" };
  const FOLDER = "/Users/w/agentes/dev-0193aaaa";
-@@ -103,21 +104,30 @@ function fakeRunner(
+@@ -103,21 +104,41 @@ function fakeRunner(
    };
  }
  
 -/** GitHub connected, the agent on a connected Mac with only `github:git.read` (no sandbox:run). */
 -async function world(options: { scopes?: string[]; protocol?: number } = {}) {
-+/** GitHub (or a self-hosted GitLab) connected, the agent on a connected Mac with only `git.read` (no sandbox:run). */
-+async function world(options: { scopes?: string[]; protocol?: number; gitlab?: { serverUrl: string } } = {}) {
++/**
++ * GitHub (or a self-hosted GitLab, or both) connected, the agent on a connected Mac with only `git.read` (no
++ * sandbox:run). With both, `connection` is the GitHub one, as `machineGitSetup` chooses it.
++ */
++async function world(
++  options: { scopes?: string[]; protocol?: number; gitlab?: { serverUrl: string }; alsoGithub?: boolean } = {},
++) {
    f = await setup({ machines: true, reply: () => ({ chunks: ["ok"] }) });
    const hub = f.machineHub as MachineHub;
    const connectors: ConnectorDeps = { db: f.db, keyWrappers: [f.keyWrapper], publicUrl: PUBLIC_URL };
@@ -471,30 +487,57 @@ index 9defbf7..b2b0b9f 100644
 -    connector: "github",
 -    apiKey: GH_TOKEN,
 -  });
-+  const connection = options.gitlab
++  const githubConnection =
++    options.gitlab && !options.alsoGithub
++      ? null
++      : await createApiKeyConnection(connectors, f.owner.id, f.org.id, {
++          connector: "github",
++          apiKey: GH_TOKEN,
++        });
++  const gitlabConnection = options.gitlab
 +    ? await createApiKeyConnection(connectors, f.owner.id, f.org.id, {
 +        connector: "gitlab",
 +        serverUrl: options.gitlab.serverUrl,
 +        apiKey: GL_TOKEN,
 +      })
-+    : await createApiKeyConnection(connectors, f.owner.id, f.org.id, {
-+        connector: "github",
-+        apiKey: GH_TOKEN,
-+      });
++    : null;
++  const connection = githubConnection ?? gitlabConnection;
++  if (!connection) throw new Error("world has no connection");
    await setAgentScopes(
      f.db,
      f.owner.id,
      f.org.id,
      f.agent.id,
 -    (options.scopes ?? ["github:git.read"]).map((scope) => ({ connectionId: connection.id, scope })),
-+    (options.scopes ?? [options.gitlab ? "gitlab:git.read" : "github:git.read"]).map((scope) => ({
-+      connectionId: connection.id,
++    (options.scopes ?? [githubConnection ? "github:git.read" : "gitlab:git.read"]).map((scope) => ({
++      connectionId: scope.startsWith("gitlab:") && gitlabConnection ? gitlabConnection.id : connection.id,
 +      scope,
 +    })),
      connectorGrantValidator,
    );
    const deps = { db: f.db, pubsub: f.pubsub, publicUrl: PUBLIC_URL };
-@@ -301,6 +311,37 @@ describe("git on a connected machine through the proxy (ADR 0024 addendum)", ()
+@@ -142,7 +163,19 @@ async function world(options: { scopes?: string[]; protocol?: number } = {}) {
+   );
+   await runner.hello(paired.token);
+   const git = { publicUrl: PUBLIC_URL, secret: SECRET };
+-  return { hub, connectors, connection, paired, runner, answers, listing, git, machineDeps: { db: f.db, hub, git } };
++  return {
++    hub,
++    connectors,
++    connection,
++    githubConnection,
++    gitlabConnection,
++    paired,
++    runner,
++    answers,
++    listing,
++    git,
++    machineDeps: { db: f.db, hub, git },
++  };
+ }
+ 
+ async function runCtx(): Promise<ToolContext> {
+@@ -301,6 +334,97 @@ describe("git on a connected machine through the proxy (ADR 0024 addendum)", ()
      expect((await clone?.execute({ repo: "acme/app", dir: "../x" }, ctx))?.isError).toBe(true);
    });
  
@@ -527,6 +570,66 @@ index 9defbf7..b2b0b9f 100644
 +    const [sync] = w.runner.syncs();
 +    expect(sync?.proxy.base).toBe(setup?.proxy.base);
 +    expect(sync?.proxy.token).toBe(setup?.proxy.token);
++  });
++
++  test("both connected: git.sync and the git tools stay GitHub's", async () => {
++    const w = await world({
++      scopes: ["github:git.read"],
++      gitlab: { serverUrl: "https://gitlab.test" },
++      alsoGithub: true,
++    });
++    const at = new Date("2026-11-17T12:00:00.000Z");
++    const setup = await machineGitSetup({ ...w.machineDeps, now: () => at }, f.org.id, f.agent.id, w.paired.machineId);
++    expect(setup?.connector).toBe("github");
++    expect(setup?.proxy.base).toBe(`${PUBLIC_URL}/api/git/${f.org.id}/${w.connection.id}/`);
++    expect(setup?.proxy.token).toMatch(/^agtgit1\./);
++    expect(setup?.proxy.token).not.toContain(GH_TOKEN);
++    expect(setup?.author).toEqual({ name: "Dev (agentes)", email: "dev@agents.agentes.test" });
++    expect(verifyGitToken(SECRET, setup?.proxy.token ?? "")).toMatchObject({
++      kind: "machine",
++      sandboxId: w.paired.machineId,
++      agentId: f.agent.id,
++    });
++    expect(w.githubConnection?.id).toBe(w.connection.id);
++    expect(w.gitlabConnection?.id).not.toBe(w.connection.id);
++    const source = createGitToolSource({
++      sandbox: { db: f.db, machines: { hub: w.hub }, git: w.git } as never,
++      connectors: w.connectors,
++    });
++    const tools = await source.tools(await runCtx());
++    expect(tools.map((t) => [t.name, t.scope, t.connectionId])).toEqual([
++      ["git_clone", "github:git.read", w.connection.id],
++      ["open_pull_request", "github:pr.write", w.connection.id],
++      ["delete_branches", "github:git.write", w.connection.id],
++      ["request_branch_push", "github:git.write", w.connection.id],
++    ]);
++  });
++
++  test("a GitLab sync never asks for the GitHub App bot identity", async () => {
++    const w = await world({ scopes: ["gitlab:git.read"], gitlab: { serverUrl: "https://gitlab.test" } });
++    await f.db.insert(schema.githubAppInstallations).values({
++      orgId: f.org.id,
++      installationId: 9,
++      accountLogin: "acme",
++      accountType: "Organization",
++    });
++    const calls: string[] = [];
++    const http = {
++      apiUrl: API,
++      fetch: (async (input: string | URL | Request) => {
++        calls.push(String(input));
++        return Response.json({ id: 77, name: "agentes-machine-test[bot]" });
++      }) as typeof fetch,
++    };
++    const setup = await machineGitSetup(
++      { ...w.machineDeps, github: { app: { ...APP, slug: "agentes-machine-test" }, http } },
++      f.org.id,
++      f.agent.id,
++      w.paired.machineId,
++    );
++    expect(setup?.connector).toBe("gitlab");
++    expect(setup?.author).toEqual({ name: "Dev (agentes)", email: "dev@agents.agentes.test" });
++    expect(calls).toEqual([]);
 +  });
 +
    test("an older runner is told to update; no git access, no clone", async () => {
