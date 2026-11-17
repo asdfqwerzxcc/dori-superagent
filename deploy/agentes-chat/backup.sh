@@ -32,6 +32,15 @@ usage() {
   awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"
 }
 
+# The database path uses pg_dump in the postgres container and needs no tar.
+# Only the files volume needs tar; detect it at run time instead of assuming it.
+require_tar() {
+  if ! docker compose run --rm --no-deps -T --entrypoint sh agentes -c 'command -v tar >/dev/null 2>&1'; then
+    echo "error: the agentes image provides no tar (or no sh to detect it); the files volume cannot be backed up. Use --no-files, or add tar to the image." >&2
+    exit 1
+  fi
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --out|-o)
@@ -77,7 +86,7 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "  output dir  : $OUT_DIR"
   echo "  database    : docker compose exec -T postgres pg_dump -U agentes -Fc agentes > $DUMP"
   if [ "$INCLUDE_FILES" = 1 ]; then
-    echo "  files       : docker compose run --rm --no-deps -T --entrypoint tar agentes czf - -C /data/files . > $FILES_OUT"
+    echo "  files       : docker compose run --rm --no-deps -T --entrypoint tar agentes czf - -C /data/files . > $FILES_OUT (requires tar in the agentes image; detected at run time)"
   fi
   if [ "$INCLUDE_ENV" = 1 ]; then
     echo "  env         : cp -p .env $ENV_OUT (chmod 600; holds AGENTES_SECRET and POSTGRES_PASSWORD)"
@@ -133,6 +142,7 @@ docker compose exec -T postgres pg_dump -U agentes -Fc agentes > "$DUMP_PART"
 mv "$DUMP_PART" "$DUMP"
 
 if [ "$INCLUDE_FILES" = 1 ]; then
+  require_tar
   echo "==> files volume -> $FILES_OUT"
   docker compose run --rm --no-deps -T --entrypoint tar agentes czf - -C /data/files . > "$FILES_PART"
   mv "$FILES_PART" "$FILES_OUT"

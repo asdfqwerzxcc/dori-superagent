@@ -35,6 +35,15 @@ usage() {
   awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"
 }
 
+# The database path uses pg_restore in the postgres container and needs no
+# tar. Only the files volume needs tar; detect it at run time.
+require_tar() {
+  if ! docker compose run --rm --no-deps -T --entrypoint sh agentes -c 'command -v tar >/dev/null 2>&1'; then
+    echo "error: the agentes image provides no tar (or no sh to detect it); the files volume cannot be restored. Omit --files, or add tar to the image." >&2
+    exit 1
+  fi
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --dump)
@@ -97,6 +106,7 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "    docker compose exec -T postgres createdb -U agentes agentes"
   echo "    docker compose exec -T postgres pg_restore -U agentes -d agentes --exit-on-error < $DUMP"
   if [ -n "$FILES_IN" ]; then
+    echo "    # files restore requires tar in the agentes image; detected at run time"
     echo "    docker compose run --rm --no-deps -T --entrypoint sh agentes -c 'rm -rf -- /data/files/* /data/files/.[!.]* /data/files/..?*'"
     echo "    docker compose run --rm --no-deps -T --entrypoint tar agentes xzf - -C /data/files < $FILES_IN"
   fi
@@ -146,6 +156,7 @@ echo "==> restoring $DUMP"
 docker compose exec -T postgres pg_restore -U agentes -d agentes --exit-on-error < "$DUMP"
 
 if [ -n "$FILES_IN" ]; then
+  require_tar
   echo "==> clearing the files volume"
   docker compose run --rm --no-deps -T --entrypoint sh agentes -c 'rm -rf -- /data/files/* /data/files/.[!.]* /data/files/..?*'
   echo "==> restoring files from $FILES_IN"

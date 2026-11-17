@@ -395,10 +395,13 @@ go, and has a restore been tested from there?
   real restore from it. Run a restore drill into a scratch instance (or at
   least a scratch database) before relying on the backup.
 
-- [ ] **UNVERIFIED:** `backup.sh` and `restore.sh` use the app image's `tar`
-  entrypoint, as upstream's own backup procedure does. The image was not
-  exercised here; the first backup and a restore drill on the server prove it.
-  `restore.sh --files` empties the files volume before unpacking the archive.
+- [ ] **UNVERIFIED:** `backup.sh` and `restore.sh` detect `tar` in the app
+  image before using it; when it is missing they stop with a named error and
+  skip the files volume (or refuse the files restore). The database dump and
+  restore go through the postgres container's `pg_dump`/`pg_restore` and need
+  no tar. The image was not exercised here; the first backup and a restore
+  drill on the server prove it. `restore.sh --files` empties the files volume
+  before unpacking the archive.
 
 ## 6. Do not
 
