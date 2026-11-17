@@ -32,14 +32,18 @@ export async function laneGate(d: Deps, lane: Lane): Promise<LaneGate> {
           `lane ${lane.key} at ${tip.slice(0, 12)}: a review record is in flight but unreadable (the next duty pass drops it, so no verdict is coming for it); ` +
           `run dori review --lane ${lane.key} to queue it again, or dori done --drop ${lane.key} --reason <text>`,
       };
-    if (job !== undefined)
+    if (job !== undefined) {
+      // A record can outlive its writer with a time no Date can render; the refusal must still print, never throw.
+      const at = new Date(job.requestedAt);
+      const when = Number.isNaN(at.getTime()) ? String(job.requestedAt) : at.toISOString();
       return {
         ok: false,
         reason:
-          `lane ${lane.key} at ${tip.slice(0, 12)}: a review is in flight (${job.state}, requested ${new Date(job.requestedAt).toISOString()}); ` +
+          `lane ${lane.key} at ${tip.slice(0, 12)}: a review is in flight (${job.state}, requested ${when}); ` +
           `its verdict will arrive as an inbox message from duty. Run dori done ${lane.key} again once the receipt exists ` +
           `(or dori done --drop ${lane.key} --reason <text>)`,
       };
+    }
     return {
       ok: false,
       reason: `lane ${lane.key} at ${tip.slice(0, 12)} has no review receipt; run: dori review --lane ${lane.key} (or dori done --drop ${lane.key} --reason <text>)`,

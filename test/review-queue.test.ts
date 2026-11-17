@@ -135,6 +135,14 @@ describe("queued lane review", () => {
     const receipt = join(d.store.root, "receipts", `lane_quiet@${tip}.json`);
     expect(lead.received.slice(before)).toEqual([`[REVIEW quiet] CLEAR at ${tip}; receipt ${receipt}`]);
 
+    writeFileSync(corrupt, `{"lane":"fix-login","tip":"${tip}","base":"${base}","requestedAt":1e300,"state":"queued"}`);
+    const unrenderable = await done(d, "fix-login").then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect((unrenderable as Error).message).toContain("a review is in flight");
+    expect((unrenderable as Error).message).toContain("requested 1e+300");
+
     writeFileSync(corrupt, "{ not json");
     expect(await captureIo(() => main(["review", "--lane", "fix-login"], d))).toEqual({
       code: 0,
