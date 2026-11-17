@@ -395,6 +395,11 @@ go, and has a restore been tested from there?
   real restore from it. Run a restore drill into a scratch instance (or at
   least a scratch database) before relying on the backup.
 
+- [ ] **UNVERIFIED:** `backup.sh` and `restore.sh` use the app image's `tar`
+  entrypoint, as upstream's own backup procedure does. The image was not
+  exercised here; the first backup and a restore drill on the server prove it.
+  `restore.sh --files` empties the files volume before unpacking the archive.
+
 ## 6. Do not
 
 - [ ] Do not change `AGENTES_SECRET` on a running instance. Stored provider and
@@ -415,7 +420,14 @@ go, and has a restore been tested from there?
   > `docker-compose.override.yml` beside it, which Compose merges on its own.
 
 - [ ] Do not publish Postgres. This compose file publishes only the app, on
-  loopback by default; Caddy publishes 80 and 443.
+  loopback by default. **VERIFIED FROM DOCS**, "This machine only, and by
+  hand":
+
+  > The app is published on `127.0.0.1:3000` only; `HOST_PORT` changes the
+  > port.
+
+  Caddy publishes 80 and 443 only with `COMPOSE_PROFILES=https`; that is this
+  package's compose file, not an upstream claim.
 
 ## 7. What was verified on the machine that produced this package
 

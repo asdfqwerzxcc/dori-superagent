@@ -12,7 +12,9 @@
 # The restore stops the app, drops and recreates the database, loads the dump
 # with --exit-on-error, optionally unpacks the files volume, and starts the
 # app again. If any step fails the app is left stopped on purpose: inspect
-# the error before starting it.
+# the error before starting it. With --files, the files volume is emptied
+# before the archive is unpacked, so files added after the backup do not
+# survive the restore.
 #
 # AGENTES_SECRET must match the one used when the dump was taken, or every
 # stored provider and connector credential stays unreadable. On a new server,
@@ -95,6 +97,7 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "    docker compose exec -T postgres createdb -U agentes agentes"
   echo "    docker compose exec -T postgres pg_restore -U agentes -d agentes --exit-on-error < $DUMP"
   if [ -n "$FILES_IN" ]; then
+    echo "    docker compose run --rm --no-deps -T --entrypoint sh agentes -c 'rm -rf -- /data/files/* /data/files/.[!.]* /data/files/..?*'"
     echo "    docker compose run --rm --no-deps -T --entrypoint tar agentes xzf - -C /data/files < $FILES_IN"
   fi
   echo "    docker compose start agentes"
@@ -133,7 +136,7 @@ docker compose up -d --wait postgres
 echo "==> stopping the app"
 docker compose stop agentes
 
-trap 'echo "error: restore failed; the app is left stopped. Inspect the output above, then run: docker compose start agentes" >&2' ERR
+trap 'echo "error: restore failed; the app is left stopped and the files volume may be empty or partial. Inspect the output above, then run: docker compose start agentes" >&2' ERR
 
 echo "==> dropping and recreating the database"
 docker compose exec -T postgres dropdb -U agentes --force agentes
@@ -143,6 +146,8 @@ echo "==> restoring $DUMP"
 docker compose exec -T postgres pg_restore -U agentes -d agentes --exit-on-error < "$DUMP"
 
 if [ -n "$FILES_IN" ]; then
+  echo "==> clearing the files volume"
+  docker compose run --rm --no-deps -T --entrypoint sh agentes -c 'rm -rf -- /data/files/* /data/files/.[!.]* /data/files/..?*'
   echo "==> restoring files from $FILES_IN"
   docker compose run --rm --no-deps -T --entrypoint tar agentes xzf - -C /data/files < "$FILES_IN"
 fi
@@ -151,6 +156,8 @@ echo "==> starting the app"
 docker compose start agentes
 
 echo
+PORT="$(awk -F= '/^HOST_PORT=/{v=$2} END{print v}' .env 2>/dev/null | sed 's/[[:space:]].*//; s/^"//; s/"$//')"
+PORT="${PORT:-3000}"
 echo "Restore complete. Check the app:"
 echo "  docker compose ps"
-echo "  curl -fsS http://127.0.0.1:3000/api/health"
+echo "  curl -fsS http://127.0.0.1:${PORT}/api/health"

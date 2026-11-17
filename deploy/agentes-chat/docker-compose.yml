@@ -47,8 +47,9 @@ services:
     # Pinned to the v0.1.2 release. Keep AGENTES_IMAGE in .env equal to this
     # value unless you are deliberately upgrading (see upgrade.md).
     image: "${AGENTES_IMAGE:-ghcr.io/agentes-chat/agentes:0.1.2@sha256:d6bde5d5b68510a7d8a309b0491ec1431ffeeb815f019c2b9bdaf269e004ad4f}"
-    # The whole .env reaches the app, so optional upstream variables can go
-    # there. These entries make Compose fail fast when a required one is empty.
+    # As upstream, the whole .env reaches the app, including
+    # POSTGRES_PASSWORD and TS_AUTHKEY. Empty TS_AUTHKEY after the node joins.
+    # These entries make Compose fail fast when a required one is empty.
     env_file:
       - .env
     environment:
@@ -110,7 +111,8 @@ services:
       start_period: 120s
 
   speech:
-    # Voice messages' words on this machine. On with speech in
+    # Voice messages' words on this machine. The models are in the image, so
+    # this internal network needs no internet. On with speech in
     # COMPOSE_PROFILES and LOCAL_SPEECH_URL=http://speech:8000/v1.
     image: "ghcr.io/agentes-chat/speech:0.1.2@sha256:ca0d6faa9f8afd0db003f4f9bba9529be072b22b3ba9ea30b9c6a4e58a3b1c5c"
     profiles: ["speech"]
@@ -222,7 +224,9 @@ services:
   caddy:
     # Certificate for DOMAIN, http -> https redirect, WebSockets, and
     # X-Forwarded-For set to the client alone. Leave TRUSTED_PROXIES empty
-    # unless another proxy or CDN sits in front of Caddy.
+    # unless another proxy or CDN sits in front of Caddy. Caddy writes its
+    # autosaved config under /config, so it is not read_only; certificates
+    # live in the caddy-data volume.
     image: caddy:2.11.7-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
     profiles: ["https"]
     configs:

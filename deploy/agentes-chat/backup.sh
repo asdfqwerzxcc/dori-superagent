@@ -11,6 +11,9 @@
 #              to read credentials stored in the database)
 # --dry-run    print every command and write nothing
 #
+# A relative --out resolves from this script's directory, not your shell's.
+# A failed run leaves <name>.partial files; they are not valid backups.
+#
 # The database dump is consistent while the app runs. Copy the results off
 # the server: a backup that only exists on the server is not a backup.
 # Keep the .env copy apart from the dumps; anyone holding both can read every
@@ -64,6 +67,9 @@ STAMP="$(date -u +%Y%m%d-%H%M%S)"
 DUMP="$OUT_DIR/agentes-$STAMP.dump"
 FILES_OUT="$OUT_DIR/files-$STAMP.tar.gz"
 ENV_OUT="$OUT_DIR/env-$STAMP.backup"
+DUMP_PART="$DUMP.partial"
+FILES_PART="$FILES_OUT.partial"
+ENV_PART="$ENV_OUT.partial"
 
 if [ "$DRY_RUN" = 1 ]; then
   echo "DRY RUN: nothing is written"
@@ -101,21 +107,42 @@ if [ "$INCLUDE_ENV" = 1 ] && [ ! -f .env ]; then
 fi
 
 umask 077
-mkdir -p "$OUT_DIR"
-chmod 700 "$OUT_DIR"
+if [ ! -d "$OUT_DIR" ]; then
+  mkdir -p "$OUT_DIR"
+  chmod 700 "$OUT_DIR"
+fi
+
+CHECK=("$DUMP" "$DUMP_PART")
+if [ "$INCLUDE_FILES" = 1 ]; then
+  CHECK+=("$FILES_OUT" "$FILES_PART")
+fi
+if [ "$INCLUDE_ENV" = 1 ]; then
+  CHECK+=("$ENV_OUT" "$ENV_PART")
+fi
+for f in "${CHECK[@]}"; do
+  if [ -e "$f" ]; then
+    echo "error: $f already exists; wait a second and retry, or remove the stale file" >&2
+    exit 1
+  fi
+done
+
+trap 'echo "error: backup failed; files ending in .partial are incomplete and must not be used" >&2' ERR
 
 echo "==> database -> $DUMP"
-docker compose exec -T postgres pg_dump -U agentes -Fc agentes > "$DUMP"
+docker compose exec -T postgres pg_dump -U agentes -Fc agentes > "$DUMP_PART"
+mv "$DUMP_PART" "$DUMP"
 
 if [ "$INCLUDE_FILES" = 1 ]; then
   echo "==> files volume -> $FILES_OUT"
-  docker compose run --rm --no-deps -T --entrypoint tar agentes czf - -C /data/files . > "$FILES_OUT"
+  docker compose run --rm --no-deps -T --entrypoint tar agentes czf - -C /data/files . > "$FILES_PART"
+  mv "$FILES_PART" "$FILES_OUT"
 fi
 
 if [ "$INCLUDE_ENV" = 1 ]; then
   echo "==> .env -> $ENV_OUT"
-  cp -p .env "$ENV_OUT"
-  chmod 600 "$ENV_OUT"
+  cp -p .env "$ENV_PART"
+  chmod 600 "$ENV_PART"
+  mv "$ENV_PART" "$ENV_OUT"
 fi
 
 echo
