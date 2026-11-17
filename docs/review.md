@@ -7,7 +7,7 @@ pull request is opened. The record of a review is a receipt file under `$DORI_HO
 
 | Layer | Who runs it | Evidence |
 | --- | --- | --- |
-| Lane review | `dori review --lane <key>` starts a fresh, non-interactive reviewer on the lane's own commits | `receipts/lane_<key>@<tip>.json` |
+| Lane review | `dori review --lane <key>` queues a fresh, non-interactive reviewer on the lane's own commits for `dori duty` | `receipts/lane_<key>@<tip>.json` |
 | Lead review | the lead reads the lane's final answer and its evidence (`dori ready`) and may read the receipt or diff | the lane's `final` entry and `lane-reviews/lane_<key>@<tip>.diff` |
 | Merge gate | `dori merge <owner/repo#N>`, only when the work exists as a PR | `receipts/<owner__repo>_<N>@<sha>.json` plus green checks |
 
@@ -68,6 +68,35 @@ A reviewer that printed something but no `VERDICT` line writes no receipt; the d
 command fails. A zero-byte answer is always `reviewer_empty`, never a pending review. A verdict printed only to stderr is
 not accepted: it is a `reviewer_empty` receipt whose diagnostic keeps that stderr.
 
+### The queued path
+
+When a duty loop runs in the same home, `dori review --lane <key> [--model M]` reviews nothing in the caller's pane. It
+resolves the lane's current tip and merge-base, writes one job record and prints:
+
+```
+QUEUED <key> <tip> <job>
+```
+
+The record is `$DORI_HOME/state/review-queue/<key>@<tip>.json`, written atomically, holding `lane`, `tip`, `base`,
+`model` (when one was given), `requestedAt` and `state` (`queued`, then `running` while a worker has it). A second
+request for the same lane and tip returns that record instead of starting a second reviewer.
+
+`dori duty` drains the queue at the end of each pass: it runs the same reviewer as the inline path (same prompts,
+chunking, deadline, log, diagnostics and receipt), drops the job, and sends the lead one inbox message:
+
+```
+[REVIEW <key>] CLEAR at <tip>; receipt <home>/receipts/lane_<key>@<tip>.json
+```
+
+A review that fails or times out posts the same way, naming the failure instead of a verdict
+(`[REVIEW <key>] failed at <tip>: <reason>`). `dori done` never waits on a queued review: while a job for the lane's
+current tip is pending it refuses, saying the review is in flight and that the verdict will arrive as an inbox message,
+and the same `dori done` lands once the receipt exists.
+
+With no duty loop running (a plain install, or a worker that died), `dori review --lane` reviews inline exactly as
+before; that inline run also drops a job record a dead worker left for the same lane and tip. A worker that dies
+mid-review leaves its job `running`, and the next duty pass runs it again.
+
 ## Layer 2: the lead review
 
 A lane reports `dori ready <key> --text ... --evidence ...`; the final answer and its evidence are what the lead judges.
@@ -92,6 +121,12 @@ A failed review at that tip refuses the same way, naming the verdict and the log
 
 ```
 lane <key> at <sha> is reviewer_timeout; log: <home>/state/reviews/<key>.log; run: dori review --lane <key> (or dori done --drop <key> --reason <text>)
+```
+
+A review still in the queue refuses without waiting and without sending the lead to review it again:
+
+```
+lane <key> at <sha>: a review is in flight (queued, requested <time>); its verdict will arrive as an inbox message from duty. Run dori done <key> again once the receipt exists (or dori done --drop <key> --reason <text>)
 ```
 
 These verdicts (and `reviewer_empty`) are failures, not passes: the lane is never approved by a review that produced no
