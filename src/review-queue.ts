@@ -64,9 +64,12 @@ function reviewJobs(root: string): ReviewJob[] {
     .sort((a, b) => a.requestedAt - b.requestedAt || a.lane.localeCompare(b.lane));
 }
 
-/** The pending job for exactly this lane and tip, or undefined (including for a pair that could never be a job). */
-export function reviewJobFor(root: string, lane: string, tip: string): ReviewJob | undefined {
-  return validId(lane, tip) ? readJob(jobPath(root, lane, tip)) : undefined;
+/** The pending job for exactly this lane and tip, `corrupt` when a record exists but cannot be read, or undefined. */
+export function reviewJobFor(root: string, lane: string, tip: string): ReviewJob | "corrupt" | undefined {
+  if (!validId(lane, tip)) return undefined;
+  const path = jobPath(root, lane, tip);
+  if (!existsSync(path)) return undefined;
+  return readJob(path) ?? "corrupt";
 }
 
 /** True while a duty loop runs in this home: its lock is held by a process that is alive on this host. */

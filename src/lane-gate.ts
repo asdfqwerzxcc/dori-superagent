@@ -25,6 +25,13 @@ export async function laneGate(d: Deps, lane: Lane): Promise<LaneGate> {
   if (!receipt) {
     // A queued review is already running somewhere else: done says so instead of sending the lead to review it again.
     const job = reviewJobFor(d.store.root, lane.key, tip);
+    if (job === "corrupt")
+      return {
+        ok: false,
+        reason:
+          `lane ${lane.key} at ${tip.slice(0, 12)}: a review record is in flight but unreadable (the next duty pass drops it, so no verdict is coming for it); ` +
+          `run dori review --lane ${lane.key} to queue it again, or dori done --drop ${lane.key} --reason <text>`,
+      };
     if (job !== undefined)
       return {
         ok: false,
