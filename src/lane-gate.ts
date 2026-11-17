@@ -1,5 +1,6 @@
 import type { Deps } from "./harness.ts";
 import { laneHead, laneRepo } from "./lane-repo.ts";
+import { reviewJobFor } from "./review-queue.ts";
 import { reviewLogPath } from "./review-run.ts";
 import type { Lane } from "./store-types.ts";
 
@@ -21,11 +22,22 @@ export async function laneGate(d: Deps, lane: Lane): Promise<LaneGate> {
     };
   if (tip === lane.baseSha) return { ok: true };
   const receipt = d.store.laneReceipt(lane.key, tip);
-  if (!receipt)
+  if (!receipt) {
+    // A queued review is already running somewhere else: done says so instead of sending the lead to review it again.
+    const job = reviewJobFor(d.store.root, lane.key, tip);
+    if (job !== undefined)
+      return {
+        ok: false,
+        reason:
+          `lane ${lane.key} at ${tip.slice(0, 12)}: a review is in flight (${job.state}, requested ${new Date(job.requestedAt).toISOString()}); ` +
+          `its verdict will arrive as an inbox message from duty. Run dori done ${lane.key} again once the receipt exists ` +
+          `(or dori done --drop ${lane.key} --reason <text>)`,
+      };
     return {
       ok: false,
       reason: `lane ${lane.key} at ${tip.slice(0, 12)} has no review receipt; run: dori review --lane ${lane.key} (or dori done --drop ${lane.key} --reason <text>)`,
     };
+  }
   if (receipt.verdict !== "CLEAR") {
     const failed = receipt.verdict === "reviewer_timeout" || receipt.verdict === "reviewer_empty";
     const log = failed ? `; log: ${reviewLogPath(d.store.root, lane.key)}` : "";

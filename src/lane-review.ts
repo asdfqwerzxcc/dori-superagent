@@ -7,7 +7,7 @@ import { type DiffChunk, planReview, resplitChunk } from "./review-chunks.ts";
 import { diagnosticLine, type ReviewDiagnostic, reviewDiagnostic, writeReviewDiagnostic } from "./review-diagnostic.ts";
 import { failed, failureKind, failureSummary, type LaneResult, type LaneRun, successSummary } from "./review-report.ts";
 import { reviewLogPath, reviewTimeoutFromEnv, reviewVerdict, type ReviewVerdict, runReviewer } from "./review-run.ts";
-import { KEY_RE, type LaneVerdict } from "./store-types.ts";
+import { KEY_RE, type Lane, type LaneVerdict } from "./store-types.ts";
 
 export type LaneReview = { readonly verdict: ReviewVerdict; readonly base: string; readonly tip: string };
 export type LaneReviewOptions = {
@@ -16,20 +16,14 @@ export type LaneReviewOptions = {
   readonly verdictGraceMs?: number;
 };
 
+/** The lane, its checkout, its current tip and the merge-base a review of it covers. */
+export type LaneReviewTarget = { lane: Lane; repo: string; tip: string; base: string };
+
 /**
- * Reviews one lane's own commits: the merge-base of its recorded start commit and the current tip, diffed at that tip.
- * Writes `receipts/lane_<key>@<tip>.json`. The reviewer runs under a deadline, its output streams to
- * `state/reviews/<key>.log`, a diff over the size caps is split by path, a failed attempt is retried once with
- * `reviewFallbackModel`, and a timeout or an empty answer becomes a non-CLEAR receipt (`reviewer_timeout` /
- * `reviewer_empty`) instead of a silent no-receipt. Every failure also writes a JSON diagnostic with argv, model, exit
- * code, duration and both output tails.
+ * Resolves what `dori review --lane` would review, refusing exactly like `reviewLane` does. The queued path needs the
+ * tip and base for its job record without running the reviewer, so both paths read them here.
  */
-export async function reviewLane(
-  d: Deps,
-  key: string,
-  model?: string,
-  opts: LaneReviewOptions = {},
-): Promise<LaneReview> {
+export async function laneReviewTarget(d: Deps, key: string): Promise<LaneReviewTarget> {
   if (!KEY_RE.test(key)) throw new Refusal(`lane key must match ${KEY_RE}`);
   const lane = d.store.lane(key);
   if (!lane) throw new Refusal(`no lane ${key}`);
@@ -45,6 +39,24 @@ export async function reviewLane(
   if (base === undefined)
     throw new Refusal(`cannot find the merge-base of ${lane.baseSha.slice(0, 12)} and ${tip.slice(0, 12)} in ${repo}`);
   if (base === tip) throw new Refusal(`lane ${key} has no commits since ${base.slice(0, 12)}; nothing to review`);
+  return { lane, repo, tip, base };
+}
+
+/**
+ * Reviews one lane's own commits: the merge-base of its recorded start commit and the current tip, diffed at that tip.
+ * Writes `receipts/lane_<key>@<tip>.json`. The reviewer runs under a deadline, its output streams to
+ * `state/reviews/<key>.log`, a diff over the size caps is split by path, a failed attempt is retried once with
+ * `reviewFallbackModel`, and a timeout or an empty answer becomes a non-CLEAR receipt (`reviewer_timeout` /
+ * `reviewer_empty`) instead of a silent no-receipt. Every failure also writes a JSON diagnostic with argv, model, exit
+ * code, duration and both output tails.
+ */
+export async function reviewLane(
+  d: Deps,
+  key: string,
+  model?: string,
+  opts: LaneReviewOptions = {},
+): Promise<LaneReview> {
+  const { lane, repo, tip, base } = await laneReviewTarget(d, key);
 
   const diff = await laneGit(d, repo, ["--no-pager", "diff", "--no-color", "--no-ext-diff", `${base}..${tip}`]);
   if (diff.code !== 0)

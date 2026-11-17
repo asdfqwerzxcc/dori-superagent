@@ -4,6 +4,7 @@ import { runHook } from "./hooks.ts";
 import { flushInbox, sendOrThrow, tellLead } from "./inbox.ts";
 import { Refusal } from "./refusal.ts";
 import { refText, sameSession } from "./refs.ts";
+import { drainReviewQueue } from "./review-queue.ts";
 import type { Lane } from "./store-types.ts";
 
 export const NUDGE_MINUTES = [10, 20, 40] as const;
@@ -110,6 +111,13 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
     }
   }
   const count = (pred: (a: string) => boolean) => events.filter((e) => pred(e.action)).length;
+  // Reviews last: one can run for minutes, and a nudge or a LOST notice must never wait behind a reviewer.
+  try {
+    events.push(...(await drainReviewQueue(d)));
+  } catch (e) {
+    // A queue that cannot be read must not end the loop for the panes and lanes handled above.
+    events.push({ action: "review-queue-failed", detail: failureDetail(e) });
+  }
   d.usage.touch();
   d.usage.duty({
     ticks: 1,

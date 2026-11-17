@@ -39,7 +39,12 @@ export class Receipts {
 
   /** The lane receipt pinned to `tip`: a receipt at another commit never describes this diff. */
   lane(key: string, tip: string): LaneReceipt | undefined {
-    return readJson<LaneReceipt>(this.path("receipts", `lane_${key}`, tip, "json"));
+    return readJson<LaneReceipt>(this.laneReceiptPath(key, tip));
+  }
+
+  /** Where the receipt for lane `key` at `tip` lives, whether or not it was written yet. */
+  laneReceiptPath(key: string, tip: string): string {
+    return this.path("receipts", `lane_${key}`, tip, "json");
   }
 
   /** Where `dori review --lane` keeps the diff it hands the reviewer, one file per lane and tip. */

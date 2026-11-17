@@ -21,7 +21,8 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori backlog list | decide <id> --text ANSWER | drop <id> [--text WHY]
   dori backlog import <owner/repo> [--label dori] [--cwd DIR]   open labelled issues -> items
   dori review <owner/repo#N> [--model M]      fresh omo reviewer at the exact head -> receipt
-  dori review --lane <key> [--model M]        fresh reviewer over a lane's own diff -> lane receipt
+  dori review --lane <key> [--model M]        queue the lane's own diff for dori duty -> QUEUED <key> <tip> <job>;
+                                              with no duty loop running, review it inline now -> lane receipt
   dori merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks -> squash merge
   dori done <key> [--rebase]                  lead closes a READY lane; needs a CLEAR lane receipt unless it committed nothing
                                               --rebase moves the lane onto current main first, re-records its base and demands a fresh receipt
