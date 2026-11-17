@@ -1,0 +1,712 @@
+From 21428a574cb56cc0cc760cc476328d3ac88f7ff1 Mon Sep 17 00:00:00 2001
+From: jaejinaa <wowls7990@gmail.com>
+Date: Tue, 17 Nov 2026 22:24:51 +0900
+Subject: [PATCH 2/2] feat(gitlab): clone and push through the proxy
+
+The proxy takes the upstream host, the credential and the fast-forward check from the connection's connector: GitHub keeps its constants, githubToken and compare API byte for byte; GitLab uses the instance's base URL, HTTP Basic for git, PRIVATE-TOKEN for REST and its merge-base API. Scopes are derived per connector, and the computer sync picks the GitLab connection when no GitHub one is connected, handing it the same agtgit1 credential and never a GitLab token. git_clone is the one git tool offered on a GitLab connection; pull requests, branch deletion and branch approvals stay GitHub-only.
+---
+ packages/engine/src/git/machine.ts       |  37 ++++--
+ packages/engine/src/git/proxy.ts         | 158 +++++++++++++++--------
+ packages/engine/src/git/tools.ts         |  23 ++--
+ packages/engine/src/tools/gateway.ts     |   2 +-
+ packages/engine/test/git-machine.test.ts |  55 +++++++-
+ packages/engine/test/git.test.ts         | 137 +++++++++++++++++++-
+ 6 files changed, 325 insertions(+), 87 deletions(-)
+
+diff --git a/packages/engine/src/git/machine.ts b/packages/engine/src/git/machine.ts
+index b36e1a4..139d2ff 100644
+--- a/packages/engine/src/git/machine.ts
++++ b/packages/engine/src/git/machine.ts
+@@ -24,6 +24,7 @@ import { standingRefusal } from "../standing";
+ import { grantedScopeKeys } from "../tools/scopes";
+ import { agentCommitEmail, GIT_TOKEN_TTL_SECONDS, gitProxyBase, issueGitToken, machineGitGen } from "./credential";
+ import { appTokenForRepo, botIdentity, boundInstallations, type GitHubAppConfig, type GitHubHttp } from "./github-app";
++import { GITLAB_CONNECTOR } from "./gitlab";
+ import { gitAccess } from "./proxy";
+ import { agentRepositoryList, type CodeCheckout, codePrompt, repoInList } from "./repos";
+ import { runCoAuthors } from "./signature";
+@@ -78,9 +79,10 @@ export function machineGitUnavailable(status: MachineStatus | null, orgId: strin
+ /**
+  * The `proxy` and `author` of a `git.sync` for this agent on this machine:
+  * a fresh proxy credential (6 h) bound to the machine and the agent. Null
+- * when the org has no GitHub connection or the agent has no git access.
+- * With the GitHub App installed for the workspace (ADR 0156), commits are
+- * authored as the app's bot, so GitHub shows them as the app's.
++ * when the org has no GitHub or GitLab connection or the agent has no git
++ * access. GitHub is preferred where both are connected, so its sync is
++ * unchanged. With the GitHub App installed for the workspace (ADR 0156),
++ * commits are authored as the app's bot, so GitHub shows them as the app's.
+  */
+ export async function machineGitSetup(
+   deps: MachineGitDeps,
+@@ -89,11 +91,13 @@ export async function machineGitSetup(
+   machineId: string,
+   /** A tool's call: who the computer takes the agent for (`machineScope`), the right hand's seat included. */
+   scope?: AgentScope,
+-): Promise<(Pick<GitSyncRequest, "proxy" | "author"> & { agent: AgentScope }) | null> {
+-  const connection = (await activeConnections(deps.db, orgId)).find((c) => c.connector === "github");
++): Promise<(Pick<GitSyncRequest, "proxy" | "author"> & { agent: AgentScope; connector: string }) | null> {
++  const connections = await activeConnections(deps.db, orgId);
++  const connection =
++    connections.find((c) => c.connector === "github") ?? connections.find((c) => c.connector === GITLAB_CONNECTOR);
+   if (!connection) return null;
+   const keys = await grantedScopeKeys(deps.db, orgId, agentId);
+-  if (!gitAccess(keys, connection.id).read) return null;
++  if (!gitAccess(keys, connection).read) return null;
+   const agent = await getAgentCached(deps.db, orgId, agentId);
+   // Without a scope (a brain's turn) the right hand has no checkout: its locked turn prepares none (ADR 0137 §4).
+   if (!agent || (scope ? await toolMachineId(deps.db, agent) : agent.machineId) !== machineId) return null;
+@@ -120,6 +124,7 @@ export async function machineGitSetup(
+       ? { name: `${agent.name} (agentes.chat)`, email: bot.email }
+       : { name: `${agent.name} (agentes)`, email: agentCommitEmail(deps.git.publicUrl, agent.handle) },
+     agent: scope ?? { id: agent.id, handle: agent.handle, name: agent.name },
++    connector: connection.connector,
+   };
+ }
+ 
+@@ -207,9 +212,14 @@ export async function cloneOnMachine(
+   if (unavailable || !status) throw unavailable;
+   const setup = await machineGitSetup(deps, target.orgId, target.agentId, target.machineId, target.scope);
+   if (!setup)
+-    throw new Error("You have no git access to GitHub here (scope github:git.read), or GitHub isn't connected.");
+-  const { agent, ...rest } = setup;
+-  const github = (await directFetchTokens(deps, target, status.protocol, [input.repo])).get(input.repo);
++    throw new Error(
++      "You have no git access here (scope github:git.read or gitlab:git.read), or GitHub/GitLab isn't connected.",
++    );
++  const { agent, connector, ...rest } = setup;
++  const github =
++    connector === "github"
++      ? (await directFetchTokens(deps, target, status.protocol, [input.repo])).get(input.repo)
++      : null;
+   const reply = await deps.hub.call(
+     target.machineId,
+     {
+@@ -334,7 +344,7 @@ export async function prepareAgentCode(
+     if (!status || machineGitUnavailable(status, turn.orgId)) return null;
+     const setup = await machineGitSetup(deps, turn.orgId, turn.agentId, machineId);
+     if (!setup) return null;
+-    const { agent, ...rest } = setup;
++    const { agent, connector, ...rest } = setup;
+     const sync = (repos: GitSyncRequest["repos"], existing: boolean) =>
+       deps.hub.call(
+         machineId,
+@@ -366,7 +376,7 @@ export async function prepareAgentCode(
+     // straight from GitHub too instead of going back to the proxy.
+     const wildcard = list.length === 0 || list.length > explicit.length;
+     const found =
+-      wildcard && deps.github && status.protocol >= GIT_STATELESS_TOKEN_PROTOCOL
++      connector === "github" && wildcard && deps.github && status.protocol >= GIT_STATELESS_TOKEN_PROTOCOL
+         ? await checkoutsOnMachine(deps.hub, machineId, agent, options.signal)
+         : [];
+     const lowerExplicit = new Set(explicit.map((r) => r.toLowerCase()));
+@@ -376,7 +386,10 @@ export async function prepareAgentCode(
+     );
+     // Fresh each turn (GitHub's tokens last an hour; cached until a few minutes before), so the agent's own
+     // `git fetch` keeps working between syncs.
+-    const tokens = await directFetchTokens(deps, { ...turn, machineId }, status.protocol, repos);
++    const tokens =
++      connector === "github"
++        ? await directFetchTokens(deps, { ...turn, machineId }, status.protocol, repos)
++        : new Map<string, string>();
+     const reply = await sync(
+       repos.map((repo) => {
+         const github = tokens.get(repo);
+diff --git a/packages/engine/src/git/proxy.ts b/packages/engine/src/git/proxy.ts
+index 26ea41c..7aa606a 100644
+--- a/packages/engine/src/git/proxy.ts
++++ b/packages/engine/src/git/proxy.ts
+@@ -7,7 +7,7 @@ import {
+ import { and, type Database, eq, isNull, schema } from "@agenteschat/db";
+ import { recordAudit } from "../audit";
+ import { connectorScope } from "../connectors/catalog";
+-import { type ConnectorDeps, GITHUB_APP_AUTH } from "../connectors/connections";
++import { type ConnectorConnection, type ConnectorDeps, GITHUB_APP_AUTH } from "../connectors/connections";
+ import { toolMachineId } from "../right-hand-seats";
+ import { standingRefusal } from "../standing";
+ import { CONNECTOR_ALL, freshGrantedKeys, grantKey, isAllowed, toolAccess } from "../tools/scopes";
+@@ -26,15 +26,19 @@ import {
+ import { machineGitGen, verifyGitToken } from "./credential";
+ import type { GitHubAppConfig } from "./github-app";
+ import { appMissMessage } from "./github-call";
++import { GITLAB_CONNECTOR, gitlabGitAuth, gitlabIsAncestor, gitlabToken, gitlabUrls } from "./gitlab";
+ import { parseReceivePackRequest, pkt, type RefCommand, readPack, walkToOld, ZERO_OID } from "./pack";
+ import { agentRepositoryList, repoInList } from "./repos";
+ 
+ const { machines, agents, connectorConnections } = schema;
+ 
+-export const GIT_SCOPES = {
+-  read: connectorScope("github", "git.read"),
+-  write: connectorScope("github", "git.write"),
+-};
++/** The git scopes of a connection's connector: `github:git.read` or `gitlab:git.read`. */
++export const gitScopes = (connector: string) => ({
++  read: connectorScope(connector, "git.read"),
++  write: connectorScope(connector, "git.write"),
++});
++
++export const GIT_SCOPES = gitScopes("github");
+ 
+ export const GIT_LIMITS = {
+   /** A push request (commands + pack). */
+@@ -56,7 +60,7 @@ export interface GitProxyDeps {
+   /** AGENTES_SECRET: the proxy credentials are HMACs derived from it. */
+   secret: string;
+   connectors: ConnectorDeps;
+-  /** GitHub (tests: a fake upstream). */
++  /** GitHub's REST and git hosts (tests: a fake upstream, also where a GitLab's calls are answered). */
+   upstream?: { gitUrl: string; apiUrl: string; fetch: typeof fetch };
+   /** Preferred over the connection's token when the app is installed on the repo. */
+   app?: GitHubAppConfig | null;
+@@ -81,10 +85,11 @@ export function parseGitPath(path: string) {
+ }
+ 
+ /** What an agent may do with git on a connection: its git scopes, or "every tool of this connection". */
+-export function gitAccess(keys: Set<string>, connectionId: string) {
+-  const all = keys.has(grantKey(connectionId, CONNECTOR_ALL));
+-  const write = all || keys.has(grantKey(connectionId, GIT_SCOPES.write));
+-  return { read: write || keys.has(grantKey(connectionId, GIT_SCOPES.read)), write };
++export function gitAccess(keys: Set<string>, connection: Pick<ConnectorConnection, "id" | "connector">) {
++  const scopes = gitScopes(connection.connector);
++  const all = keys.has(grantKey(connection.id, CONNECTOR_ALL));
++  const write = all || keys.has(grantKey(connection.id, scopes.write));
++  return { read: write || keys.has(grantKey(connection.id, scopes.read)), write };
+ }
+ 
+ /**
+@@ -197,7 +202,8 @@ export async function readBody(req: Request, max: number) {
+  *   (`request_branch_push`) that GitHub says isn't the default or protected;
+  *   fast-forward only, no tags or deletes; size limits and at most 100 refs.
+  * - The request goes to GitHub with the org's token added here (a GitHub App
+- *   installation token when configured), never logged, never sent back.
++ *   installation token when configured), never logged, never sent back. A self-hosted GitLab connection (ADR 0024,
++ *   extended) sends it with `PRIVATE-TOKEN` to the instance's base URL instead.
+  * - Fetches and pushes are audited.
+  */
+ export async function handleGitProxy(
+@@ -286,7 +292,7 @@ async function proxyGit(
+   const paused = await standingRefusal(deps.db, claims.orgId, claims.agentId);
+   if (paused) return text(403, `agentes: ${paused.message}`);
+ 
+-  // 2. Which GitHub connection, and what this agent may do with it.
++  // 2. Which git connection, and what this agent may do with it.
+   const [connection] = await deps.db
+     .select()
+     .from(connectorConnections)
+@@ -297,11 +303,16 @@ async function proxyGit(
+         isNull(connectorConnections.revokedAt),
+       ),
+     );
+-  if (connection?.connector !== "github") return text(404, "agentes: GitHub is not connected in this organization");
++  if (!connection || (connection.connector !== "github" && connection.connector !== GITLAB_CONNECTOR)) {
++    return text(404, "agentes: GitHub is not connected in this organization");
++  }
++  const gitlab = connection.connector === GITLAB_CONNECTOR;
++  const host = gitlab ? "GitLab" : "GitHub";
++  const scopes = gitScopes(connection.connector);
+   const keys = await freshGrantedKeys(deps.db, claims.orgId, claims.agentId);
+-  const { read: canRead, write: canWrite } = gitAccess(keys, connection.id);
++  const { read: canRead, write: canWrite } = gitAccess(keys, connection);
+   const repoName = `${parsed.owner}/${parsed.repo}`;
+-  if (!canRead) return text(403, `agentes: ${agent.handle} has no git access to GitHub (scope github:git.read)`);
++  if (!canRead) return text(403, `agentes: ${agent.handle} has no git access to ${host} (scope ${scopes.read})`);
+   // The agent's repositories (`agent_repositories`): none = all; reads count too.
+   if (!repoInList(await agentRepositoryList(deps.db, claims.orgId, claims.agentId), parsed.owner, parsed.repo)) {
+     return text(
+@@ -310,40 +321,77 @@ async function proxyGit(
+     );
+   }
+   if (service === "git-receive-pack" && !canWrite) {
+-    return text(403, `agentes: ${agent.handle} can't push (scope github:git.write)`);
++    return text(403, `agentes: ${agent.handle} can't push (scope ${scopes.write})`);
+   }
+ 
+-  // 3. GitHub's credential, added here only.
++  // 3. The connection's credential, added here only; the upstream, the header and the fast-forward check follow its
++  // connector (GitHub's are unchanged).
+   const upstream = deps.upstream ?? { gitUrl: "https://github.com", apiUrl: "https://api.github.com", fetch };
+-  const github = { fetch: upstream.fetch, apiUrl: upstream.apiUrl };
+   const write = service === "git-receive-pack";
+-  const bearer = await githubToken(
+-    deps,
+-    github,
+-    { db: deps.db, orgId: claims.orgId },
+-    connection,
+-    parsed,
+-    // Workflow files too where the installation grants it (ADR 0156): an older installation has contents alone.
+-    write ? [{ contents: "write", workflows: "write" }, { contents: "write" }] : { contents: "read" },
+-  );
+-  if (!bearer) {
+-    return connection.authType === GITHUB_APP_AUTH
+-      ? text(403, `agentes: ${appMissMessage(repoName, "not_installed")}`)
+-      : text(502, "agentes: the organization's GitHub connection has no usable token");
+-  }
+-  const upstreamAuth = `Basic ${Buffer.from(`x-access-token:${bearer}`).toString("base64")}`;
+-  const target = `${upstream.gitUrl}/${parsed.owner}/${parsed.repo}.git/${parsed.action}${url.search}`;
+-  const forward = (body?: Uint8Array) => {
+-    const headers: Record<string, string> = { authorization: upstreamAuth, "user-agent": "git/agentes-proxy" };
+-    for (const h of ["content-type", "accept", "git-protocol"]) {
+-      const v = req.headers.get(h);
+-      if (v) headers[h] = v;
++  let github: { fetch: typeof fetch; apiUrl: string } | null = null;
++  let bearer: string | null = null;
++  let forward: (body?: Uint8Array) => Promise<Response>;
++  /** Whether an object the pack doesn't carry descends from the old tip: GitHub's compare, or GitLab's merge base. */
++  let isAncestor: (oldOid: string, oid: string) => Promise<boolean | null>;
++  if (gitlab) {
++    const token = await gitlabToken(deps.connectors, connection);
++    if (!token) return text(502, "agentes: the organization's GitLab connection has no usable token");
++    const urls = gitlabUrls(connection);
++    const target = `${urls.gitUrl}/${parsed.owner}/${parsed.repo}.git/${parsed.action}${url.search}`;
++    forward = (body) => {
++      const headers: Record<string, string> = {
++        authorization: gitlabGitAuth(token),
++        "user-agent": "git/agentes-proxy",
++      };
++      for (const h of ["content-type", "accept", "git-protocol"]) {
++        const v = req.headers.get(h);
++        if (v) headers[h] = v;
++      }
++      return upstream.fetch(target, { method: req.method, headers, body, redirect: "manual" });
++    };
++    isAncestor = (oldOid, oid) =>
++      gitlabIsAncestor({ apiUrl: urls.apiUrl, fetch: upstream.fetch }, token, parsed, oldOid, oid);
++  } else {
++    const api = { fetch: upstream.fetch, apiUrl: upstream.apiUrl };
++    const token = await githubToken(
++      deps,
++      api,
++      { db: deps.db, orgId: claims.orgId },
++      connection,
++      parsed,
++      // Workflow files too where the installation grants it (ADR 0156): an older installation has contents alone.
++      write ? [{ contents: "write", workflows: "write" }, { contents: "write" }] : { contents: "read" },
++    );
++    if (!token) {
++      return connection.authType === GITHUB_APP_AUTH
++        ? text(403, `agentes: ${appMissMessage(repoName, "not_installed")}`)
++        : text(502, "agentes: the organization's GitHub connection has no usable token");
+     }
+-    return upstream.fetch(target, { method: req.method, headers, body, redirect: "manual" });
+-  };
++    github = api;
++    bearer = token;
++    const upstreamAuth = `Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`;
++    const target = `${upstream.gitUrl}/${parsed.owner}/${parsed.repo}.git/${parsed.action}${url.search}`;
++    forward = (body) => {
++      const headers: Record<string, string> = { authorization: upstreamAuth, "user-agent": "git/agentes-proxy" };
++      for (const h of ["content-type", "accept", "git-protocol"]) {
++        const v = req.headers.get(h);
++        if (v) headers[h] = v;
++      }
++      return upstream.fetch(target, { method: req.method, headers, body, redirect: "manual" });
++    };
++    isAncestor = async (oldOid, oid) => {
++      const res = await upstream
++        .fetch(`${upstream.apiUrl}/repos/${parsed.owner}/${parsed.repo}/compare/${oldOid}...${oid}`, {
++          headers: githubHeaders(token),
++        })
++        .catch(() => null);
++      const status = res?.ok ? ((await res.json()) as { status?: string }).status : undefined;
++      return status === "ahead" || status === "identical";
++    };
++  }
+   const relay = async (res: Response, max: number) => {
+     if (res.status === 401 || res.status === 403) {
+-      return text(502, "agentes: GitHub refused the organization's credential for this repository");
++      return text(502, `agentes: ${host} refused the organization's credential for this repository`);
+     }
+     const headers: Record<string, string> = { "cache-control": "no-cache" };
+     const type = res.headers.get("content-type");
+@@ -395,7 +443,7 @@ async function proxyGit(
+   const at = { orgId: claims.orgId, agentId: claims.agentId, connectionId: connection.id };
+   // A denied request_branch_push grants nothing: no rule or approval is read (ADR 0015).
+   const mayAsk = isAllowed(
+-    toolAccess(keys, { name: BRANCH_PUSH_TOOL, scope: GIT_SCOPES.write, connectionId: connection.id }),
++    toolAccess(keys, { name: BRANCH_PUSH_TOOL, scope: scopes.write, connectionId: connection.id }),
+   );
+   const grants =
+     others.size > 0 && mayAsk
+@@ -416,9 +464,21 @@ async function proxyGit(
+       ungranted.push(branch);
+     }
+   }
+-  if (ungranted.length > 0) told.add(otherBranchPointer(ungranted, agent.handle));
++  if (ungranted.length > 0) {
++    told.add(
++      gitlab
++        ? `pushing to someone else's branch isn't available on GitLab: push to agentes/${agent.handle}/<topic>`
++        : otherBranchPointer(ungranted, agent.handle),
++    );
++  }
++  // Another person's branch is a GitHub approval (`request_branch_push`): a GitLab connection has no such tool.
++  if (gitlab && granted.size > 0) {
++    const why = "pushing to someone else's branch through this proxy is GitHub-only";
++    for (const ref of granted.keys()) reasons.set(ref, why);
++    told.add(why);
++  }
+   // A granted branch may have become the default or protected since: GitHub says so now, and no answer refuses.
+-  if (reasons.size === 0 && granted.size > 0) {
++  if (reasons.size === 0 && granted.size > 0 && github && bearer) {
+     const facts = await branchFacts(github, bearer, parsed, [...new Set([...granted.values()].map((g) => g.branch))]);
+     for (const [ref, { branch }] of granted) {
+       const block = facts ? branchBlock(facts, branch, false) : "unknown";
+@@ -456,13 +516,7 @@ async function proxyGit(
+       let ok = walk.reached;
+       for (const oid of walk.outside.slice(0, 5)) {
+         if (ok) break;
+-        const res = await upstream
+-          .fetch(`${upstream.apiUrl}/repos/${parsed.owner}/${parsed.repo}/compare/${cmd.oldOid}...${oid}`, {
+-            headers: githubHeaders(bearer),
+-          })
+-          .catch(() => null);
+-        const status = res?.ok ? ((await res.json()) as { status?: string }).status : undefined;
+-        ok = status === "ahead" || status === "identical";
++        ok = (await isAncestor(cmd.oldOid, oid)) === true;
+       }
+       if (!ok) {
+         const why = "not a fast-forward (force pushes are not allowed)";
+diff --git a/packages/engine/src/git/tools.ts b/packages/engine/src/git/tools.ts
+index 8b935fb..cf1d334 100644
+--- a/packages/engine/src/git/tools.ts
++++ b/packages/engine/src/git/tools.ts
+@@ -26,6 +26,7 @@ import {
+ import type { GitHubAppConfig } from "./github-app";
+ import { noTokenMessage } from "./github-call";
+ import { recordGitHubItem } from "./github-events";
++import { GITLAB_CONNECTOR } from "./gitlab";
+ import { cloneOnMachine } from "./machine";
+ import { parseRepo } from "./repos";
+ import { signatureLine, signedBody } from "./signature";
+@@ -102,8 +103,13 @@ export function createGitToolSource(deps: GitToolDeps): ToolSource {
+   return {
+     name: "git",
+     async tools(ctx: ToolContext): Promise<ToolDefinition[]> {
+-      const connection = (await activeConnections(ctx.db, ctx.orgId)).find((c) => c.connector === "github");
++      const connections = await activeConnections(ctx.db, ctx.orgId);
++      const connection =
++        connections.find((c) => c.connector === "github") ?? connections.find((c) => c.connector === GITLAB_CONNECTOR);
+       if (!connection) return [];
++      // Only clone and push are GitLab's (ADR 0024, extended): pull requests, branch deletion and branch approvals are
++      // GitHub's API, so a GitLab connection offers `git_clone` alone.
++      const gitlab = connection.connector === GITLAB_CONNECTOR;
+       const repoInput = { type: "string", minLength: 3, maxLength: 200, description: "owner/name" };
+       const branchInput = { type: "string", minLength: 1, maxLength: 200, description: "A branch name, not refs/…" };
+       const tokenFor = (c: ToolContext, repo: { owner: string; repo: string }, access: "read" | "write") =>
+@@ -184,13 +190,14 @@ export function createGitToolSource(deps: GitToolDeps): ToolSource {
+       const all: ToolDefinition[] = [
+         {
+           name: "git_clone",
+-          description:
+-            "Clone a GitHub repository into your folder on your computer (repos/<owner>/<name>; already there: it is updated). No approval needed. Real git through our proxy: commit and push from there to branches agentes/<your handle>/…, then open_pull_request. Delete branches with delete_branches; to push to someone else's branch, ask with request_branch_push first.",
+-          scope: connectorScope("github", "git.read"),
++          description: gitlab
++            ? "Clone a GitLab repository into your folder on your computer (repos/<owner>/<name>; already there: it is updated). No approval needed. Real git through our proxy: commit and push from there to branches agentes/<your handle>/… ."
++            : "Clone a GitHub repository into your folder on your computer (repos/<owner>/<name>; already there: it is updated). No approval needed. Real git through our proxy: commit and push from there to branches agentes/<your handle>/…, then open_pull_request. Delete branches with delete_branches; to push to someone else's branch, ask with request_branch_push first.",
++          scope: connectorScope(connection.connector, "git.read"),
+           connectionId: connection.id,
+-          connector: { key: "github", via: "native", tool: "git_clone" },
++          connector: { key: connection.connector, via: "native", tool: "git_clone" },
+           connectorLabel: connection.label,
+-          service: "github",
++          service: connection.connector,
+           inputSchema: {
+             type: "object",
+             properties: {
+@@ -253,7 +260,7 @@ export function createGitToolSource(deps: GitToolDeps): ToolSource {
+                       ? `${r.repo} is already at ${where}, but it couldn't be updated (${r.message ?? "unknown error"})`
+                       : `${r.repo} was already at ${where}; updated it`;
+                 return {
+-                  content: `${what} (branch ${r.branch ?? "?"}${r.head ? ` at ${r.head}` : ""}${r.message && r.status !== "failed" ? `; ${r.message}` : ""}).\nWork there (cd ${where}); create a branch agentes/${agent.handle}/<topic> to push, then open_pull_request.`,
++                  content: `${what} (branch ${r.branch ?? "?"}${r.head ? ` at ${r.head}` : ""}${r.message && r.status !== "failed" ? `; ${r.message}` : ""}).\nWork there (cd ${where}); create a branch agentes/${agent.handle}/<topic> to push${gitlab ? "." : ", then open_pull_request."}`,
+                   data: { repo: r.repo, dir: r.dir, machineId, status: r.status },
+                 };
+               }
+@@ -434,7 +441,7 @@ export function createGitToolSource(deps: GitToolDeps): ToolSource {
+           }),
+         },
+       ];
+-      return all;
++      return gitlab ? all.filter((t) => t.name === "git_clone") : all;
+     },
+   };
+ }
+diff --git a/packages/engine/src/tools/gateway.ts b/packages/engine/src/tools/gateway.ts
+index ddab03b..603f80b 100644
+--- a/packages/engine/src/tools/gateway.ts
++++ b/packages/engine/src/tools/gateway.ts
+@@ -318,7 +318,7 @@ const TOOL_NAME = /^[a-zA-Z0-9_-]{1,64}$/;
+ export const MAX_RESULT_CHARS = 50_000;
+ /** Server-owned Git tools have a connection ID only to use that connection's credential. */
+ const serverGitTool = (tool: Pick<ToolDefinition, "name" | "scope">) =>
+-  (tool.name === "git_clone" && tool.scope === "github:git.read") ||
++  (tool.name === "git_clone" && (tool.scope === "github:git.read" || tool.scope === "gitlab:git.read")) ||
+   (tool.name === "open_pull_request" && tool.scope === "github:pr.write") ||
+   ((tool.name === "delete_branches" || tool.name === "request_branch_push") && tool.scope === "github:git.write");
+ /**
+diff --git a/packages/engine/test/git-machine.test.ts b/packages/engine/test/git-machine.test.ts
+index 9defbf7..b2b0b9f 100644
+--- a/packages/engine/test/git-machine.test.ts
++++ b/packages/engine/test/git-machine.test.ts
+@@ -55,6 +55,7 @@ afterEach(async () => {
+ });
+ 
+ const GH_TOKEN = "ghp_secret_123456";
++const GL_TOKEN = "glpat_secret_123456";
+ const PUBLIC_URL = "https://agentes.test";
+ const RUNNER = { hostname: "mac", os: "darwin", arch: "arm64", version: "0.10.0", workspace: "/Users/w/agentes" };
+ const FOLDER = "/Users/w/agentes/dev-0193aaaa";
+@@ -103,21 +104,30 @@ function fakeRunner(
+   };
+ }
+ 
+-/** GitHub connected, the agent on a connected Mac with only `github:git.read` (no sandbox:run). */
+-async function world(options: { scopes?: string[]; protocol?: number } = {}) {
++/** GitHub (or a self-hosted GitLab) connected, the agent on a connected Mac with only `git.read` (no sandbox:run). */
++async function world(options: { scopes?: string[]; protocol?: number; gitlab?: { serverUrl: string } } = {}) {
+   f = await setup({ machines: true, reply: () => ({ chunks: ["ok"] }) });
+   const hub = f.machineHub as MachineHub;
+   const connectors: ConnectorDeps = { db: f.db, keyWrappers: [f.keyWrapper], publicUrl: PUBLIC_URL };
+-  const connection = await createApiKeyConnection(connectors, f.owner.id, f.org.id, {
+-    connector: "github",
+-    apiKey: GH_TOKEN,
+-  });
++  const connection = options.gitlab
++    ? await createApiKeyConnection(connectors, f.owner.id, f.org.id, {
++        connector: "gitlab",
++        serverUrl: options.gitlab.serverUrl,
++        apiKey: GL_TOKEN,
++      })
++    : await createApiKeyConnection(connectors, f.owner.id, f.org.id, {
++        connector: "github",
++        apiKey: GH_TOKEN,
++      });
+   await setAgentScopes(
+     f.db,
+     f.owner.id,
+     f.org.id,
+     f.agent.id,
+-    (options.scopes ?? ["github:git.read"]).map((scope) => ({ connectionId: connection.id, scope })),
++    (options.scopes ?? [options.gitlab ? "gitlab:git.read" : "github:git.read"]).map((scope) => ({
++      connectionId: connection.id,
++      scope,
++    })),
+     connectorGrantValidator,
+   );
+   const deps = { db: f.db, pubsub: f.pubsub, publicUrl: PUBLIC_URL };
+@@ -301,6 +311,37 @@ describe("git on a connected machine through the proxy (ADR 0024 addendum)", ()
+     expect((await clone?.execute({ repo: "acme/app", dir: "../x" }, ctx))?.isError).toBe(true);
+   });
+ 
++  test("a GitLab-only workspace: the credential is ours, git.sync points at its connection, git_clone is the one tool", async () => {
++    const w = await world({ scopes: ["gitlab:git.read"], gitlab: { serverUrl: "https://gitlab.test" } });
++    // Frozen so the two setups (the test's and the turn's) issue the same token, seconds and all.
++    const at = new Date("2026-11-17T12:00:00.000Z");
++    const deps = { ...w.machineDeps, now: () => at };
++    const setup = await machineGitSetup(deps, f.org.id, f.agent.id, w.paired.machineId);
++    expect(setup?.connector).toBe("gitlab");
++    expect(setup?.proxy.base).toBe(`${PUBLIC_URL}/api/git/${f.org.id}/${w.connection.id}/`);
++    expect(setup?.proxy.token).not.toContain(GL_TOKEN);
++    const source = createGitToolSource({
++      sandbox: { db: f.db, machines: { hub: w.hub }, git: w.git } as never,
++      connectors: w.connectors,
++    });
++    const tools = await source.tools(await runCtx());
++    expect(tools.map((t) => [t.name, t.scope, t.connectionId])).toEqual([
++      ["git_clone", "gitlab:git.read", w.connection.id],
++    ]);
++    // The computer gets our credential and the GitLab connection's proxy base before a chat turn.
++    await prepareAgentCode(deps, {
++      orgId: f.org.id,
++      agentId: f.agent.id,
++      threadRootId: null,
++      trigger: "oi",
++      messages: [],
++      session: { machineId: w.paired.machineId, cwd: "" },
++    });
++    const [sync] = w.runner.syncs();
++    expect(sync?.proxy.base).toBe(setup?.proxy.base);
++    expect(sync?.proxy.token).toBe(setup?.proxy.token);
++  });
++
+   test("an older runner is told to update; no git access, no clone", async () => {
+     const w = await world({ protocol: GIT_PROTOCOL - 1 });
+     const source = createGitToolSource({
+diff --git a/packages/engine/test/git.test.ts b/packages/engine/test/git.test.ts
+index f76650c..fc16f7f 100644
+--- a/packages/engine/test/git.test.ts
++++ b/packages/engine/test/git.test.ts
+@@ -57,6 +57,8 @@ afterEach(async () => {
+ });
+ 
+ const GH_TOKEN = "ghp_secret_123456";
++const GL_TOKEN = "glpat_secret_123456";
++const GL_AUTH = `Basic ${Buffer.from(`oauth2:${GL_TOKEN}`).toString("base64")}`;
+ const PUBLIC_URL = "https://agentes.test";
+ 
+ // ── Building packs like git does ─────────────────────────────────────────────
+@@ -288,13 +290,58 @@ function fakeGitHub(
+   return { fetch, calls, gitUrl: "https://github.test", apiUrl, options };
+ }
+ 
+-async function world(scopes: string[] = ["github:git.read", "github:git.write"], github = fakeGitHub()) {
++/** A self-hosted GitLab at `gitlab.test`: its git endpoints, and its merge base (as plain refs `a...b`). */
++function fakeGitLab(options: { mergeBase?: Record<string, string> } = {}) {
++  const calls: { url: string; method: string; auth: string | null; token: string | null; body: number }[] = [];
++  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
++    const url = String(input);
++    const headers = new Headers(init?.headers);
++    const body = init?.body ? ((init.body as Uint8Array).byteLength ?? 0) : 0;
++    calls.push({
++      url,
++      method: init?.method ?? "GET",
++      auth: headers.get("authorization"),
++      token: headers.get("private-token"),
++      body,
++    });
++    if (url.includes("/info/refs")) {
++      return new Response("001e# service=git-upload-pack\n0000", {
++        headers: { "content-type": "application/x-git-upload-pack-advertisement" },
++      });
++    }
++    if (url.endsWith("/git-upload-pack"))
++      return new Response("0008NAK\n", { headers: { "content-type": "application/x-git-upload-pack-result" } });
++    if (url.endsWith("/git-receive-pack"))
++      return new Response("000eunpack ok\n0000", {
++        headers: { "content-type": "application/x-git-receive-pack-result" },
++      });
++    const mergeBase = /\/projects\/[^/]+\/repository\/merge_base\?refs%5B%5D=([0-9a-f]+)&refs%5B%5D=([0-9a-f]+)$/.exec(
++      url,
++    );
++    if (mergeBase)
++      return Response.json({ id: options.mergeBase?.[`${mergeBase[1]}...${mergeBase[2]}`] ?? mergeBase[1] });
++    return new Response("not found", { status: 404 });
++  }) as typeof globalThis.fetch;
++  return { fetch, calls, gitUrl: "https://gitlab.test", apiUrl: "https://gitlab.test/api/v4", options };
++}
++
++async function world(
++  scopes: string[] = ["github:git.read", "github:git.write"],
++  github = fakeGitHub(),
++  gitlab: { serverUrl: string; token: string; upstream: ReturnType<typeof fakeGitLab> } | null = null,
++) {
+   f = await setup();
+   const connectors: ConnectorDeps = { db: f.db, keyWrappers: [f.keyWrapper], publicUrl: PUBLIC_URL };
+-  const connection = await createApiKeyConnection(connectors, f.owner.id, f.org.id, {
+-    connector: "github",
+-    apiKey: GH_TOKEN,
+-  });
++  const connection = gitlab
++    ? await createApiKeyConnection(connectors, f.owner.id, f.org.id, {
++        connector: "gitlab",
++        serverUrl: gitlab.serverUrl,
++        apiKey: gitlab.token,
++      })
++    : await createApiKeyConnection(connectors, f.owner.id, f.org.id, {
++        connector: "github",
++        apiKey: GH_TOKEN,
++      });
+   await setAgentScopes(
+     f.db,
+     f.owner.id,
+@@ -307,7 +354,7 @@ async function world(scopes: string[] = ["github:git.read", "github:git.write"],
+   const m = await pairMachine({ db: f.db, pubsub: f.pubsub }, f.owner.id, f.org.id, { name: "Mac" });
+   await setAgentComputerTarget({ db: f.db, pubsub: f.pubsub }, f.owner.id, f.org.id, f.agent.id, m.machineId);
+   const [row] = await f.db.select().from(schema.machines).where(eq(schema.machines.id, m.machineId));
+-  const deps: GitProxyDeps = { db: f.db, secret: SECRET, connectors, upstream: github };
++  const deps: GitProxyDeps = { db: f.db, secret: SECRET, connectors, upstream: gitlab ? gitlab.upstream : github };
+   const token = issueGitToken(SECRET, {
+     orgId: f.org.id,
+     agentId: f.agent.id,
+@@ -339,7 +386,7 @@ async function world(scopes: string[] = ["github:git.read", "github:git.write"],
+       }),
+       { orgId: f.org.id, connectionId: connection.id, path },
+     );
+-  return { connection, connectors, machine: m, github, deps, call, token };
++  return { connection, connectors, machine: m, github, gitlab, deps, call, token };
+ }
+ 
+ const audits = async (action: string) =>
+@@ -373,6 +420,82 @@ describe("git proxy", () => {
+     expect((await w.call("acme/app.git/info/refs", { query: "?service=git-receive-pack" })).status).toBe(403);
+   });
+ 
++  test("GitLab clone: the instance's URL and its git sign-in go upstream, GitHub is never called", async () => {
++    const gitlab = fakeGitLab();
++    const w = await world(["gitlab:git.read"], fakeGitHub(), {
++      serverUrl: "https://gitlab.test",
++      token: GL_TOKEN,
++      upstream: gitlab,
++    });
++    const refs = await w.call("acme/app.git/info/refs", { query: "?service=git-upload-pack" });
++    expect(refs.status).toBe(200);
++    const fetched = await w.call("acme/app.git/git-upload-pack", {
++      method: "POST",
++      body: enc("0032want abc\n00000009done\n"),
++    });
++    expect(await fetched.text()).toBe("0008NAK\n");
++    expect(gitlab.calls.map((c) => [c.method, c.url])).toEqual([
++      ["GET", "https://gitlab.test/acme/app.git/info/refs?service=git-upload-pack"],
++      ["POST", "https://gitlab.test/acme/app.git/git-upload-pack"],
++    ]);
++    expect(gitlab.calls.every((c) => c.auth === GL_AUTH)).toBe(true);
++    expect(gitlab.calls.every((c) => c.token === null)).toBe(true);
++    expect(w.github.calls).toHaveLength(0);
++    expect(await audits("git.fetch")).toHaveLength(1);
++    // Read-only, as on GitHub: no push, not even the advertisement.
++    expect((await w.call("acme/app.git/info/refs", { query: "?service=git-receive-pack" })).status).toBe(403);
++  });
++
++  test("GitLab push: the instance's merge base proves the fast-forward, then receive-pack goes there", async () => {
++    const oldOid = "a".repeat(40);
++    const parent = "b".repeat(40);
++    const next = commitObject([parent], "next");
++    const gitlab = fakeGitLab();
++    const w = await world(["gitlab:git.read", "gitlab:git.write"], fakeGitHub(), {
++      serverUrl: "https://gitlab.test",
++      token: GL_TOKEN,
++      upstream: gitlab,
++    });
++    const res = await w.call("acme/app.git/git-receive-pack", {
++      method: "POST",
++      body: pushBody([{ old: oldOid, new: next.oid, ref: "refs/heads/agentes/dev/topic" }], packOf([next])),
++    });
++    expect(res.status).toBe(200);
++    expect(gitlab.calls.map((c) => [c.method, c.url])).toEqual([
++      [
++        "GET",
++        `https://gitlab.test/api/v4/projects/acme%2Fapp/repository/merge_base?refs%5B%5D=${oldOid}&refs%5B%5D=${parent}`,
++      ],
++      ["POST", "https://gitlab.test/acme/app.git/git-receive-pack"],
++    ]);
++    expect(gitlab.calls.map((c) => [c.method, c.auth, c.token])).toEqual([
++      ["GET", null, GL_TOKEN],
++      ["POST", GL_AUTH, null],
++    ]);
++    expect(w.github.calls).toHaveLength(0);
++    expect(await audits("git.push")).toHaveLength(1);
++  });
++
++  test("GitLab push: a merge base that is not the old tip refuses the push, and nothing is sent", async () => {
++    const oldOid = "a".repeat(40);
++    const parent = "b".repeat(40);
++    const next = commitObject([parent], "next");
++    const gitlab = fakeGitLab({ mergeBase: { [`${oldOid}...${parent}`]: "c".repeat(40) } });
++    const w = await world(["gitlab:git.read", "gitlab:git.write"], fakeGitHub(), {
++      serverUrl: "https://gitlab.test",
++      token: GL_TOKEN,
++      upstream: gitlab,
++    });
++    const res = await w.call("acme/app.git/git-receive-pack", {
++      method: "POST",
++      body: pushBody([{ old: oldOid, new: next.oid, ref: "refs/heads/agentes/dev/topic" }], packOf([next])),
++    });
++    expect(res.status).toBe(200);
++    expect(await res.text()).toContain("not a fast-forward");
++    expect(gitlab.calls.some((c) => c.url.endsWith("/git-receive-pack"))).toBe(false);
++    expect(await audits("git.push_refused")).toHaveLength(1);
++  });
++
+   test("a connection dropped mid-transfer answers git with a 503, and anything else still throws", async () => {
+     const w = await world(["github:git.read"]);
+     const fails = (error: Error) => ({

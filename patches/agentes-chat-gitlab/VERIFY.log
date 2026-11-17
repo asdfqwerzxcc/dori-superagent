@@ -1,0 +1,144 @@
+# Verification transcript
+
+Date: 2026-11-17
+Upstream: https://github.com/agentes-chat/agentes-chat.git tag v0.1.2
+Pinned commit: 1abdbe79f5c39f3f4749f02ae8ffa5f469993683
+Host: win32 x64, Bun 1.4.4
+
+## Patch application (fresh worktree at the pinned commit)
+
+Commands were run in a detached `git worktree` of the upstream clone at the pin
+(`.dori/.scratch/gitlab-adapter/verify`). Patch paths are shortened here to their file names.
+
+```
+$ git rev-parse HEAD
+1abdbe79f5c39f3f4749f02ae8ffa5f469993683
+[exit 0]
+
+$ git apply --check 0001-gitlab-connection.patch
+[exit 0]
+
+$ git apply --check 0002-gitlab-proxy.patch
+[exit 0]
+
+$ git am 0001-gitlab-connection.patch
+Applying: feat(gitlab): connect a self-hosted GitLab
+[exit 0]
+
+$ git am 0002-gitlab-proxy.patch
+Applying: feat(gitlab): clone and push through the proxy
+[exit 0]
+
+$ git log --oneline -3
+a26d029 feat(gitlab): clone and push through the proxy
+9767f84 feat(gitlab): connect a self-hosted GitLab
+1abdbe7 Merge pull request #612 from agentes-chat/chore/server-0.1.2
+[exit 0]
+
+$ git show --stat HEAD~2..HEAD
+a26d029 feat(gitlab): clone and push through the proxy
+ packages/engine/src/git/machine.ts       |  37 +++++---
+ packages/engine/src/git/proxy.ts         | 158 +++++++++++++++++++++----------
+ packages/engine/src/git/tools.ts         |  23 +++--
+ packages/engine/src/tools/gateway.ts     |   2 +-
+ packages/engine/test/git-machine.test.ts |  55 +++++++++--
+ packages/engine/test/git.test.ts         | 137 +++++++++++++++++++++++++--
+ 6 files changed, 325 insertions(+), 87 deletions(-)
+9767f84 feat(gitlab): connect a self-hosted GitLab
+ apps/server/src/routes/app/connectors.ts      |  3 +-
+ packages/engine/src/connectors/catalog.ts     | 33 ++++++++++++++++
+ packages/engine/src/connectors/connections.ts | 16 +++++++-
+ packages/engine/src/connectors/listing.ts     |  2 +-
+ packages/engine/src/connectors/mcp.ts         |  5 ++-
+ packages/engine/src/git/gitlab.ts             | 56 +++++++++++++++++++++++++++
+ packages/engine/src/index.ts                  |  1 +
+ packages/engine/test/connectors.test.ts       | 48 +++++++++++++++++++++++
+ 8 files changed, 158 insertions(+), 6 deletions(-)
+[exit 0]
+```
+
+Each patch also passes `git apply --check` alone on the pristine tree. The two patches touch no common
+file, but the series is ordered: `0002` needs `0001`'s `git/gitlab.ts` at runtime.
+
+## Engine tests (patched tree)
+
+```
+$ bun test packages/engine/test/git.test.ts packages/engine/test/git-machine.test.ts packages/engine/test/connectors.test.ts
+
+packages\engine\test\git.test.ts:
+(pass) git proxy > clone: our credential in, GitHub's token added only upstream, audited
+(pass) git proxy > GitLab clone: the instance's URL and its git sign-in go upstream, GitHub is never called
+(pass) git proxy > GitLab push: the instance's merge base proves the fast-forward, then receive-pack goes there
+(pass) GitLab push: a merge base that is not the old tip refuses the push, and nothing is sent
+... existing GitHub, branch-approval and App tests ...
+
+packages\engine\test\git-machine.test.ts:
+(pass) git on a connected machine through the proxy (ADR 0024 addendum) > a GitLab-only workspace: the credential is ours, git.sync points at its connection, git_clone is the one tool
+... existing machine tests ...
+
+packages\engine\test\connectors.test.ts:
+(pass) connections > a self-hosted GitLab connection keeps its base URL and token server side
+... existing connector tests ...
+
+ 62 pass
+ 0 fail
+ 473 expect() calls
+Ran 62 tests across 3 files. [44.49s]
+[exit 0]
+```
+
+What the two stub-upstream runs prove:
+
+- **GitLab path.** The connection's base URL is `https://gitlab.test`; the clone's info/refs and
+  upload-pack requests arrive at `https://gitlab.test/acme/app.git/...` with HTTP Basic
+  (`oauth2:<token>`), and no request carries our `agtgit1` credential. The push asks
+  `https://gitlab.test/api/v4/projects/acme%2Fapp/repository/merge_base?refs[]=<old>&refs[]=<parent>`
+  with `PRIVATE-TOKEN: <token>`; when the merge base is the old tip, receive-pack goes to the instance,
+  and when it is not, nothing reaches receive-pack.
+- **GitHub path.** The GitHub tests still send `https://github.test/acme/app.git/info/refs` and
+  `git-upload-pack` (the fake upstream's URL, the production constant is unchanged), with
+  `Basic base64("x-access-token:<GitHub token>")`, and a push still asks
+  `/repos/acme/app/compare/<old>...<oid>` with `Bearer`. `git.test.ts` asserts the exact call list and
+  header; no `private-token` header is sent on the GitHub path.
+
+## Type checks
+
+```
+$ bun run --filter '@agenteschat/engine' typecheck
+@agenteschat/engine typecheck: Exited with code 0
+[exit 0]
+
+$ bun run --filter '@agenteschat/server' typecheck
+@agenteschat/server typecheck: Exited with code 0
+[exit 0]
+```
+
+## Pre-existing failure, not caused by this series
+
+`bun test apps/server/test/connectors.test.ts` fails 1 of 11 on Windows, on the pinned tree **before**
+the patches and after them, with the same assertion:
+
+```
+$ bun test apps/server/test/connectors.test.ts
+...
+  [
+    "github",
+-   true,
++   false,
+  ]
+      at apps/server/test/connectors.test.ts:349:82
+(fail) catalog: one list of our connectors and the one-click MCP servers, one entry per service, brand icons
+ 10 pass
+ 1 fail
+```
+
+The test builds the web app's public directory with `new URL("../../web/public", import.meta.url).pathname`,
+which on win32 is `/C:/...`; `existsSync` then fails for every icon. The file is not touched by this
+series and the failure is the same on the pristine pin. On Linux CI the path is valid.
+
+## Real host
+
+`QA.md`'s five checks (a real self-hosted GitLab connection, clone, push and its refusals, the GitHub
+regression, a subgroup repository) were not run: this workstation has no Docker, no WSL, no GitLab
+instance and no running agentes.chat server. They are marked UNVERIFIED there. The proxy above is a
+stub, not a live GitLab.

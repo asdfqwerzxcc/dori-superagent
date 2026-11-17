@@ -1,0 +1,291 @@
+From ffdfc71b6e0adf84e32a2249ec8e45706ff1f3ba Mon Sep 17 00:00:00 2001
+From: jaejinaa <wowls7990@gmail.com>
+Date: Tue, 17 Nov 2026 22:24:51 +0900
+Subject: [PATCH 1/2] feat(gitlab): connect a self-hosted GitLab
+
+A connection for a self-hosted GitLab: its base URL and a personal, project or group access token, stored in the connection's existing columns and envelope-encrypted secret. The catalog entry carries only the git scopes (git.read, git.write) and is not listed in the web catalog yet, because the API-key form has no base-URL field: an admin creates it through POST /organizations/{orgId}/connectors with serverUrl and apiKey. git/gitlab.ts holds the base URL/API derivation, the git and REST headers and the merge-base call the proxy uses.
+---
+ apps/server/src/routes/app/connectors.ts      |  3 +-
+ packages/engine/src/connectors/catalog.ts     | 33 +++++++++++
+ packages/engine/src/connectors/connections.ts | 16 +++++-
+ packages/engine/src/connectors/listing.ts     |  2 +-
+ packages/engine/src/connectors/mcp.ts         |  5 +-
+ packages/engine/src/git/gitlab.ts             | 56 +++++++++++++++++++
+ packages/engine/src/index.ts                  |  1 +
+ packages/engine/test/connectors.test.ts       | 48 ++++++++++++++++
+ 8 files changed, 158 insertions(+), 6 deletions(-)
+ create mode 100644 packages/engine/src/git/gitlab.ts
+
+diff --git a/apps/server/src/routes/app/connectors.ts b/apps/server/src/routes/app/connectors.ts
+index e60eede..99bd243 100644
+--- a/apps/server/src/routes/app/connectors.ts
++++ b/apps/server/src/routes/app/connectors.ts
+@@ -229,7 +229,7 @@ export function connectorRoutes(deps: AppDeps) {
+       security,
+       summary: "Connect with an API key (admins)",
+       description:
+-        "Replaces an existing connection of the same connector; agents keep their grants. A first connection is every agent's, whole (`connector:*`); sensitive tools still ask for approval.",
++        "Replaces an existing connection of the same connector; agents keep their grants. A first connection is every agent's, whole (`connector:*`); sensitive tools still ask for approval. A self-hosted connector (`gitlab`) also takes the server's `serverUrl`, https (or http on localhost), and it is stored on the connection.",
+       request: {
+         params: OrgParams,
+         body: body(
+@@ -237,6 +237,7 @@ export function connectorRoutes(deps: AppDeps) {
+             connector: z.string(),
+             apiKey: z.string().min(8).max(2000).optional(),
+             label: z.string().max(80).optional(),
++            serverUrl: z.string().max(2048).optional(),
+           }),
+         ),
+       },
+diff --git a/packages/engine/src/connectors/catalog.ts b/packages/engine/src/connectors/catalog.ts
+index a4ff33d..c7c1b2c 100644
+--- a/packages/engine/src/connectors/catalog.ts
++++ b/packages/engine/src/connectors/catalog.ts
+@@ -56,6 +56,15 @@ export interface ConnectorDefinition {
+   /** Its MCP endpoint (streamable HTTP). */
+   serverUrl: string;
+   auth: ("oauth" | "api_key")[];
++  /**
++   * A server at an address the person gives (a self-hosted GitLab): the address replaces `serverUrl` and is stored on
++   * the connection, and the connection has no MCP server to list tools from.
++   */
++  selfHosted?: true;
++  /** `false`: our own tools only, never a session with an MCP server at `serverUrl`. */
++  mcp?: false;
++  /** `false`: not in "Adicionar conector" (the web form has no field for its address yet), created through the API. */
++  listed?: false;
+   oauth?: { authorizeUrl: string; tokenUrl: string; scopes: string[]; scopeSeparator?: string };
+   /** Sent with every request to its MCP server, besides the sign-in. */
+   headers?: Record<string, string>;
+@@ -203,6 +212,30 @@ export const CONNECTOR_CATALOG: Record<string, ConnectorDefinition> = {
+       get_team_members: { scope: "org.read" },
+     },
+   },
++  gitlab: {
++    id: "gitlab",
++    category: "dev",
++    label: "GitLab",
++    description: "A self-hosted GitLab: clone and push through our git proxy; the token stays on the server.",
++    serverUrl: "https://gitlab.com",
++    selfHosted: true,
++    mcp: false,
++    listed: false,
++    auth: ["api_key"],
++    scopes: {
++      "git.read": s(
++        "Clone repositories (git)",
++        "Clone and update repositories on the agent's computer with git, through our proxy; the GitLab token never enters the machine.",
++      ),
++      "git.write": s(
++        "Push branches (git push)",
++        "Push commits to agentes/{agent}/… branches: never to the default branch, no force push, no tags, no deletes.",
++      ),
++    },
++    tools: {
++      git_clone: { scope: "git.read", ours: true },
++    },
++  },
+   sentry: {
+     id: "sentry",
+     category: "dev",
+diff --git a/packages/engine/src/connectors/connections.ts b/packages/engine/src/connectors/connections.ts
+index 25c7493..e09ad57 100644
+--- a/packages/engine/src/connectors/connections.ts
++++ b/packages/engine/src/connectors/connections.ts
+@@ -311,13 +311,25 @@ export async function createApiKeyConnection(
+   deps: ConnectorDeps,
+   actorId: string,
+   orgId: string,
+-  input: { connector: string; apiKey?: string; label?: string },
++  input: { connector: string; apiKey?: string; label?: string; serverUrl?: string },
+ ) {
+   await requirePermission(deps.db, actorId, orgId, "manage_connectors");
+   const def = connectorDefinition(input.connector);
+-  const serverUrl = checkServerUrl(def.serverUrl);
++  // A self-hosted server has no address in the catalog: the person connecting it gives one, and it is stored on the
++  // connection (never returned to a client).
++  const given = input.serverUrl?.trim();
++  if (def.selfHosted && !given) throw new ValidationError("serverUrl is required for this connector");
++  if (!def.selfHosted && given) throw new ValidationError("serverUrl is only for a self-hosted connector");
++  const serverUrl = checkServerUrl(def.selfHosted ? (given as string) : def.serverUrl);
++  if (def.selfHosted) {
++    const base = new URL(serverUrl);
++    if (base.username || base.password || base.search || base.hash) {
++      throw new ValidationError("serverUrl must be a base URL, without credentials, a query or a fragment");
++    }
++  }
+   const apiKey = input.apiKey?.trim();
+   if (apiKey !== undefined && apiKey.length < 8) throw new ValidationError("apiKey looks too short");
++  if (def.selfHosted && !apiKey) throw new ValidationError("apiKey is required for this connector");
+   const { connection } = await storeConnection(deps, {
+     orgId,
+     actorId,
+diff --git a/packages/engine/src/connectors/listing.ts b/packages/engine/src/connectors/listing.ts
+index f4f98e8..69f0206 100644
+--- a/packages/engine/src/connectors/listing.ts
++++ b/packages/engine/src/connectors/listing.ts
+@@ -172,7 +172,7 @@ export function connectorListing(server: ServerCatalog): ConnectorListingEntry[]
+   const builtinWins = new Set<string>();
+   const builtins: ConnectorListingEntry[] = [];
+   for (const d of Object.values(CONNECTOR_CATALOG)) {
+-    if (!offersCatalog(d.id, oauthApps)) continue;
++    if (d.listed === false || !offersCatalog(d.id, oauthApps)) continue;
+     const oauthConfigured = Boolean(d.oauth && oauthApps[d.id]);
+     builtinWins.add(d.id);
+     const sensitiveScopes = new Set(Object.values(d.tools).flatMap((t) => (t.sensitive ? [t.scope] : [])));
+diff --git a/packages/engine/src/connectors/mcp.ts b/packages/engine/src/connectors/mcp.ts
+index d97e238..9b4d2c3 100644
+--- a/packages/engine/src/connectors/mcp.ts
++++ b/packages/engine/src/connectors/mcp.ts
+@@ -492,8 +492,9 @@ export function createConnectorToolSource(
+           continue;
+         }
+         const def = CONNECTOR_CATALOG[connection.connector];
+-        // A sign-in that stopped working has no tools until Reconectar.
+-        if (!def || connection.status === "needs_reconnect") continue;
++        // A sign-in that stopped working has no tools until Reconectar. A connector with no MCP server (a
++        // self-hosted GitLab) has only our own tools, never a session with `serverUrl`.
++        if (!def || def.mcp === false || connection.status === "needs_reconnect") continue;
+         const prefix = toolPrefixOfConnection(connection);
+         let listed: McpTool[];
+         try {
+diff --git a/packages/engine/src/git/gitlab.ts b/packages/engine/src/git/gitlab.ts
+new file mode 100644
+index 0000000..65a7465
+--- /dev/null
++++ b/packages/engine/src/git/gitlab.ts
+@@ -0,0 +1,56 @@
++import type { ConnectorConnection, ConnectorDeps } from "../connectors/connections";
++import { openConnectionSecret } from "../connectors/connections";
++
++/**
++ * A self-hosted GitLab (ADR 0024, extended): the connection's `serverUrl` is the instance's base URL, its encrypted
++ * key is a personal, project or group access token, and both the proxy and its API calls resolve their addresses and
++ * header from it. The token never leaves the server: a computer gets our `agtgit1` credential, as for GitHub.
++ */
++export const GITLAB_CONNECTOR = "gitlab";
++
++/** The instance's base URL (trailing slashes gone) and its REST API under it. */
++export function gitlabUrls(connection: Pick<ConnectorConnection, "serverUrl">) {
++  const gitUrl = connection.serverUrl.replace(/\/+$/, "");
++  return { gitUrl, apiUrl: `${gitUrl}/api/v4` };
++}
++
++/** GitLab's git-over-HTTPS sign-in: HTTP Basic with the token as the password (any username; `oauth2` is ours). */
++export const gitlabGitAuth = (token: string) => `Basic ${Buffer.from(`oauth2:${token}`).toString("base64")}`;
++
++/** A REST call to GitLab: its personal, project or group token in `PRIVATE-TOKEN`, named as our own. */
++export const gitlabHeaders = (token: string): Record<string, string> => ({
++  "private-token": token,
++  "user-agent": "agentes.chat",
++});
++
++/** The connection's token, server side only: never a view, never a computer. Null when it has none. */
++export async function gitlabToken(connectors: ConnectorDeps, connection: ConnectorConnection): Promise<string | null> {
++  const secret = await openConnectionSecret(connectors.keyWrappers, connection);
++  return secret?.apiKey?.trim() || secret?.accessToken?.trim() || null;
++}
++
++/**
++ * Whether `ancestorOid` is on `tipOid`'s history, asked through GitLab's merge-base API (the proxy's fast-forward
++ * check once the pushed pack no longer reaches the old tip). Null when GitLab didn't answer: the caller refuses.
++ */
++export async function gitlabIsAncestor(
++  client: { apiUrl: string; fetch: typeof fetch },
++  token: string,
++  repo: { owner: string; repo: string },
++  ancestorOid: string,
++  tipOid: string,
++): Promise<boolean | null> {
++  const project = encodeURIComponent(`${repo.owner}/${repo.repo}`);
++  const refs = new URLSearchParams();
++  refs.append("refs[]", ancestorOid);
++  refs.append("refs[]", tipOid);
++  const res = await client
++    .fetch(`${client.apiUrl}/projects/${project}/repository/merge_base?${refs}`, {
++      headers: gitlabHeaders(token),
++      redirect: "manual",
++    })
++    .catch(() => null);
++  if (!res?.ok) return null;
++  const body = (await res.json().catch(() => null)) as { id?: unknown } | null;
++  return typeof body?.id === "string" ? body.id.toLowerCase() === ancestorOid.toLowerCase() : null;
++}
+diff --git a/packages/engine/src/index.ts b/packages/engine/src/index.ts
+index 991298f..55dcf46 100644
+--- a/packages/engine/src/index.ts
++++ b/packages/engine/src/index.ts
+@@ -142,6 +142,7 @@ export * from "./git/github-app-installs";
+ export * from "./git/github-app-settings";
+ export * from "./git/github-call";
+ export * from "./git/github-events";
++export * from "./git/gitlab";
+ export * from "./git/inflate";
+ export * from "./git/machine";
+ export * from "./git/pack";
+diff --git a/packages/engine/test/connectors.test.ts b/packages/engine/test/connectors.test.ts
+index 95dd765..4090898 100644
+--- a/packages/engine/test/connectors.test.ts
++++ b/packages/engine/test/connectors.test.ts
+@@ -16,6 +16,8 @@ import {
+   drainOutbox,
+   ForbiddenError,
+   fillTitle,
++  gitlabToken,
++  gitlabUrls,
+   listApprovals,
+   listMessages,
+   MisconfiguredError,
+@@ -85,6 +87,52 @@ describe("connections", () => {
+     expect(active.map((c) => c.id)).toEqual([second.id]);
+   });
+ 
++  test("a self-hosted GitLab connection keeps its base URL and token server side", async () => {
++    f = await setup();
++    const make = (input: { connector: string; apiKey?: string; serverUrl?: string }) =>
++      createApiKeyConnection(depsOf(f), f.owner.id, f.org.id, input);
++    await expect(make({ connector: "gitlab", apiKey: "glpat_secret_123456" })).rejects.toBeInstanceOf(ValidationError);
++    await expect(make({ connector: "gitlab", serverUrl: "https://gitlab.test" })).rejects.toBeInstanceOf(
++      ValidationError,
++    );
++    await expect(
++      make({ connector: "gitlab", serverUrl: "https://gitlab.test/?x=1", apiKey: "glpat_secret_123456" }),
++    ).rejects.toBeInstanceOf(ValidationError);
++    await expect(
++      make({ connector: "github", serverUrl: "https://gitlab.test", apiKey: "ghp_secret_123456" }),
++    ).rejects.toBeInstanceOf(ValidationError);
++    await expect(
++      make({ connector: "gitlab", serverUrl: "http://gitlab.test", apiKey: "glpat_secret_123456" }),
++    ).rejects.toBeInstanceOf(ValidationError);
++
++    const connection = await make({
++      connector: "gitlab",
++      serverUrl: "https://gitlab.example.com/gitlab/",
++      apiKey: "glpat_secret_123456",
++    });
++    const row = (await f.db.select().from(schema.connectorConnections)).find((c) => c.id === connection.id);
++    if (!row) throw new Error("the connection row is missing");
++    expect(row.serverUrl).toBe("https://gitlab.example.com/gitlab/");
++    expect(JSON.stringify(row)).not.toContain("glpat_secret_123456");
++    expect(JSON.stringify(connectionView(row))).not.toContain("glpat_secret_123456");
++    expect(gitlabUrls(row)).toEqual({
++      gitUrl: "https://gitlab.example.com/gitlab",
++      apiUrl: "https://gitlab.example.com/gitlab/api/v4",
++    });
++    expect(await gitlabToken(depsOf(f), row)).toBe("glpat_secret_123456");
++
++    await setAgentScopes(
++      f.db,
++      f.owner.id,
++      f.org.id,
++      f.agent.id,
++      [{ connectionId: connection.id, scope: "gitlab:git.read" }],
++      connectorGrantValidator,
++    );
++    const grant = (await f.db.select().from(schema.agentScopes)).find((s) => s.connectionId === connection.id);
++    expect(grant?.scope).toBe("gitlab:git.read");
++  });
++
+   test("a new connection is every agent's at Ler e escrever, each in the audit log; reconnecting keeps what people chose", async () => {
+     f = await setup();
+     const [ops, gone] = await f.db
