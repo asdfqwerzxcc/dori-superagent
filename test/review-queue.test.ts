@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { dutyTick } from "../src/duty.ts";
@@ -106,6 +106,21 @@ describe("queued lane review", () => {
     expect(message).toContain("no VERDICT");
     expect(reviewJobFor(d.store.root, "fix-login", tip)).toBeUndefined();
     await expect(done(d, "fix-login")).rejects.toThrow("no review receipt");
+  });
+
+  test("a corrupt job record is dropped instead of wedging review, done and the drain", async () => {
+    const { d } = await world();
+    const dir = join(d.store.root, "state", "review-queue");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `fix-login@${tip}.json`);
+    writeFileSync(path, "{ not json");
+    await expect(done(d, "fix-login")).rejects.toThrow("no review receipt");
+    expect(await dutyTick(d)).toContainEqual({ action: "review-record-dropped", detail: `fix-login@${tip}.json` });
+    expect(existsSync(path)).toBe(false);
+    expect(await captureIo(() => main(["review", "--lane", "fix-login"], d))).toEqual({
+      code: 0,
+      out: `REVIEW_LANE fix-login tip=${tip} verdict=CLEAR`,
+    });
   });
 
   test("with no duty worker, review --lane reviews inline and drops the stale job record", async () => {

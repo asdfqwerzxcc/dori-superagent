@@ -1,7 +1,7 @@
 // The review queue: `dori review --lane` records what to review and returns, so the lead that asked is never held for
 // the reviewer's deadline. The duty worker drains the records in its own pane and tells the lead the verdict.
 
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { failureDetail } from "./delivery.ts";
 import type { Deps } from "./harness.ts";
@@ -25,8 +25,8 @@ export type ReviewJob = {
 
 /** A drain result, shaped like a duty event so `dori duty` prints it with every other line. */
 export type ReviewEvent = {
-  readonly lane: string;
-  readonly action: "review-done" | "review-failed";
+  readonly lane?: string;
+  readonly action: "review-done" | "review-failed" | "review-record-dropped";
   readonly detail?: string;
 };
 
@@ -44,20 +44,29 @@ export function reviewJobId(lane: string, tip: string): string {
 const jobPath = (root: string, lane: string, tip: string): string =>
   join(queueDir(root), `${reviewJobId(lane, tip)}.json`);
 
-/** Every pending job, oldest request first; an unreadable record is ignored like a store record is. */
+/** A record read without trusting its bytes: a corrupt, half-written or unreadable record reads as absent. */
+const readJob = (path: string): ReviewJob | undefined => {
+  try {
+    return readJson<ReviewJob>(path);
+  } catch {
+    return undefined;
+  }
+};
+
+/** Every pending job, oldest request first; a record that cannot be read is skipped here and dropped by the drain. */
 function reviewJobs(root: string): ReviewJob[] {
   const dir = queueDir(root);
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter((f) => f.endsWith(".json"))
-    .map((f) => readJson<ReviewJob>(join(dir, f)))
+    .map((f) => readJob(join(dir, f)))
     .filter((j): j is ReviewJob => j !== undefined)
     .sort((a, b) => a.requestedAt - b.requestedAt || a.lane.localeCompare(b.lane));
 }
 
 /** The pending job for exactly this lane and tip, or undefined (including for a pair that could never be a job). */
 export function reviewJobFor(root: string, lane: string, tip: string): ReviewJob | undefined {
-  return validId(lane, tip) ? readJson<ReviewJob>(jobPath(root, lane, tip)) : undefined;
+  return validId(lane, tip) ? readJob(jobPath(root, lane, tip)) : undefined;
 }
 
 /** True while a duty loop runs in this home: its lock is held by a process that is alive on this host. */
@@ -72,11 +81,18 @@ export async function queueLaneReview(d: Deps, key: string, model: string | unde
   const target = await laneReviewTarget(d, key);
   const path = jobPath(d.store.root, target.lane.key, target.tip);
   if (!reviewWorker(d)) {
-    // The inline review below is this lane+tip's review: a record left by a worker that died would only run it twice.
-    rmSync(path, { force: true });
+    // The inline review below is this lane+tip's review, so the stale record leaves the queue first. The rename is
+    // atomic: a drain that has not read the record yet misses it and skips it; one that already claimed it owns it.
+    const aside = `${path}.inline.${process.pid}`;
+    try {
+      renameSync(path, aside);
+      rmSync(aside, { force: true });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
     return undefined;
   }
-  const existing = readJson<ReviewJob>(path);
+  const existing = readJob(path);
   if (existing !== undefined) return existing;
   const job: ReviewJob = {
     lane: target.lane.key,
@@ -103,6 +119,13 @@ const firstLine = (e: unknown): string => {
  */
 export async function drainReviewQueue(d: Deps): Promise<ReviewEvent[]> {
   const events: ReviewEvent[] = [];
+  const dir = queueDir(d.store.root);
+  // A record that cannot be read is dropped, not left to wedge every pass, so the queue heals itself.
+  for (const name of existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".json")) : []) {
+    if (readJob(join(dir, name)) !== undefined) continue;
+    rmSync(join(dir, name), { force: true });
+    events.push({ action: "review-record-dropped", detail: name });
+  }
   const tell = async (text: string): Promise<void> => {
     try {
       await tellLead(d, text, "duty");
@@ -113,7 +136,7 @@ export async function drainReviewQueue(d: Deps): Promise<ReviewEvent[]> {
   };
   for (const listed of reviewJobs(d.store.root)) {
     const path = jobPath(d.store.root, listed.lane, listed.tip);
-    const job = readJson<ReviewJob>(path);
+    const job = readJob(path);
     if (job === undefined) continue;
     writeJson(path, { ...job, state: "running" });
     try {

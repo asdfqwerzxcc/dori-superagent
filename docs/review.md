@@ -79,7 +79,8 @@ QUEUED <key> <tip> <job>
 
 The record is `$DORI_HOME/state/review-queue/<key>@<tip>.json`, written atomically, holding `lane`, `tip`, `base`,
 `model` (when one was given), `requestedAt` and `state` (`queued`, then `running` while a worker has it). A second
-request for the same lane and tip returns that record instead of starting a second reviewer.
+request for the same lane and tip returns that record instead of starting a second reviewer. A record that cannot be
+read is dropped by the next duty pass instead of blocking the queue.
 
 `dori duty` drains the queue at the end of each pass: it runs the same reviewer as the inline path (same prompts,
 chunking, deadline, log, diagnostics and receipt), drops the job, and sends the lead one inbox message:
@@ -126,7 +127,7 @@ lane <key> at <sha> is reviewer_timeout; log: <home>/state/reviews/<key>.log; ru
 A review still in the queue refuses without waiting and without sending the lead to review it again:
 
 ```
-lane <key> at <sha>: a review is in flight (queued, requested <time>); its verdict will arrive as an inbox message from duty. Run dori done <key> again once the receipt exists (or dori done --drop <key> --reason <text>)
+lane <key> at <sha>: a review is in flight (<state>, requested <time>); its verdict will arrive as an inbox message from duty. Run dori done <key> again once the receipt exists (or dori done --drop <key> --reason <text>)
 ```
 
 These verdicts (and `reviewer_empty`) are failures, not passes: the lane is never approved by a review that produced no
