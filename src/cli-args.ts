@@ -20,6 +20,10 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori backlog add <id> --brief FILE [--title T] [--priority 1-9] [--cwd DIR] [--decision Q]
   dori backlog list | decide <id> --text ANSWER | drop <id> [--text WHY]
   dori backlog import <owner/repo> [--label dori] [--cwd DIR]   open labelled issues -> items
+  dori labels [--repo owner/name] [--apply]   one status: label per issue/PR; fixes 0 or 2+; dry-run unless --apply
+  dori stale [--repo owner/name] [--days-pr 14] [--days-comment 7] [--apply]
+                                              stale PRs get a nudge then a close; stale issues get needs-info (never closed)
+                                              no --repo = this checkout's github origin; writes need config/repos.json allow
   dori review <owner/repo#N> [--model M]      fresh omo reviewer at the exact head -> receipt
   dori review --lane <key> [--model M]        queue the lane's own diff for dori duty -> QUEUED <key> <tip> <job>;
                                               with no duty loop running, review it inline now -> lane receipt
@@ -56,6 +60,7 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "all",
   "resume",
   "help",
+  "apply",
 ]);
 
 export function parse(argv: readonly string[]): Args {
