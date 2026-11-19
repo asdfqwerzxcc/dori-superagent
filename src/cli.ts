@@ -2,6 +2,7 @@
 import { resolve } from "node:path";
 import { runBacklog, runDuty, runLoop } from "./cli-loops.ts";
 import { pluginCommand } from "./cli-plugins.ts";
+import { runRemote } from "./cli-remotes.ts";
 import { status, up } from "./cli-up.ts";
 import { done, ready, report, startLane } from "./lanes.ts";
 import { runLabels } from "./labels.ts";
@@ -45,6 +46,7 @@ const COMMANDS = new Set([
   "migrate",
   "restart",
   "plugin",
+  "remote",
 ]);
 
 /** Prints the line for a delivery that did not land now and returns the exit code: HELD 3, everything else 0. */
@@ -205,6 +207,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       return 0;
     case "plugin":
       return pluginCommand(d.store.root, x, a.pos[2]);
+    case "remote":
+      return runRemote(d, a, x);
     default:
       console.log(USAGE);
       return cmd === undefined || cmd === "help" ? 0 : 64;

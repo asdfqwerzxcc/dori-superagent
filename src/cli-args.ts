@@ -39,6 +39,10 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori restart                                restart the supervisor tree; waits for a fresh heartbeat and all five units
   dori plugin list | enable <name> | disable <name>
                                               the registry and state/plugins.json; the supervisor re-reads it every 5 s
+  dori remote add <name> --ssh <user@host> [--repo PATH] [--os linux|windows]
+  dori remote list
+  dori remote start <name> <key> --brief FILE [--dry-run]
+                                              run a lane on another LAN machine over ssh; --dry-run prints scp+ssh
   dori status
 
 --text may be omitted to read the message from stdin.
