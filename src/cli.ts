@@ -4,6 +4,8 @@ import { runBacklog, runDuty, runLoop } from "./cli-loops.ts";
 import { pluginCommand } from "./cli-plugins.ts";
 import { status, up } from "./cli-up.ts";
 import { done, ready, report, startLane } from "./lanes.ts";
+import { runLabels } from "./labels.ts";
+import { runStale } from "./stale.ts";
 import { listWorktrees, pruneWorktrees } from "./worktrees.ts";
 import { mergeGate, review } from "./gate.ts";
 import { reviewLane } from "./lane-review.ts";
@@ -38,6 +40,8 @@ const COMMANDS = new Set([
   "status",
   "loop",
   "backlog",
+  "labels",
+  "stale",
   "migrate",
   "restart",
   "plugin",
@@ -140,6 +144,10 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       return runLoop(d, a, x);
     case "backlog":
       return runBacklog(d, a, x);
+    case "labels":
+      return runLabels(d, a);
+    case "stale":
+      return runStale(d, a);
     case "review": {
       const lane = one(a, "lane");
       if (lane !== undefined) {
