@@ -56,6 +56,22 @@ Lee 지시: "도리를 쓰고, up.computer를 쓰고, 도리를 프로젝트마�
 2. **이중 보고 금지 규칙**: 사람이 이미 프로젝트 도리와 합의한 내용을 메인 도리가 다시 묻지 않도록, 요약을 근거로만 쓴다.
 3. **루프 라우팅**: 메인 도리 대화에서 "어느 프로젝트인가"를 판정하는 규칙(기본값: 최근 대화한 프로젝트).
 
+## 3.6 다채널 인박스 (메인 도리는 나만 듣지 않는다)
+
+메인 도리의 입력은 Discord 하나가 아니다. 회사 채팅(Zulip/Mattermost), 미국 Slack 브리지, 이메일/웹훅까지 같은 큐로 모아야 한다.
+
+- **Inbound 정규화**: `{source, channelId, threadId, author, text, attachments, ts, replyTo, isOwner}` 한 형태로 `state/channel-inbox.jsonl`에 적재.
+- **어댑터(수집)**: Discord(현재 구현), Zulip(이벤트 큐), Mattermost(WebSocket), Slack(브리지). 어댑터는 **읽기 전용 수집기**이고 판단은 하지 않는다.
+- **라우터(메인 도리)**: 큐를 드레인 → 우선순위(⬇ 소유자 > 팀 > 알림) → 프로젝트 라우팅 → 답변 생성 → **origin으로 회신**.
+- **Outbound**: `{source, threadId, text, files, replyRef}`. 채널별 규칙을 지킨다(Discord는 reply 참조·인용 금지, Zulip은 topic 유지, Slack은 thread).
+
+지켜야 할 것:
+1. **중복 금지**: 한 메시지는 한 번만 처리(채널별 last-id 체크포인트).
+2. **비용 가드**: 모든 채널을 원문으로 컨텍스트에 넣지 않는다 — 채널별 요약 + 필요 시 원문 조회.
+3. **권한**: 소유자가 아닌 사람의 요구는 자동 실행 금지(백로그 제안까지만).
+
+현재 갭: 채널 추상화가 없다(`src/plugins/discord.ts`가 Discord 전용). `src/channels/types.ts` + `discord.ts`(기존 래핑) + `state/channel-inbox.jsonl`이 첫 조각이고, Zulip/Mattermost는 회사 채팅 결정 후 하나만 만든다.
+
 ## 4. 지금 있는 것 / 없는 것
 - 메인 도리: 백로그, 루프, 게이트, `dori remote`(ssh), Discord 게이트웨이
 - 프로젝트 격리: `DORI_HOME` 환경변수(별도 홈 = 별도 상태)
