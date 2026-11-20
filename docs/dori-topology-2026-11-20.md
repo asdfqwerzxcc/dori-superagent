@@ -88,6 +88,22 @@ Lee 지시: "도리를 쓰고, up.computer를 쓰고, 도리를 프로젝트마�
 
 **결과**: 새 머신 준비물 = `ssh + git + bun`(+herdr 또는 dori-agent)뿐. dori 홈·백로그·게이트는 이쪽에만 존재한다.
 
+**변형 (2026-11-20, Lee 제안): 원경에 '도리'가 아니라 'omo'만 돌린다**
+
+데몬조차 필요 없다는 더 얇은 안. 원경에는 **이미 있는 에이전트 CLI(omo/omp)**만 있으면 된다.
+
+```
+ssh <host> 'cd <repo> && git worktree add ../wt-<key> -b local/<host>/<key> \
+  && cd ../wt-<key> && omo -p "$(cat /tmp/<key>.md)"'
+```
+
+- **omo는 이미 비대화 모드**를 갖고 있다: `--print, -p` ("process prompt and exit"), `--mode json|rpc` — 즉 완료 판정은 종료코드/JSONL로 가능.
+- 원경에 필요한 것: `git + bun + omo`(+모델 자격증명). **dori 설치는 불필요**.
+- 레인 의미는 이쪽이 계속 소유: 부리프 생성, 원경 worktree 생성 지시, 완료 감시, 브랜치 회수, 영수증.
+- 잃는 것: 원경 pane을 실시간으로 보는 것(로그 테일로 대체). 얻는 것: 원경 준비물이 극단적으로 줄고 두뇌가 하나로 유지됨.
+
+**권장 순서**: 이 변형을 `dori remote start --engine omo`로 먼저 구현(현재 ssh 버전 수정). 그 다음 필요하면 herdr `--machine`으로 '보는 것'을 추가.
+
 ## 4. 지금 있는 것 / 없는 것
 - 메인 도리: 백로그, 루프, 게이트, `dori remote`(ssh), Discord 게이트웨이
 - 프로젝트 격리: `DORI_HOME` 환경변수(별도 홈 = 별도 상태)
