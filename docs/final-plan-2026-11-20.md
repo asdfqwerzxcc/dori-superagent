@@ -37,7 +37,7 @@
 - 두 변형:
   1. `ssh host '… git worktree add … && omo -p "$(cat brief)"'` — 원격 준비물 `git+bun+omo`뿐. **오늘 바로 가능.**
   2. `dori agent` 얇은 데몬 — 세션·worktree·파일 I/O만 노출(두뇌 없음).
-- **기본 연결은 페어링으로 전환**: `dori link`(8자 코드+지문) → `dori devices`(online·CPU/RAM·세션·마지막 응답). **ssh는 폴백**. 2~3일 규모.
+- **연결은 페어링 단일 경로**: `dori link`(8자 코드+지문) → `dori devices`(online·CPU/RAM·세션·마지막 응답) → `dori remote start`가 `/exec` 호출. **ssh 경로는 삭제**한다.
 - GOAT의 `~/.ssh/config` 자동 발견은 차용 가치 있음.
 
 ## 4. MR 스프롤 해결 (오늘 확정한 동기)

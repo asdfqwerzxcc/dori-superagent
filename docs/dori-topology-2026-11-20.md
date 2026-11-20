@@ -114,7 +114,7 @@ ssh <host> 'cd <repo> && git worktree add ../wt-<key> -b local/<host>/<key> \
 
 - **S0을 먼저**: ssh는 이미 있고, 표준 명령(`uptime`, `free`/`wmic`, `tasklist`)으로 상태를 받으면 돼. 계정·데몬·인증서 모두 불필요.
 - **S1 원칙**: 직접 암호를 만들지 않는다. **자기서명 TLS + 지문 pinning**(페어링 때 사람이 눈으로 대조) + 정적 토큰. 코드 8자리, 1회용, 10분 만료.
-- **기본은 S0/S1, ssh는 예외용으로 남긴다** — sshd가 꺼진 기기·방화벽 환경에서는 S1이 필요하다.
+- **ssh는 제거한다 (2026-11-20 Lee 확정)** — 페어링이 유일한 경로. 전송 계층은 `dori agent`의 `/status`·`/exec`이고, `dori remote start`도 ssh 대신 이 채널을 쓴다.
 
 ## 4. 지금 있는 것 / 없는 것
 - 메인 도리: 백로그, 루프, 게이트, `dori remote`(ssh), Discord 게이트웨이
