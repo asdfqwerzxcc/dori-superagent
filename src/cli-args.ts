@@ -31,6 +31,16 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori board task needs <id> --add|--remove ID...
   dori board compact [--json]                 fold the event log into one snapshot
                                               every board command takes --json
+  dori sop list | show <id> | validate <id>   SOP definitions under <home>/sops/<id>.json
+  dori sop new <id> --title T [--from bundle|<id>]
+                                              default template: agent -> approval -> script
+  dori sop run <id> --bundle B                create a run with every node waiting
+  dori sop step <run> <node> --state S [--note T]
+                                              S = waiting|running|blocked|done|failed|skipped
+  dori sop gate list [--json]                 runs waiting for a human decision
+  dori sop gate approve <run> --by NAME [--note T]
+  dori sop gate reject|skip <run> --by NAME --reason T
+  dori sop rerun <run> <node>                 reset that node and everything after it
   dori labels [--repo owner/name] [--apply]   one status: label per issue/PR; fixes 0 or 2+; dry-run unless --apply
   dori stale [--repo owner/name] [--days-pr 14] [--days-comment 7] [--apply]
                                               stale PRs get a nudge then a close; stale issues get needs-info (never closed)
