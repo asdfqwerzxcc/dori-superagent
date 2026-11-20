@@ -148,7 +148,7 @@ dori remote start company-pc fix-login --brief briefs/fix-login.md
 
 Windows 대상이면 `--os windows`, 저장소 경로는 그 머신 기준으로 준다. `dori remote`는 `BatchMode=yes`로 ssh를 부르므로 키 인증이 먼저다.
 
-- `dori link`(8자 코드 + 지문 페어링)는 아직 이 체크아웃에 없다. S1 계획으로만 존재하므로, 구현 전까지는 위 ssh 경로를 쓴다.
+- `dori link`(8자 코드 + 지문 페어링)와 `dori devices`가 이 체크아웃에 있다. 페어링이 기본 경로이고, 대상 머신에 `dori agent`를 띄운 뒤 호스트에서 `dori link`, 새 기기에서 `dori link <addr>`로 붙인다. `dori devices`로 online·CPU/RAM·세션을 본다. (ssh 경로 `dori remote`는 폐기 예정)
 - 결과는 상태 파일이 아니라 git으로 회수한다. 레인 브랜치를 `local/<machine>/<key>`로 밀거나 사내 GitLab MR로 올린다. `dori done`이 메인에서 레인을 랜딩하는 흐름은 같은 저장소를 공유할 때만 성립한다.
 
 ## 7. 점검: `dori doctor`
