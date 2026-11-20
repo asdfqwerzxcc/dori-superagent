@@ -20,6 +20,17 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori backlog add <id> --brief FILE [--title T] [--priority 1-9] [--cwd DIR] [--decision Q]
   dori backlog list | decide <id> --text ANSWER | drop <id> [--text WHY]
   dori backlog import <owner/repo> [--label dori] [--cwd DIR]   open labelled issues -> items
+  dori board post --thread <id|new> [--channel C] --text T [--label L]...
+  dori board reply <thread> --text T
+  dori board read <thread> [--json]
+  dori board tasks [--state waiting|ready|claimed|blocked|done] [--json]
+  dori board task create --title T [--needs ID]... [--data K=V]...
+  dori board task claim [<id>|--ready] [--lease 300] [--for W]
+  dori board task renew|release|complete|fail|block <id> --token T ...
+  dori board task unblock|cancel|reopen <id> ...
+  dori board task needs <id> --add|--remove ID...
+  dori board compact [--json]                 fold the event log into one snapshot
+                                              every board command takes --json
   dori labels [--repo owner/name] [--apply]   one status: label per issue/PR; fixes 0 or 2+; dry-run unless --apply
   dori stale [--repo owner/name] [--days-pr 14] [--days-comment 7] [--apply]
                                               stale PRs get a nudge then a close; stale issues get needs-info (never closed)
@@ -72,6 +83,8 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "help",
   "apply",
   "replace",
+  "json",
+  "ready",
 ]);
 
 export function parse(argv: readonly string[]): Args {
