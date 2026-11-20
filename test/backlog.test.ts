@@ -32,6 +32,13 @@ describe("backlog", () => {
 
     backlogDrop(d, "ok-id", "not needed");
     expect(d.store.item("ok-id")!.status).toBe("dropped");
+
+    // A lane that finished or was dropped leaves the item at "running"; the guard must ask the lane, not the flag.
+    const stale = add("stale-run");
+    stale.status = "running";
+    d.store.saveItem(stale);
+    backlogDrop(d, "stale-run", "lane already closed");
+    expect(d.store.item("stale-run")!.status).toBe("dropped");
     const run = await loopTick(d);
     expect(run.started).toEqual(["needs-q (p5)"]);
   });

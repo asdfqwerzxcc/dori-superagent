@@ -76,7 +76,13 @@ export function backlogDecide(d: Deps, id: string, answer: string): void {
 
 export function backlogDrop(d: Deps, id: string, why = "dropped"): void {
   const item = knownItem(d, id);
-  if (item.status === "running") throw new Refusal(`item ${id} is running as a lane; close the lane first`);
+  // A lane that finished or was dropped leaves the item at "running" until the loop reconciles it, so the guard asks
+  // the lane store instead of trusting the flag: only a lane still working or waiting keeps the item from closing.
+  if (item.status === "running") {
+    const lane = d.store.lane(id);
+    if (lane !== undefined && (lane.status === "working" || lane.status === "waiting"))
+      throw new Refusal(`item ${id} is running as a lane; close the lane first`);
+  }
   item.status = "dropped";
   log(d, item, "drop", why);
 }
