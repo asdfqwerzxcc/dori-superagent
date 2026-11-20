@@ -2,7 +2,7 @@ name: ci
 
 on:
   pull_request:
-    branches: [dori-local]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
