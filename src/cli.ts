@@ -2,6 +2,7 @@
 import { resolve } from "node:path";
 import { runBacklog, runDuty, runLoop } from "./cli-loops.ts";
 import { runLink } from "./cli-link.ts";
+import { runBoard } from "./cli-board.ts";
 import { pluginCommand } from "./cli-plugins.ts";
 import { runRemote } from "./cli-remotes.ts";
 import { status, up } from "./cli-up.ts";
@@ -43,6 +44,7 @@ const COMMANDS = new Set([
   "status",
   "loop",
   "backlog",
+  "board",
   "labels",
   "stale",
   "migrate",
@@ -75,6 +77,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
   const [cmd, x] = a.pos;
   // doctor stays offline and writes nothing before it reports: no usage ping, no DORI_HOME creation.
   if (cmd !== undefined && COMMANDS.has(cmd) && cmd !== "doctor") d.usage.touch();
+  if (cmd === "board") return runBoard(d, a, x);
   switch (cmd) {
     case "up":
       await up(d, resolve(one(a, "cwd") ?? process.cwd()), one(a, "retire-old") === "true");
@@ -229,7 +232,6 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       return cmd === undefined || cmd === "help" ? 0 : 64;
   }
 }
-
 if (import.meta.main) {
   const deps = defaultDeps();
   let code = 0;
