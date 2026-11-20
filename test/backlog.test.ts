@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { backlogAdd, backlogDecide, backlogDrop, backlogImport, importId } from "../src/backlog.ts";
+import { backlogAdd, backlogDecide, backlogDrop, backlogImport, importId, reconcileRunningItems } from "../src/backlog.ts";
 import { startLane } from "../src/lanes.ts";
 import { Refusal } from "../src/refusal.ts";
 import { HOUR, loopTick } from "../src/loop.ts";
@@ -39,6 +39,20 @@ describe("backlog", () => {
     d.store.saveItem(stale);
     backlogDrop(d, "stale-run", "lane already closed");
     expect(d.store.item("stale-run")!.status).toBe("dropped");
+
+    // The read path reconciles against the lane and never inflates attempts.
+    const ran = add("ran-it");
+    ran.status = "running";
+    ran.attempts = 1;
+    d.store.saveItem(ran);
+    reconcileRunningItems(d, { countAttempts: false });
+    expect(d.store.item("ran-it")!.status).toBe("open");
+    expect(d.store.item("ran-it")!.attempts).toBe(1);
+    const again = d.store.item("ran-it")!;
+    again.status = "running";
+    d.store.saveItem(again);
+    reconcileRunningItems(d, { countAttempts: true });
+    expect(d.store.item("ran-it")!.attempts).toBe(2);
     const run = await loopTick(d);
     expect(run.started).toEqual(["needs-q (p5)"]);
   });

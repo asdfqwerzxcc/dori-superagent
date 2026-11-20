@@ -61,6 +61,47 @@ function openItem(d: Deps, id: string): Item {
   return item;
 }
 
+/** A failed item counts toward this many attempts and then becomes a question, so it never blocks the queue. */
+export const MAX_ATTEMPTS = 2;
+
+export type ReconcileEvent = { id: string; kind: "done" | "reopen"; text: string };
+
+/**
+ * Lane-driven item transitions: a running item whose lane finished becomes done, and one whose lane vanished, was lost
+ * or was dropped becomes open again. `countAttempts` is false on read paths (listing must not inflate attempts); the
+ * hourly loop passes true so a repeatedly failing item turns into a decision.
+ */
+export function reconcileRunningItems(
+  d: Deps,
+  opts: { countAttempts: boolean },
+): ReconcileEvent[] {
+  const events: ReconcileEvent[] = [];
+  for (const item of d.store.items()) {
+    if (item.status !== "running") continue;
+    const lane = d.store.lane(item.id);
+    if (lane?.status === "done") {
+      item.status = "done";
+      log(d, item, "done", "lane done");
+      events.push({ id: item.id, kind: "done", text: `${item.id} done (lane done)` });
+      continue;
+    }
+    if (lane && lane.status !== "lost" && lane.status !== "dropped") continue;
+    const why = lane ? `lane ${lane.status}` : "lane record missing";
+    item.status = "open";
+    if (opts.countAttempts) {
+      item.attempts += 1;
+      if (item.attempts >= MAX_ATTEMPTS) item.decision = `${why} ${item.attempts} times; retry, re-brief or drop?`;
+    }
+    log(d, item, "reopen", opts.countAttempts ? `${why}, attempt ${item.attempts}` : why);
+    events.push({
+      id: item.id,
+      kind: "reopen",
+      text: opts.countAttempts ? `${item.id} reopened (${why}, attempt ${item.attempts})` : `${item.id} reopened (${why})`,
+    });
+  }
+  return events;
+}
+
 /** Records the human's answer: clears the decision and appends the answer to the item's brief. */
 export function backlogDecide(d: Deps, id: string, answer: string): void {
   if (!answer.trim()) throw new Refusal("decide needs the answer text");

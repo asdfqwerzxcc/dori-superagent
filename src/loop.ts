@@ -1,7 +1,7 @@
 // The hourly loop: sync the backlog with live lanes, audit for missed work, start the next item
 // that needs no decision, ask the lead the open questions, and record the run. It never merges,
 // never pushes, never closes a pane and never edits a lane record. See docs/hourly-loop.md.
-import { log } from "./backlog.ts";
+import { log, MAX_ATTEMPTS, reconcileRunningItems } from "./backlog.ts";
 import type { Deps } from "./harness.ts";
 import { tellLead } from "./inbox.ts";
 import { startLane } from "./lanes.ts";
@@ -12,6 +12,7 @@ import type { LoopRun } from "./store-types.ts";
 import { join } from "node:path";
 
 export { HOUR };
+export { MAX_ATTEMPTS };
 export const REMIND_HOURS = 6;
 const QUIET_HOURS = 6;
 
@@ -37,7 +38,6 @@ async function rememberQuiet(d: Deps, run: LoopRun): Promise<void> {
     await Bun.write(quietPath(d), JSON.stringify({ key: quietKey(run.status as LoopStatus), at: d.now() }));
   } catch {}
 }
-export const MAX_ATTEMPTS = 2;
 export const MEM_FREE_MIN_PCT = 10;
 
 export type LoopOpts = { interval?: number; maxLanes?: number; maxStarts?: number; maxLoad?: number; force?: boolean };
@@ -52,22 +52,12 @@ async function ghState(d: Deps, kind: "pr" | "issue", repo: string, n: string): 
 }
 
 async function sync(d: Deps, run: LoopRun): Promise<void> {
+  for (const event of reconcileRunningItems(d, { countAttempts: true })) run.synced.push(event.text);
   for (const item of d.store.items()) {
     try {
       if (item.status === "running") {
         const lane = d.store.lane(item.id);
-        if (lane?.status === "done") {
-          item.status = "done";
-          log(d, item, "done", "lane done");
-          run.synced.push(`${item.id} done (lane done)`);
-        } else if (!lane || lane.status === "lost" || lane.status === "dropped") {
-          const why = lane ? `lane ${lane.status}` : "lane record missing";
-          item.status = "open";
-          item.attempts += 1;
-          if (item.attempts >= MAX_ATTEMPTS) item.decision = `${why} ${item.attempts} times; retry, re-brief or drop?`;
-          log(d, item, "reopen", `${why}, attempt ${item.attempts}`);
-          run.synced.push(`${item.id} reopened (${why}, attempt ${item.attempts})`);
-        } else if (lane.status === "ready") {
+        if (lane?.status === "ready") {
           const m = lane.final?.evidence.map((e) => PR_RE.exec(e)).find(Boolean);
           if (m && (await ghState(d, "pr", m[1]!, m[2]!)) === "MERGED") {
             item.status = "done";

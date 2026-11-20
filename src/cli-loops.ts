@@ -1,4 +1,4 @@
-import { backlogAdd, backlogDecide, backlogDrop, backlogImport, IMPORT_LIMIT } from "./backlog.ts";
+import { backlogAdd, backlogDecide, backlogDrop, backlogImport, IMPORT_LIMIT, reconcileRunningItems } from "./backlog.ts";
 import { need, one, textOf, USAGE, type Args } from "./cli-args.ts";
 import { dutyTick } from "./duty.ts";
 import type { Deps } from "./harness.ts";
@@ -123,6 +123,8 @@ export async function runBacklog(d: Deps, a: Args, x: string | undefined): Promi
     });
     console.log(`ADDED ${item.id} p${item.priority}${item.decision ? " (needs decision)" : ""}`);
   } else if (x === "list" || x === undefined) {
+    // Read path: a lane that closed left the item at running, so reconcile before showing it. Attempts stay put.
+    reconcileRunningItems(d, { countAttempts: false });
     for (const i of d.store.items()) {
       console.log(
         `${i.id.padEnd(24)} ${i.status.padEnd(8)} p${i.priority}  ${i.decision ? `DECIDE: ${i.decision}` : i.title}`,
