@@ -48,7 +48,14 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori review <owner/repo#N> [--model M]      fresh omo reviewer at the exact head -> receipt
   dori review --lane <key> [--model M]        queue the lane's own diff for dori duty -> QUEUED <key> <tip> <job>;
                                               with no duty loop running, review it inline now -> lane receipt
-  dori merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks -> squash merge
+  dori merge <owner/repo#N> [--dry-run] [--bundle <id>]
+                                              CLEAR receipt at head (or every bundle member CLEAR) + green checks -> squash merge
+  dori bundle open <id> --title T [--issue N] [--repo owner/name]
+  dori bundle add <id> <lane-key>...          only when the lane receipt is CLEAR at the current lane/<key> head
+  dori bundle list [<id>] [--json]            bundles under state/bundles/<id>.json
+  dori bundle land <id> [--dry-run]           bundle/<id> from main (members merged --no-ff) + fork PR
+  dori bundle close <id> [--text T]           after the PR merges: verify only issue N is Closes, comment Refs
+  dori bundle show <id> [--json]
   dori done <key> [--rebase]                  lead closes a READY lane; needs a CLEAR lane receipt unless it committed nothing
                                               --rebase moves the lane onto current main first, re-records its base and demands a fresh receipt
   dori done --drop <key> --reason TEXT        remove a lane's worktree and branch without landing it on main
