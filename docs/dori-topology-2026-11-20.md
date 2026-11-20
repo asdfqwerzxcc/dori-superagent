@@ -72,6 +72,22 @@ Lee 지시: "도리를 쓰고, up.computer를 쓰고, 도리를 프로젝트마�
 
 현재 갭: 채널 추상화가 없다(`src/plugins/discord.ts`가 Discord 전용). `src/channels/types.ts` + `discord.ts`(기존 래핑) + `state/channel-inbox.jsonl`이 첫 조각이고, Zulip/Mattermost는 회사 채팅 결정 후 하나만 만든다.
 
+## 3.7 다른 머신: 경량 데몬만 (2026-11-20 확정)
+
+다른 머신에 **dori 전체를 설치하지 않는다.** 그 머신에는 실행만 하는 얇은 데몬을 두고, 두뇌는 이쪽에 둔다.
+
+**데몬이 하는 일 (그리고 하지 않는 일)**
+- 한다: 세션 생성/종료, 터미널 스트림, git fetch/checkout/worktree, 파일 읽기·쓰기.
+- 안 한다: LLM 호출, 백로그, 승인 판단, 상태 소유. (두뇌가 둘이 되면 상태가 갈라진다)
+
+**이미 있는 후보**
+1. **herdr 원격 서버** — `herdr machine add <ssh>`가 원격 herdr 서버를 준비한다(계정 없음, ssh 기반). dori는 `--machine` 플래그만 넘기면 되고, 빠진 것은 **원격 worktree 생성 로직**뿐.
+2. **자체 `dori-agent` 데몬** — Bun 단일 바이너리: HTTP+WS로 `session create/exec/kill`, `git worktree add/remove`, `file read/write`. 500줄 규모. herdr 없이도 동작.
+
+**권장**: 1번을 먼저(이미 검증된 데몬을 재사용), worktree 처리만 dori 쪽에 추가. herdr 의존을 없애고 싶을 때 2번을 만든다.
+
+**결과**: 새 머신 준비물 = `ssh + git + bun`(+herdr 또는 dori-agent)뿐. dori 홈·백로그·게이트는 이쪽에만 존재한다.
+
 ## 4. 지금 있는 것 / 없는 것
 - 메인 도리: 백로그, 루프, 게이트, `dori remote`(ssh), Discord 게이트웨이
 - 프로젝트 격리: `DORI_HOME` 환경변수(별도 홈 = 별도 상태)
