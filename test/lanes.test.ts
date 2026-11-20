@@ -134,7 +134,7 @@ describe("lane worktree at start", () => {
     expect(lane.worktree).toBeUndefined();
     expect(lane.repo).toBeUndefined();
     const calls = gitCalls(w);
-    expect(calls.some((c) => c.includes("worktree"))).toBe(false);
+    expect(calls.some((c) => c.includes(" worktree "))).toBe(false);
     const tab = w.calls.find((c) => c.cmd === "herdr" && c.argv[0] === "tab" && c.argv[1] === "create")!;
     expect(tab.argv).toContain(lane.cwd);
   });
@@ -164,7 +164,8 @@ describe("lane worktree at start", () => {
     const repo = join(d.store.root, "main");
     w.git = (argv) => {
       const args = argv[0] === "-C" ? argv.slice(2) : argv;
-      if (args[0] === "rev-parse" && args.includes("--show-toplevel")) return { code: 0, stdout: `${repo}\n`, stderr: "" };
+      if (args[0] === "rev-parse" && args.includes("--show-toplevel"))
+        return { code: 0, stdout: `${repo}\n`, stderr: "" };
       if (args[0] === "rev-parse" && args.includes("--verify")) return { code: 1, stdout: "", stderr: "" };
       if (args[0] === "rev-parse") return { code: 1, stdout: "", stderr: "fatal: ambiguous argument 'HEAD'" };
       return { code: 0, stdout: "", stderr: "" };

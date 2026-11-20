@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { bundleGate } from "./bundles.ts";
 import { prompt, type Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
 import { loadHooks, substitute } from "./hooks.ts";
@@ -69,11 +70,19 @@ export async function review(
 
 type Check = { name: string; bucket: string };
 
-/** Merge only when the exact current head has a CLEAR review receipt and every check passed. An empty check list is never green. */
-export async function mergeGate(d: Deps, prId: string, opts: { dryRun?: boolean } = {}): Promise<string> {
+/**
+ * Merge only when the review dimension is satisfied and every check passed. The review dimension is a CLEAR receipt at
+ * the exact current head, or with `--bundle` every recorded member still CLEAR at the sha it was admitted on. An empty
+ * check list is never green, whichever path supplied the review.
+ */
+export async function mergeGate(
+  d: Deps,
+  prId: string,
+  opts: { dryRun?: boolean; bundle?: string } = {},
+): Promise<string> {
   const pr = parsePr(prId);
   const sha = await headSha(d, pr);
-  const refused = await gateRefusal(d, pr, sha);
+  const refused = await gateRefusal(d, pr, sha, opts.bundle);
   if (refused) {
     if (!opts.dryRun) d.usage.record({ name: "dori.merge_decided", outcome: refused[0] });
     throw new Refusal(`MERGE_REFUSED ${refused[1]}`);
@@ -84,10 +93,23 @@ export async function mergeGate(d: Deps, prId: string, opts: { dryRun?: boolean 
   return `MERGED ${pr.id} head=${sha}`;
 }
 
-async function gateRefusal(d: Deps, pr: PrRef, sha: string): Promise<[MergeOutcome, string] | undefined> {
+async function gateRefusal(
+  d: Deps,
+  pr: PrRef,
+  sha: string,
+  bundleId?: string,
+): Promise<[MergeOutcome, string] | undefined> {
   const receipt = d.store.receipt(pr.id, sha);
-  if (!receipt) return ["no_receipt", `no review receipt at head ${sha.slice(0, 12)} (run: dori review ${pr.id})`];
-  if (receipt.verdict !== "CLEAR") return ["review_block", `review at ${sha.slice(0, 12)} is ${receipt.verdict}`];
+  if (receipt === undefined || receipt.verdict !== "CLEAR") {
+    if (bundleId !== undefined) {
+      const why = await bundleGate(d, bundleId, { repo: pr.repo, number: pr.number });
+      if (why !== undefined) return ["bundle_members", why];
+    } else if (receipt === undefined) {
+      return ["no_receipt", `no review receipt at head ${sha.slice(0, 12)} (run: dori review ${pr.id})`];
+    } else {
+      return ["review_block", `review at ${sha.slice(0, 12)} is ${receipt.verdict}`];
+    }
+  }
   const checksRes = await d.exec("gh", ["pr", "checks", String(pr.number), "--repo", pr.repo, "--json", "name,bucket"]);
   const checks: Check[] = checksRes.stdout.trim().startsWith("[") ? JSON.parse(checksRes.stdout) : [];
   if (checks.length === 0) return ["no_checks", "no checks reported: an empty check list is never green"];

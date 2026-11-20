@@ -80,6 +80,23 @@ export type LaneReceipt = {
   summary: string;
 };
 
+/**
+ * A bundle of finished lanes that lands as one `bundle/<id>` branch and one MR.
+ * `members` records the lane receipt each member was admitted on, so the bundle gate can be re-checked later.
+ * `issue` is the representative issue: only it may be closed by the MR; other issues would be Refs.
+ */
+export type BundleMember = { lane: string; sha: string; verdict: "CLEAR"; reviewer: string };
+export type Bundle = {
+  id: string;
+  title: string;
+  issue: number | null;
+  repo: string;
+  members: BundleMember[];
+  branch: string;
+  pr: { number: number; url: string } | null;
+  status: "open" | "landed" | "closed";
+};
+
 export type ItemStatus = "open" | "running" | "done" | "dropped";
 
 /** One backlog entry. Its id is the lane key the hourly loop starts it under. */

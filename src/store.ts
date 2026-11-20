@@ -19,6 +19,7 @@ import type { SessionRef } from "./runtime/types.ts";
 import {
   KEEP_RUNS,
   KEY_RE,
+  type Bundle,
   type Item,
   type Lane,
   type LaneReceipt,
@@ -53,6 +54,7 @@ export class Store {
       mkdirSync(join(root, d), { recursive: true });
     mkdirSync(join(root, "loop", "runs"), { recursive: true });
     mkdirSync(join(root, "state", "reviews"), { recursive: true });
+    mkdirSync(join(root, "state", "bundles"), { recursive: true });
   }
 
   lane(key: string): Lane | undefined {
@@ -167,6 +169,29 @@ export class Store {
 
   laneDiffPath(key: string, tip: string): string {
     return this.receipts.laneDiffPath(key, tip);
+  }
+
+  // ---------- bundles ----------
+
+  bundlePath(id: string): string {
+    return join(this.root, "state", "bundles", `${checkedId(id)}.json`);
+  }
+
+  bundle(id: string): Bundle | undefined {
+    return readJson<Bundle>(this.bundlePath(id));
+  }
+
+  saveBundle(bundle: Bundle): void {
+    writeJson(this.bundlePath(bundle.id), bundle);
+  }
+
+  bundles(): Bundle[] {
+    const dir = join(this.root, "state", "bundles");
+    return readdirSync(dir)
+      .filter((f) => f.endsWith(".json"))
+      .map((f) => readJson<Bundle>(join(dir, f)))
+      .filter((b): b is Bundle => b !== undefined)
+      .sort((a, b) => a.id.localeCompare(b.id));
   }
 
   // ---------- backlog ----------

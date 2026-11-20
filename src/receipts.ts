@@ -1,3 +1,4 @@
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { readJson, writeJson } from "./json-file.ts";
 import type { LaneReceipt, ReviewReceipt } from "./store-types.ts";
@@ -40,6 +41,24 @@ export class Receipts {
   /** The lane receipt pinned to `tip`: a receipt at another commit never describes this diff. */
   lane(key: string, tip: string): LaneReceipt | undefined {
     return readJson<LaneReceipt>(this.laneReceiptPath(key, tip));
+  }
+
+  /**
+   * Every lane receipt of `key`, newest first. A review that moved past a receipt leaves the older file in place, so
+   * this is how the bundle gate tells a stale sha (a receipt exists at another tip) from a lane never reviewed at all.
+   * Failed-review diagnostics share the `lane_<key>@` prefix but are not receipts: only `<lane>@<sha>.json` counts.
+   */
+  laneReceipts(key: string): LaneReceipt[] {
+    const name = `lane_${key}`;
+    if (!NAME_RE.test(name)) throw new Error(`invalid lane ${key}`);
+    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const file = new RegExp(`^lane_${escaped}@[0-9a-f]{7,64}\\.json$`);
+    const dir = join(this.root, "receipts");
+    return readdirSync(dir)
+      .filter((f) => file.test(f))
+      .map((f) => readJson<LaneReceipt>(join(dir, f)))
+      .filter((r): r is LaneReceipt => r !== undefined)
+      .sort((a, b) => b.at - a.at);
   }
 
   /** Where the receipt for lane `key` at `tip` lives, whether or not it was written yet. */

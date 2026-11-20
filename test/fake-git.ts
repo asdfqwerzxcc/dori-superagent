@@ -4,6 +4,12 @@ export type Repo = {
   head: string;
   /** HEAD inside a lane worktree; defaults to `head`. */
   worktreeHead?: string;
+  /** HEAD per checkout path, overriding `worktreeHead` (one lane worktree per key). */
+  heads?: Record<string, string>;
+  /** Branch refs answered by `rev-parse --verify refs/heads/<branch>`. */
+  refs?: Record<string, string>;
+  /** Answers for `remote get-url <name>`; a missing name fails like git. */
+  remotes?: Record<string, string>;
   mergeBase?: string;
   diff?: string;
   dirty?: string;
@@ -14,6 +20,11 @@ export type Repo = {
   branchExists?: boolean;
   longpaths?: string;
   mergeFails?: string;
+  /** Only fail `merge` when its arguments name this branch; the failure text is `mergeFails`. */
+  mergeFailOn?: string;
+  /** `diff --name-only --diff-filter=U` output after a conflicted merge. */
+  conflictFiles?: string;
+  pushFails?: string;
 };
 
 const defaultDiff = "diff --git a/src/x.ts b/src/x.ts\n+export const x = 1;\n";
@@ -24,10 +35,30 @@ export function fakeGit(w: World, repo: Repo): void {
     const args = argv[0] === "-C" ? argv.slice(2) : argv;
     const [cmd, sub] = args;
     if (cmd === "rev-parse" && args.includes("--show-toplevel")) return { code: 0, stdout: "/repo\n" };
-    if (cmd === "rev-parse" && args.includes("--verify"))
+    if (cmd === "rev-parse" && args.includes("--verify")) {
+      const ref = [...args].reverse().find((a) => !a.startsWith("--"));
+      if (ref?.startsWith("refs/heads/")) {
+        const sha = repo.refs?.[ref.slice("refs/heads/".length)];
+        return sha === undefined ? { code: 1, stdout: "", stderr: "" } : { code: 0, stdout: `${sha}\n` };
+      }
       return repo.branchExists === true ? { code: 0, stdout: `${repo.head}\n` } : { code: 1, stdout: "", stderr: "" };
-    if (cmd === "rev-parse")
-      return { code: 0, stdout: `${cwd === "/repo" ? repo.head : (repo.worktreeHead ?? repo.head)}\n` };
+    }
+    if (cmd === "rev-parse") {
+      const sha =
+        (cwd !== undefined ? repo.heads?.[cwd] : undefined) ??
+        (cwd === "/repo" ? repo.head : (repo.worktreeHead ?? repo.head));
+      return { code: 0, stdout: `${sha}\n` };
+    }
+    if (cmd === "remote" && sub === "get-url") {
+      const url = repo.remotes?.[args[2] ?? ""];
+      return url === undefined
+        ? { code: 2, stdout: "", stderr: `No such remote '${args[2] ?? ""}'\n` }
+        : { code: 0, stdout: `${url}\n` };
+    }
+    if (cmd === "push")
+      return repo.pushFails === undefined
+        ? { code: 0, stdout: "", stderr: "" }
+        : { code: 1, stdout: "", stderr: repo.pushFails };
     if (cmd === "config") return { code: 0, stdout: `${repo.longpaths ?? "true"}\n` };
     if (cmd === "status") return { code: 0, stdout: repo.dirty ?? "" };
     if (cmd === "worktree" && sub === "add") return repo.worktreeAdd ?? { code: 0, stdout: "", stderr: "" };
@@ -37,11 +68,15 @@ export function fakeGit(w: World, repo: Repo): void {
         ? { code: 1, stdout: "", stderr: "not an ancestor" }
         : { code: 0, stdout: "", stderr: "" };
     if (cmd === "merge-base") return { code: 0, stdout: `${repo.mergeBase ?? repo.head}\n` };
+    if (args.includes("diff") && args.includes("--diff-filter=U")) return { code: 0, stdout: repo.conflictFiles ?? "" };
     if (args.includes("diff")) return { code: 0, stdout: repo.diff ?? defaultDiff };
-    if (cmd === "merge")
-      return repo.mergeFails === undefined
-        ? { code: 0, stdout: "", stderr: "" }
-        : { code: 1, stdout: "", stderr: repo.mergeFails };
+    if (cmd === "merge") {
+      const fails =
+        repo.mergeFails !== undefined && (repo.mergeFailOn === undefined || args.includes(repo.mergeFailOn));
+      return fails
+        ? { code: 1, stdout: "", stderr: repo.mergeFails ?? "merge conflict" }
+        : { code: 0, stdout: "", stderr: "" };
+    }
     if (cmd === "branch") return { code: 0, stdout: "", stderr: "" };
     if (cmd === "rebase") return { code: 0, stdout: "", stderr: "" };
     return { code: 1, stdout: "", stderr: `unhandled git ${argv.join(" ")}` };

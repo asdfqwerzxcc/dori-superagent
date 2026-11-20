@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { resolve } from "node:path";
+import { runBundle } from "./bundle-cli.ts";
 import { runBacklog, runDuty, runLoop } from "./cli-loops.ts";
 import { runLink } from "./cli-link.ts";
 import { pluginCommand } from "./cli-plugins.ts";
@@ -39,6 +40,7 @@ const COMMANDS = new Set([
   "review",
   "merge",
   "done",
+  "bundle",
   "worktrees",
   "status",
   "loop",
@@ -175,9 +177,18 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       console.log(`REVIEW ${x} head=${r.sha} verdict=${r.verdict}`);
       return r.verdict === "CLEAR" ? 0 : 1;
     }
-    case "merge":
-      console.log(await mergeGate(d, need(x, "PR"), { dryRun: one(a, "dry-run") === "true" }));
+    case "merge": {
+      const bundle = one(a, "bundle");
+      console.log(
+        await mergeGate(d, need(x, "PR"), {
+          dryRun: one(a, "dry-run") === "true",
+          ...(bundle === undefined ? {} : { bundle }),
+        }),
+      );
       return 0;
+    }
+    case "bundle":
+      return runBundle(d, a, x);
     case "done": {
       if (a.flags.has("force"))
         throw new Refusal("done no longer takes --force; use: dori done --drop <key> --reason <text>");
