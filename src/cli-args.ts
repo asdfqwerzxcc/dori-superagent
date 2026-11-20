@@ -43,6 +43,12 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori remote list
   dori remote start <name> <key> --brief FILE [--dry-run]
                                               run a lane on another LAN machine over ssh; --dry-run prints scp+ssh
+  dori agent [--port 7799] [--host 0.0.0.0]   serve /pair and /status over pinned TLS to the LAN only
+  dori link [--port 7799]                     print a 10-minute pairing code, the agent fingerprint and the LAN address
+  dori link <host:port> [--fingerprint FP] [--code CODE] [--name NAME] [--replace]
+                                              pair this machine: the fingerprint is compared by a person, then the code
+  dori devices                                poll every linked device's /status: CPU, RAM, sessions, last answer
+  dori devices remove <name>                  forget a linked device
   dori status
 
 --text may be omitted to read the message from stdin.
@@ -65,6 +71,7 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "resume",
   "help",
   "apply",
+  "replace",
 ]);
 
 export function parse(argv: readonly string[]): Args {

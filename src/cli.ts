@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { resolve } from "node:path";
 import { runBacklog, runDuty, runLoop } from "./cli-loops.ts";
+import { runLink } from "./cli-link.ts";
 import { pluginCommand } from "./cli-plugins.ts";
 import { runRemote } from "./cli-remotes.ts";
 import { status, up } from "./cli-up.ts";
@@ -47,6 +48,9 @@ const COMMANDS = new Set([
   "restart",
   "plugin",
   "remote",
+  "agent",
+  "link",
+  "devices",
 ]);
 
 /** Prints the line for a delivery that did not land now and returns the exit code: HELD 3, everything else 0. */
@@ -209,6 +213,10 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       return pluginCommand(d.store.root, x, a.pos[2]);
     case "remote":
       return runRemote(d, a, x);
+    case "agent":
+    case "link":
+    case "devices":
+      return runLink(d, a, cmd);
     default:
       console.log(USAGE);
       return cmd === undefined || cmd === "help" ? 0 : 64;
