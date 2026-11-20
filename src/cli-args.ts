@@ -49,6 +49,7 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
                                               pair this machine: the fingerprint is compared by a person, then the code
   dori devices                                poll every linked device's /status: CPU, RAM, sessions, last answer
   dori devices remove <name>                  forget a linked device
+  dori doctor [--json] [--online]             PASS/WARN/FAIL for this machine; --online also checks gh/glab auth
   dori status
 
 --text may be omitted to read the message from stdin.
@@ -72,6 +73,8 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "help",
   "apply",
   "replace",
+  "json",
+  "online",
 ]);
 
 export function parse(argv: readonly string[]): Args {

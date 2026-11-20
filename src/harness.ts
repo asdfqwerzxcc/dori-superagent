@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { cpus, loadavg } from "node:os";
+import { cpus, homedir, loadavg } from "node:os";
 import { join, resolve } from "node:path";
 import { shq } from "./delivery.ts";
 import { memFreePct } from "./host.ts";
@@ -36,13 +36,19 @@ export type Deps = {
 
 /** The runtime is chosen on first use, so commands that open or reach no session work without one installed. */
 export const defaultDeps = (): Deps => {
-  const store = new Store();
+  const home = process.env["DORI_HOME"] ?? join(homedir(), ".dori");
+  let store: Store | undefined;
   let chosen: RuntimeChoice | undefined;
   let runtimes: Runtimes | undefined;
   const choice = (): RuntimeChoice =>
-    (chosen ??= readRuntimeChoice({ env: process.env, configPath: join(store.root, "config.json") }));
+    (chosen ??= readRuntimeChoice({ env: process.env, configPath: join(home, "config.json") }));
   return {
-    store,
+    // The store is created on first use: `dori doctor` must be able to report an unwritable or malformed home before
+    // anything tries to create directories in it.
+    get store() {
+      store ??= new Store(home);
+      return store;
+    },
     get runtimes() {
       // The choice is made only when a NEW session is opened: a stored session's own runtime needs none.
       runtimes ??= new Runtimes(
@@ -55,10 +61,10 @@ export const defaultDeps = (): Deps => {
     exec: spawnExec,
     now: Date.now,
     agentCmd: process.env["DORI_AGENT_CMD"] ?? "omo",
-    doriCmd: process.env["DORI_CMD"] ?? `DORI_HOME=${shq(store.root)} bun ${shq(CLI)}`,
+    doriCmd: process.env["DORI_CMD"] ?? `DORI_HOME=${shq(home)} bun ${shq(CLI)}`,
     host: () => ({ load1: loadavg()[0] ?? 0, cores: cpus().length, memFreePct: memFreePct() }),
-    usage: new Telemetry(store.root),
-    supervise: (home, opts) => superviseHome(home, opts),
+    usage: new Telemetry(home),
+    supervise: (homePath, opts) => superviseHome(homePath, opts),
   };
 };
 

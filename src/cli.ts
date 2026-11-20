@@ -11,6 +11,7 @@ import { runStale } from "./stale.ts";
 import { listWorktrees, pruneWorktrees } from "./worktrees.ts";
 import { mergeGate, review } from "./gate.ts";
 import { reviewLane } from "./lane-review.ts";
+import { runDoctor } from "./doctor.ts";
 import { queueLaneReview, reviewJobId } from "./review-queue.ts";
 import { need, one, parse, textOf, USAGE } from "./cli-args.ts";
 import { defaultDeps, ROLES, type Deps } from "./harness.ts";
@@ -51,6 +52,7 @@ const COMMANDS = new Set([
   "agent",
   "link",
   "devices",
+  "doctor",
 ]);
 
 /** Prints the line for a delivery that did not land now and returns the exit code: HELD 3, everything else 0. */
@@ -71,7 +73,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     return 0;
   }
   const [cmd, x] = a.pos;
-  if (cmd !== undefined && COMMANDS.has(cmd)) d.usage.touch();
+  // doctor stays offline and writes nothing before it reports: no usage ping, no DORI_HOME creation.
+  if (cmd !== undefined && COMMANDS.has(cmd) && cmd !== "doctor") d.usage.touch();
   switch (cmd) {
     case "up":
       await up(d, resolve(one(a, "cwd") ?? process.cwd()), one(a, "retire-old") === "true");
@@ -209,6 +212,10 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "status":
       await status(d);
       return 0;
+    case "doctor": {
+      if (x !== undefined) throw new Refusal(`doctor takes no arguments, got ${x}\n\n${USAGE}`);
+      return runDoctor({ json: a.flags.has("json"), online: a.flags.has("online") });
+    }
     case "plugin":
       return pluginCommand(d.store.root, x, a.pos[2]);
     case "remote":
