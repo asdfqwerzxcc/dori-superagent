@@ -43,6 +43,7 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori remote list
   dori remote start <name> <key> --brief FILE [--dry-run]
                                               run a lane on another LAN machine over ssh; --dry-run prints scp+ssh
+  dori doctor [--json] [--online]             PASS/WARN/FAIL for this machine; --online also checks gh/glab auth
   dori status
 
 --text may be omitted to read the message from stdin.
@@ -65,6 +66,8 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "resume",
   "help",
   "apply",
+  "json",
+  "online",
 ]);
 
 export function parse(argv: readonly string[]): Args {
