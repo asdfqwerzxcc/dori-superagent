@@ -129,7 +129,9 @@ async function removeWorktree(d: Deps, lane: Lane, branchFlag: "-d" | "-D"): Pro
   if (!teardownTolerated("remove", remove.code, remove.stderr))
     throw new Refusal(`cannot remove ${path}: ${gitWhy(remove)}; branch kept`);
   const del = await d.exec("git", ["-C", repo, "branch", branchFlag, branchOf(lane.key)]);
-  if (del.code !== 0) throw new Refusal(`cannot delete ${branchOf(lane.key)}: ${gitWhy(del)}`);
+  // A branch already gone (a prior done, a manual delete) is not a failure: the lane still closes.
+  if (del.code !== 0 && !/not found|no such branch/i.test(`${del.stderr}${del.stdout}`))
+    throw new Refusal(`cannot delete ${branchOf(lane.key)}: ${gitWhy(del)}`);
 }
 
 /**
