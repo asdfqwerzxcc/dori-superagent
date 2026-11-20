@@ -104,6 +104,18 @@ ssh <host> 'cd <repo> && git worktree add ../wt-<key> -b local/<host>/<key> \
 
 **권장 순서**: 이 변형을 `dori remote start --engine omo`로 먼저 구현(현재 ssh 버전 수정). 그 다음 필요하면 herdr `--machine`으로 '보는 것'을 추가.
 
+**연결 방식 — 단계 제안 (2026-11-20)**
+
+| 단계 | 방식 | 필요 조건 | 얻는 것 | 작업량 |
+|---|---|---|---|---|
+| **S0** | 기존 ssh로 상태만 수집 (`dori devices`) | ssh 키 | online·CPU/RAM·세션·마지막 응답 | **반나절** |
+| **S1** | `dori link` 페어링(8자 코드 + 지문) + `dori agent` 데몬 | LAN | ssh 없이 연결·상태·(추후)원경 세션 | 2~3일 |
+| **S2** | mDNS 자동 발견 + heartbeat 푸시 | S1 | 기기 목록 자동 유지 | 1일 |
+
+- **S0을 먼저**: ssh는 이미 있고, 표준 명령(`uptime`, `free`/`wmic`, `tasklist`)으로 상태를 받으면 돼. 계정·데몬·인증서 모두 불필요.
+- **S1 원칙**: 직접 암호를 만들지 않는다. **자기서명 TLS + 지문 pinning**(페어링 때 사람이 눈으로 대조) + 정적 토큰. 코드 8자리, 1회용, 10분 만료.
+- **기본은 S0/S1, ssh는 예외용으로 남긴다** — sshd가 꺼진 기기·방화벽 환경에서는 S1이 필요하다.
+
 ## 4. 지금 있는 것 / 없는 것
 - 메인 도리: 백로그, 루프, 게이트, `dori remote`(ssh), Discord 게이트웨이
 - 프로젝트 격리: `DORI_HOME` 환경변수(별도 홈 = 별도 상태)
