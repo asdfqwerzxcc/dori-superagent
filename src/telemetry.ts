@@ -11,6 +11,25 @@ import { isOn, OS_TYPE, otlpLogs, rejectedRecords } from "./telemetry-otlp.ts";
 
 const HOUR_MS = 3_600_000;
 
+// Windows refuses to replace a file another process has open for reading (EPERM/EBUSY). The reader closes it within
+// a moment, so a bounded synchronous retry turns that sharing violation back into the atomic rename it should be.
+const REPLACE_RETRY_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+const REPLACE_ATTEMPTS = 20;
+const PAUSE = new Int32Array(new SharedArrayBuffer(4));
+
+function replaceFile(from: string, to: string): void {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      renameSync(from, to);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (attempt === REPLACE_ATTEMPTS || code === undefined || !REPLACE_RETRY_CODES.has(code)) throw e;
+      Atomics.wait(PAUSE, 0, 0, 1);
+    }
+  }
+}
+
 export type MergeOutcome =
   | "merged"
   | "no_receipt"
@@ -118,7 +137,14 @@ export class Telemetry implements Usage {
   private save(state: State): void {
     const tmp = `${this.path}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(state) + "\n", { mode: 0o600 });
-    renameSync(tmp, this.path);
+    try {
+      replaceFile(tmp, this.path);
+    } catch (e) {
+      try {
+        unlinkSync(tmp);
+      } catch {}
+      throw e;
+    }
   }
 
   touch(): void {
@@ -204,7 +230,11 @@ export class Telemetry implements Usage {
     const key = (JSON.parse(res.text) as { key?: unknown }).key;
     if (typeof key !== "string" || key === "") return undefined;
     state.key = key;
-    this.save(state);
+    try {
+      this.save(state);
+    } catch {
+      // The key still works for this send; if the cache cannot be written, the next run registers again.
+    }
     return key;
   }
 }
