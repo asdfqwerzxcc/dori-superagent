@@ -79,6 +79,71 @@ describe("lane worktrees", () => {
     expect(gits).not.toContain("-C /repo branch -d lane/moved");
   });
 
+  test("done lands a squash-merged lane by content and removes its worktree", async () => {
+    const { w, d, brief } = setup();
+    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
+    fakeGit(w, repo);
+    const lane = await startLane(d, "squashed", brief, { group: "w1" });
+    await ready(d, "squashed", "done", ["file:///x"]);
+    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
+    await reviewLane(d, "squashed");
+
+    // The squash merge rewrote the lane's commit on main: same tree, new sha, so ancestry alone fails.
+    repo.head = "c".repeat(40);
+    repo.ancestor = false;
+    repo.contentDiff = "";
+    expect(await done(d, "squashed")).toBeUndefined();
+    const gits = gitCalls(w);
+    expect(gits).toContain("-C /repo diff --quiet lane/squashed HEAD");
+    expect(gits).not.toContain("-C /repo merge --ff-only lane/squashed");
+    expect(gits).toContain(`-C /repo worktree remove ${wtPath(d, "squashed")}`);
+    expect(gits).toContain("-C /repo branch -D lane/squashed");
+    const closed = d.store.lane("squashed")!;
+    expect(closed.status).toBe("done");
+    expect(closed.log.at(-1)!.text).toContain("landed by content (squash)");
+    expect(w.panes.has(lane.paneId)).toBe(false);
+  });
+
+  test("done still refuses a moved main whose content differs", async () => {
+    const { w, d, brief } = setup();
+    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
+    fakeGit(w, repo);
+    await startLane(d, "not-squashed", brief, { group: "w1" });
+    await ready(d, "not-squashed", "done", ["file:///x"]);
+    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
+    await reviewLane(d, "not-squashed");
+
+    repo.head = "c".repeat(40);
+    repo.ancestor = false;
+    repo.contentDiff = diff;
+    await expect(done(d, "not-squashed")).rejects.toThrow("main moved: rebase required");
+    const gits = gitCalls(w);
+    expect(gits).toContain("-C /repo diff --quiet lane/not-squashed HEAD");
+    expect(gits).not.toContain(`-C /repo worktree remove ${wtPath(d, "not-squashed")}`);
+    expect(gits).not.toContain("-C /repo branch -D lane/not-squashed");
+    expect(d.store.lane("not-squashed")!.status).toBe("ready");
+    expect(d.store.lane("not-squashed")!.worktree).toBe(wtPath(d, "not-squashed"));
+  });
+
+  test("done keeps the ancestor path and never probes content", async () => {
+    const { w, d, brief } = setup();
+    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
+    fakeGit(w, repo);
+    await startLane(d, "ancestor", brief, { group: "w1" });
+    await ready(d, "ancestor", "done", ["file:///x"]);
+    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
+    await reviewLane(d, "ancestor");
+
+    repo.head = "c".repeat(40);
+    repo.ancestor = true;
+    expect(await done(d, "ancestor")).toBeUndefined();
+    const gits = gitCalls(w);
+    expect(gits).toContain("-C /repo merge-base --is-ancestor lane/ancestor HEAD");
+    expect(gits).not.toContain("-C /repo diff --quiet lane/ancestor HEAD");
+    expect(gits).not.toContain("-C /repo merge --ff-only lane/ancestor");
+    expect(d.store.lane("ancestor")!.status).toBe("done");
+  });
+
   test("done refuses a lane whose pane runs outside its own worktree", async () => {
     const { w, d, brief } = setup();
     const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };

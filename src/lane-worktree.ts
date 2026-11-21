@@ -157,7 +157,8 @@ export async function rebaseLaneWorktree(d: Deps, lane: Lane): Promise<string | 
 
 /**
  * Lands the lane's branch on the main checkout and tears its worktree down. Fast-forward only, and only while `main`
- * still sits at the lane's recorded base; a main that moved refuses and keeps both, unless the branch already landed.
+ * still sits at the lane's recorded base; a main that moved refuses and keeps both, unless the branch already landed —
+ * by ancestry (a retried done) or by content (a squash merge, where `main` holds the same tree under a new commit).
  */
 export async function landWorktree(d: Deps, lane: Lane): Promise<string> {
   const repo = lane.repo;
@@ -170,10 +171,17 @@ export async function landWorktree(d: Deps, lane: Lane): Promise<string> {
   if (head !== base) {
     // A retried done after this branch already landed is fine; a main that moved for another reason is not.
     const merged = await d.exec("git", ["-C", repo, "merge-base", "--is-ancestor", branch, "HEAD"]);
-    if (merged.code !== 0)
-      throw new Refusal(
-        `main moved: rebase required (lane ${lane.key} base ${base.slice(0, 12)}, main ${head.slice(0, 12)}); branch and worktree kept`,
-      );
+    if (merged.code !== 0) {
+      // A squash merge rewrites the lane's commits, so ancestry fails while `main` already holds the same tree.
+      const same = await d.exec("git", ["-C", repo, "diff", "--quiet", branch, "HEAD"]);
+      if (same.code !== 0)
+        throw new Refusal(
+          `main moved: rebase required (lane ${lane.key} base ${base.slice(0, 12)}, main ${head.slice(0, 12)}); branch and worktree kept`,
+        );
+      // Content is proven identical, and `-d` rejects a branch that is not an ancestor: drop it explicitly.
+      await removeWorktree(d, lane, "-D");
+      return `landed by content (squash): ${branch} on main`;
+    }
   } else {
     const merge = await d.exec("git", ["-C", repo, "merge", "--ff-only", branch]);
     if (merge.code !== 0)
