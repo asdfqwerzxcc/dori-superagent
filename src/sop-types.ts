@@ -13,6 +13,8 @@ export type SopNodeDef = {
   run?: string;
   script?: string;
   prompt?: string;
+  /** The bundle this node works on. An approval node must name the one bundle its human gate decides. */
+  bundle?: string;
   needs?: string[];
 };
 
@@ -65,7 +67,7 @@ export const SOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const NODE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const BUNDLE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/;
 
-export function defaultBundleNodes(): SopNodeDef[] {
+export function defaultBundleNodes(bundle: string): SopNodeDef[] {
   return [
     {
       id: "implement",
@@ -75,6 +77,7 @@ export function defaultBundleNodes(): SopNodeDef[] {
     {
       id: "approve",
       kind: "approval",
+      bundle,
       prompt: "Review the bundle: approve, reject with a reason, or skip with a reason.",
       needs: ["implement"],
     },
@@ -122,6 +125,7 @@ export function validateSop(raw: unknown, expectedId?: string): string[] {
   if (!Array.isArray(nodes) || nodes.length === 0) return [...errors, "nodes must be a non-empty array"];
 
   const ids = new Set<string>();
+  const approvals: string[] = [];
   const needs = new Map<string, string[]>();
   nodes.forEach((node: unknown, index: number) => {
     if (!isRecord(node)) {
@@ -143,12 +147,23 @@ export function validateSop(raw: unknown, expectedId?: string): string[] {
       if (value !== undefined && typeof value !== "string") errors.push(`node ${nodeId}: ${field} must be a string`);
     }
     if (kind === "approval" && !isText(node["prompt"])) errors.push(`node ${nodeId}: approval needs a prompt`);
+    const bundle = node["bundle"];
+    if (kind === "approval" && !isText(bundle))
+      errors.push(`node ${nodeId}: approval needs a bundle (the human gate is one bundle gate)`);
+    else if (bundle !== undefined && (!isText(bundle) || !BUNDLE_ID_RE.test(bundle)))
+      errors.push(`node ${nodeId}: bundle must match ${BUNDLE_ID_RE.source}`);
+    if (kind === "approval") approvals.push(nodeId);
     const rawNeeds = node["needs"];
     if (rawNeeds === undefined) needs.set(nodeId, []);
     else if (!Array.isArray(rawNeeds) || rawNeeds.some((value: unknown) => !isText(value)))
       errors.push(`node ${nodeId}: needs must be an array of node ids`);
     else needs.set(nodeId, rawNeeds);
   });
+
+  if (approvals.length > 1)
+    errors.push(
+      `${approvals.length} approval nodes (${approvals.join(", ")}): a definition has at most one human gate, and it is the bundle gate`,
+    );
 
   for (const [nodeId, list] of needs) {
     for (const needId of list) {

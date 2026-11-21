@@ -11,6 +11,7 @@ import type {
   SopRun,
   SopRunNode,
 } from "./sop-types.ts";
+import type { Bundle } from "./store-types.ts";
 
 const LEGAL: Record<SopNodeState, readonly SopNodeState[]> = {
   waiting: ["running", "blocked", "failed", "skipped"],
@@ -34,16 +35,8 @@ export function createRun(store: SopStore, def: SopDef, bundle: string, now: num
   const nodes: Record<string, SopRunNode> = {};
   let gate: SopGate | undefined;
   for (const node of def.nodes) {
-    if (node.kind !== "approval") {
-      nodes[node.id] = { state: "waiting" };
-      continue;
-    }
-    if (gate === undefined) {
-      gate = { state: "pending", node: node.id, since: now };
-      nodes[node.id] = { state: "waiting" };
-      continue;
-    }
-    nodes[node.id] = { state: "skipped", endedAt: now, note: `collapsed into gate ${gate.node}` };
+    nodes[node.id] = { state: "waiting" };
+    if (node.kind === "approval" && gate === undefined) gate = { state: "pending", node: node.id, since: now };
   }
 
   const base = `${def.id}-${now.toString(36)}`;
@@ -196,6 +189,39 @@ export function rerunNode(
     run.gate = { state: "pending", node: run.gate.node, since: now };
   store.saveRun(run);
   return { run, reset: [...reset] };
+}
+
+export type SopGateView = {
+  run: string;
+  sop: string;
+  node: string;
+  state: SopGateState;
+  bundle: string;
+  bundleRecord?: Bundle;
+};
+
+/** The gate's bundle and that bundle's record; a missing bundle is the caller's warning, not an error. */
+export function gateView(store: SopStore, runId: string, nodeId: string): SopGateView {
+  const run = store.run(runId);
+  const def = store.required(run.sop);
+  const node = def.nodes.find((candidate) => candidate.id === nodeId);
+  if (node === undefined) throw new Refusal(`run ${runId} has no node ${nodeId}`);
+  if (node.kind !== "approval")
+    throw new Refusal(`node ${nodeId} is not an approval gate: dori sop gate show takes the approval node`);
+  const gate = run.gate;
+  if (gate === undefined || gate.node !== nodeId)
+    throw new Refusal(`run ${runId} has no approval gate at node ${nodeId}`);
+  const bundle = node.bundle;
+  if (bundle === undefined) throw new Refusal(`node ${nodeId} has no bundle`);
+  const bundleRecord = store.bundle(bundle);
+  return {
+    run: run.runId,
+    sop: run.sop,
+    node: nodeId,
+    state: gate.state,
+    bundle,
+    ...(bundleRecord === undefined ? {} : { bundleRecord }),
+  };
 }
 
 export function pendingGates(store: SopStore): SopRun[] {

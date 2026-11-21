@@ -13,7 +13,7 @@ const honestyDef = (): SopDef => ({
   nodes: [
     { id: "work", kind: "agent" },
     { id: "ship", kind: "script", script: "echo ship" },
-    { id: "approve", kind: "approval", prompt: "Approve?" },
+    { id: "approve", kind: "approval", prompt: "Approve?", bundle: "b-1" },
   ],
 });
 
@@ -118,7 +118,7 @@ describe("sop gates", () => {
       title: "Chain",
       nodes: [
         { id: "work", kind: "agent" },
-        { id: "approve", kind: "approval", prompt: "Approve?", needs: ["work"] },
+        { id: "approve", kind: "approval", prompt: "Approve?", bundle: "b-1", needs: ["work"] },
         { id: "ship", kind: "script", script: "echo ship", needs: ["approve"] },
       ],
     });

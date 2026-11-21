@@ -4,32 +4,29 @@ import { setup } from "./harness-setup.ts";
 import { findRun, putSop, runIdOf } from "./sop-fixture.ts";
 
 describe("sop runs", () => {
-  test("one run starts every node waiting and collapses extra approvals into the first gate", async () => {
+  test("one run starts every node waiting over the single approval gate", async () => {
     const { d } = setup();
     putSop(d, {
-      id: "two",
-      title: "Two",
+      id: "solo",
+      title: "Solo",
       nodes: [
         { id: "work", kind: "agent" },
-        { id: "first", kind: "approval", prompt: "First?", needs: ["work"] },
-        { id: "second", kind: "approval", prompt: "Second?", needs: ["work"] },
-        { id: "ship", kind: "script", script: "echo ship", needs: ["first"] },
+        { id: "approve", kind: "approval", prompt: "Approve?", bundle: "b-1", needs: ["work"] },
+        { id: "ship", kind: "script", script: "echo ship", needs: ["approve"] },
       ],
     });
-    const out = await cli(d, ["sop", "run", "two", "--bundle", "b-1"]);
+    const out = await cli(d, ["sop", "run", "solo", "--bundle", "b-1"]);
     expect(out.code).toBe(0);
     const runId = runIdOf(out.out);
     const run = findRun(d, runId);
-    expect(run).toMatchObject({ sop: "two", bundle: "b-1", createdAt: d.now() });
+    expect(run).toMatchObject({ sop: "solo", bundle: "b-1", createdAt: d.now() });
     expect(Object.fromEntries(Object.entries(run.nodes).map(([id, node]) => [id, node.state]))).toEqual({
       work: "waiting",
-      first: "waiting",
-      second: "skipped",
+      approve: "waiting",
       ship: "waiting",
     });
-    expect(run.nodes["second"]?.note ?? "").toContain("collapsed into gate first");
-    expect(run.gate).toMatchObject({ state: "pending", node: "first", since: d.now() });
-    expect((await cli(d, ["sop", "run", "two", "--bundle", "b-2"])).out).not.toContain(`RUN ${runId} `);
+    expect(run.gate).toMatchObject({ state: "pending", node: "approve", since: d.now() });
+    expect((await cli(d, ["sop", "run", "solo", "--bundle", "b-2"])).out).not.toContain(`RUN ${runId} `);
   });
 
   test("step records legal transitions with injected time and refuses illegal ones", async () => {
@@ -39,7 +36,7 @@ describe("sop runs", () => {
       title: "Flow",
       nodes: [
         { id: "work", kind: "agent" },
-        { id: "gate", kind: "approval", prompt: "Approve?", needs: ["work"] },
+        { id: "gate", kind: "approval", prompt: "Approve?", bundle: "b-1", needs: ["work"] },
         { id: "ship", kind: "script", script: "echo ship", needs: ["gate"] },
       ],
     });
