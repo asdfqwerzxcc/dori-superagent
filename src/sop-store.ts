@@ -4,6 +4,7 @@ import { readJson, writeJson } from "./json-file.ts";
 import { Receipts } from "./receipts.ts";
 import { Refusal } from "./refusal.ts";
 import { SOP_ID_RE, validateSop, type SopDef, type SopRun } from "./sop-types.ts";
+import { KEY_RE, type Bundle } from "./store-types.ts";
 
 export class SopStore {
   readonly receipts: Receipts;
@@ -83,6 +84,12 @@ export class SopStore {
     const found = this.runs().find((run) => run.runId === runId);
     if (found === undefined) throw new Refusal(`no SOP run ${runId}`);
     return found;
+  }
+
+  /** The bundle record a gate names, or undefined. Ids the bundle store cannot name are treated as missing. */
+  bundle(id: string): Bundle | undefined {
+    if (!KEY_RE.test(id)) return undefined;
+    return readJson<Bundle>(join(this.root, "state", "bundles", `${id}.json`));
   }
 
   saveRun(run: SopRun): void {

@@ -1,7 +1,7 @@
 import { need, one, type Args } from "./cli-args.ts";
 import type { Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
-import { createRun, decideGate, pendingGates, rerunNode, stepRun } from "./sop-runs.ts";
+import { createRun, decideGate, gateView, pendingGates, rerunNode, stepRun } from "./sop-runs.ts";
 import { SopStore } from "./sop-store.ts";
 import {
   BUNDLE_ID_RE,
@@ -14,7 +14,7 @@ import {
 } from "./sop-types.ts";
 
 const SOP_COMMANDS = "list|show|validate|new|run|step|gate|rerun";
-const GATE_COMMANDS = "list|approve|reject|skip";
+const GATE_COMMANDS = "list|show|approve|reject|skip";
 
 const iso = (at: number): string => new Date(at).toISOString();
 
@@ -72,7 +72,7 @@ function create(store: SopStore, id: string, a: Args): number {
   const from = one(a, "from");
   const nodes =
     from === undefined || from === "bundle"
-      ? defaultBundleNodes()
+      ? defaultBundleNodes(id)
       : store.required(from).nodes.map((node) => ({
           ...node,
           ...(node.needs === undefined ? {} : { needs: [...node.needs] }),
@@ -107,6 +107,7 @@ function step(store: SopStore, runId: string, nodeId: string, a: Args, now: numb
 function gate(store: SopStore, a: Args, now: number): number {
   const sub = need(a.pos[2], `gate command (${GATE_COMMANDS})`);
   if (sub === "list") return gateList(store, a, now);
+  if (sub === "show") return gateShow(store, need(a.pos[3], "run id"), need(a.pos[4], "node id"));
   const runId = need(a.pos[3], "run id");
   const by = need(one(a, "by"), "--by <name>");
   if (sub === "approve") {
@@ -121,6 +122,20 @@ function gate(store: SopStore, a: Args, now: number): number {
     return 0;
   }
   throw new Refusal(`unknown gate command ${sub}\n\ndori sop gate ${GATE_COMMANDS}`);
+}
+
+function gateShow(store: SopStore, runId: string, nodeId: string): number {
+  const view = gateView(store, runId, nodeId);
+  console.log(`GATE ${view.run} sop=${view.sop} node=${view.node} state=${view.state}`);
+  console.log(`bundle: ${view.bundle}`);
+  const record = view.bundleRecord;
+  if (record === undefined) {
+    console.log(`WARN bundle missing: ${view.bundle}`);
+    return 0;
+  }
+  console.log(`repo: ${record.repo}`);
+  console.log(`pr: ${record.pr === null ? "-" : `#${record.pr.number} ${record.pr.url}`}`);
+  return 0;
 }
 
 function gateList(store: SopStore, a: Args, now: number): number {

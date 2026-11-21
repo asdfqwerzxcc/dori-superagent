@@ -20,15 +20,15 @@ SOP는 "번들 하나를 어떤 순서로 굴리고, 어디서 사람이 멈추�
   "title": "Bundle flow",
   "nodes": [
     { "id": "implement", "kind": "agent", "prompt": "Implement the bundle." },
-    { "id": "approve", "kind": "approval", "prompt": "Approve the bundle?", "needs": ["implement"] },
+    { "id": "approve", "kind": "approval", "bundle": "b-42", "prompt": "Approve the bundle?", "needs": ["implement"] },
     { "id": "verify", "kind": "script", "script": "bun run ci", "needs": ["approve"] }
   ]
 }
 ```
 
 노드 종류는 `agent`, `script`, `approval` 셋뿐이다. `run`은 에이전트가 실행되는 레인/워커 이름,
-`script`는 실행할 명령, `prompt`는 에이전트나 리뷰어에게 주는 지시다. `needs`는 이 노드보다 먼저 끝나야
-하는 노드 id 목록이다.
+`script`는 실행할 명령, `prompt`는 에이전트나 리뷰어에게 주는 지시다. `bundle`은 이 노드가 다루는
+번들 id이고, `needs`는 이 노드보다 먼저 끝나야 하는 노드 id 목록이다.
 
 ### 검증
 
@@ -38,7 +38,9 @@ SOP는 "번들 하나를 어떤 순서로 굴리고, 어디서 사람이 멈추�
 - `kind`는 위 셋 중 하나다.
 - 노드 id는 중복될 수 없다.
 - `needs`는 존재하는 노드만 가리키고, 순환(`a -> b -> a`)이면 거부한다.
-- `approval` 노드는 비어 있지 않은 `prompt`가 필수다.
+- `bundle`은 선택 필드지만, 값이 있으면 `dori sop run --bundle`과 같은 번들 id 규칙을 따른다.
+- `approval` 노드는 비어 있지 않은 `prompt`와 `bundle`이 필수다. 그 번들이 사람이 멈추는 게이트다.
+- `approval` 노드는 정의당 최대 하나다. 둘 이상이면 노드 id들을 나열하며 거부한다(한 번들 = 한 게이트).
 - `nodes`는 비어 있을 수 없다.
 
 ## 2. 런 상태
@@ -85,8 +87,8 @@ SOP는 "번들 하나를 어떤 순서로 굴리고, 어디서 사람이 멈추�
 
 ## 3. 한 번들 = 한 게이트
 
-`approval` 노드가 여러 개여도 런 전체에 게이트는 하나다. 정의 순서의 첫 승인 노드가 활성 게이트가 되고,
-나머지 승인 노드는 런 생성 시 `skipped`로 기록된다(사유: `collapsed into gate <첫 노드>`).
+정의에는 `approval` 노드가 최대 하나만 있을 수 있고, 그 노드는 `bundle`로 게이트할 번들 하나를 가리켜야
+한다. 승인 노드가 둘 이상이면 검증이 노드 id들과 이유를 들어 거부한다. 런의 활성 게이트는 그 하나뿐이다.
 
 게이트 상태는 `pending | approved | rejected | skipped`다.
 
@@ -130,15 +132,18 @@ dori sop new <id> --title T [--from bundle|<id>]
 dori sop run <id> --bundle <bundle-id>
 dori sop step <run> <node> --state <state> [--note T]
 dori sop gate list [--json]
+dori sop gate show <run> <node>
 dori sop gate approve <run> --by <name> [--note T]
 dori sop gate reject <run> --by <name> --reason T
 dori sop gate skip <run> --by <name> --reason T
 dori sop rerun <run> <node>
 ```
 
-`new`의 기본 템플릿은 `bundle`(agent -> approval -> script)이다. `--from`에 기존 SOP id를 주면 그
-정의를 복사해 새 id로 만든다. `run`은 모든 노드를 `waiting`으로 두고 런 id를 출력한다. `gate list`는
-`pending` 게이트만 보여주며 `--json`은 `{ "ok": true, "gates": [...] }`를 출력한다.
+`new`의 기본 템플릿은 `bundle`(agent -> approval -> script)이고, 승인 노드의 `bundle`은 SOP id를 쓴다.
+`--from`에 기존 SOP id를 주면 그 정의를 복사해 새 id로 만든다. `run`은 모든 노드를 `waiting`으로 두고
+런 id를 출력한다. `gate list`는 `pending` 게이트만 보여주며 `--json`은 `{ "ok": true, "gates": [...] }`를
+출력한다. `gate show`는 그 승인 노드가 가리키는 `bundle: <id>`와 번들 기록의 `repo`/`pr`을 출력한다.
+번들 파일이 없으면 `bundle missing` 경고만 남기고 실패하지 않는다.
 
 예:
 
@@ -148,6 +153,7 @@ dori sop run bundle --bundle b-42
 dori sop step bundle-mbtx1 implement --state running
 dori sop step bundle-mbtx1 implement --state done --note "3 files, tests green"
 dori sop gate list
+dori sop gate show bundle-mbtx1 approve
 dori sop gate approve bundle-mbtx1 --by lee --note "diff reviewed"
 dori sop step bundle-mbtx1 verify --state running
 dori sop step bundle-mbtx1 verify --state done
