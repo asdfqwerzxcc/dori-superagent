@@ -1,14 +1,21 @@
-// The gate's decision surface is the bundle MR's own review page, not a dori screen: `sop gate show` posts the
-// rationale as a comment there, and `sop sync` reads the review back into the same receipt `sop gate approve|reject`
-// writes. GitHub runs through gh, GitLab through glab; nothing here owns state beyond the SOP run.
+// The gate's decision surface is the bundle MR's own review page, not a dori screen: `gate show` posts the rationale as
+// one comment there (and updates that comment on later calls), while `sop-sync.ts` reads the review back into the same
+// receipt `sop gate approve|reject` writes. This module owns only the comment.
 
 import type { Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
-import { decideGate, gateView, type SopGateView } from "./sop-runs.ts";
+import { gateView, type SopGateView } from "./sop-runs.ts";
 import type { SopStore } from "./sop-store.ts";
 import type { ExecResult } from "./runtime/exec.ts";
 
 export type MrProvider = "gh" | "glab";
+export type Mr = { readonly repo: string; readonly number: number; readonly url: string };
+export type Json = Record<string, unknown>;
+
+export const asRecord = (value: unknown): Json | undefined =>
+  typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Json) : undefined;
+
+export const why = (r: ExecResult): string => (r.stderr || r.stdout).trim() || `exit ${r.code}`;
 
 export const providerOf = (value: string | undefined): MrProvider => {
   if (value === undefined || value === "gh") return "gh";
@@ -16,13 +23,18 @@ export const providerOf = (value: string | undefined): MrProvider => {
   throw new Refusal(`--provider must be gh or glab (got ${JSON.stringify(value)})`);
 };
 
-type Mr = { readonly repo: string; readonly number: number; readonly url: string };
-type Json = Record<string, unknown>;
+const glabProject = (repo: string, number: number): string =>
+  `projects/${encodeURIComponent(repo)}/merge_requests/${number}`;
 
-const asRecord = (value: unknown): Json | undefined =>
-  typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Json) : undefined;
-
-const why = (r: ExecResult): string => (r.stderr || r.stdout).trim() || `exit ${r.code}`;
+export async function glabJson(d: Deps, path: string): Promise<unknown> {
+  const r = await d.exec("glab", ["api", path]);
+  if (r.code !== 0) throw new Refusal(`glab api ${path} failed: ${why(r)}`);
+  try {
+    return JSON.parse(r.stdout);
+  } catch {
+    throw new Refusal(`glab api ${path} printed no JSON`);
+  }
+}
 
 /** Markdown table cells stay one line: a newline breaks the row and a pipe ends the cell. */
 const cell = (text: string, max = 200): string => {
@@ -32,13 +44,15 @@ const cell = (text: string, max = 200): string => {
 
 const iso = (at: number): string => new Date(at).toISOString();
 
+const marker = (runId: string, nodeId: string): string => `<!-- dori:sop-gate run=${runId} node=${nodeId} -->`;
+
 export function rationaleOf(store: SopStore, runId: string, nodeId: string): { view: SopGateView; body: string } {
   const view = gateView(store, runId, nodeId);
   const def = store.required(view.sop);
   const run = store.run(runId);
   const record = view.bundleRecord;
   const lines = [
-    `<!-- dori:sop-gate run=${runId} node=${nodeId} -->`,
+    marker(runId, nodeId),
     `### SOP gate \`${runId}\` / \`${nodeId}\` - ${view.state}`,
     "",
     "| field | value |",
@@ -71,6 +85,44 @@ export function rationaleOf(store: SopStore, runId: string, nodeId: string): { v
   return { view, body: lines.join("\n") };
 }
 
+type Posted = { readonly id: string; readonly url: string };
+
+async function ghPosted(d: Deps, mr: Mr, want: string): Promise<Posted | undefined> {
+  const r = await d.exec("gh", ["pr", "view", String(mr.number), "--repo", mr.repo, "--json", "comments"]);
+  if (r.code !== 0) throw new Refusal(`gh pr view ${mr.repo}#${mr.number} comments failed: ${why(r)}`);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(r.stdout);
+  } catch {
+    throw new Refusal(`gh pr view ${mr.repo}#${mr.number} printed no JSON`);
+  }
+  const comments = asRecord(raw)?.["comments"];
+  if (!Array.isArray(comments)) throw new Refusal(`gh pr view ${mr.repo}#${mr.number} printed no comments`);
+  for (const item of comments) {
+    const comment = asRecord(item);
+    const body = comment?.["body"];
+    const url = comment?.["url"];
+    if (typeof body !== "string" || !body.includes(want) || typeof url !== "string") continue;
+    const id = /#issuecomment-(\d+)$/.exec(url)?.[1];
+    if (id !== undefined) return { id, url };
+  }
+  return undefined;
+}
+
+async function glabPosted(d: Deps, mr: Mr, want: string): Promise<Posted | undefined> {
+  const raw = await glabJson(d, `${glabProject(mr.repo, mr.number)}/notes?per_page=100`);
+  const notes = Array.isArray(raw) ? raw : [];
+  for (const item of notes) {
+    const note = asRecord(item);
+    const body = note?.["body"];
+    const id = note?.["id"];
+    if (typeof body !== "string" || !body.includes(want)) continue;
+    if (typeof id !== "number" && typeof id !== "string") continue;
+    return { id: String(id), url: `${mr.url}#note_${id}` };
+  }
+  return undefined;
+}
+
 export async function postGate(
   d: Deps,
   store: SopStore,
@@ -83,6 +135,32 @@ export async function postGate(
   if (record === undefined) return [`post: skipped (bundle ${view.bundle} is missing)`];
   const pr = record.pr;
   if (pr === null) return [`post: skipped (bundle ${view.bundle} has no MR; run: dori bundle land ${view.bundle})`];
+  const mr: Mr = { repo: record.repo, number: pr.number, url: pr.url };
+  const posted =
+    provider === "gh" ? await ghPosted(d, mr, marker(runId, nodeId)) : await glabPosted(d, mr, marker(runId, nodeId));
+  if (posted !== undefined) {
+    const r =
+      provider === "gh"
+        ? await d.exec("gh", [
+            "api",
+            "--method",
+            "PATCH",
+            `repos/${record.repo}/issues/comments/${posted.id}`,
+            "-f",
+            `body=${body}`,
+          ])
+        : await d.exec("glab", [
+            "api",
+            "--method",
+            "PUT",
+            `${glabProject(record.repo, pr.number)}/notes/${posted.id}`,
+            "-f",
+            `body=${body}`,
+          ]);
+    if (r.code !== 0)
+      throw new Refusal(`gate show: updating the MR comment on ${record.repo}#${pr.number} failed: ${why(r)}`);
+    return [`post: updated ${posted.url}`];
+  }
   const r =
     provider === "gh"
       ? await d.exec("gh", ["pr", "comment", String(pr.number), "--repo", record.repo, "--body", body])
@@ -95,156 +173,4 @@ export async function postGate(
     .filter((line) => line.trim() !== "")
     .at(-1);
   return [`post: ${url ?? `${provider} ${record.repo}#${pr.number}`}`];
-}
-
-/** The latest decisive review per author: a later request for changes beats an earlier approval and vice versa. */
-type ReviewState =
-  | { readonly state: "approved"; readonly by?: string; readonly note?: string }
-  | { readonly state: "changes-requested"; readonly by?: string; readonly reason?: string }
-  | { readonly state: "none" };
-
-const stateOfReview = (reviews: readonly Json[]): ReviewState => {
-  const latest = new Map<string, { at: number; state: string; body: string }>();
-  reviews.forEach((review, at) => {
-    const author = asRecord(review["author"])?.["login"];
-    const state = review["state"];
-    if (typeof author !== "string" || author === "") return;
-    if (state !== "APPROVED" && state !== "CHANGES_REQUESTED" && state !== "DISMISSED") return;
-    latest.set(author, { at, state, body: typeof review["body"] === "string" ? review["body"].trim() : "" });
-  });
-  const ordered = [...latest.entries()].sort((a, b) => a[1].at - b[1].at);
-  const changes = ordered.filter(([, review]) => review.state === "CHANGES_REQUESTED").at(-1);
-  if (changes !== undefined) {
-    const [by, review] = changes;
-    return { state: "changes-requested", by, ...(review.body === "" ? {} : { reason: review.body }) };
-  }
-  const approved = ordered.filter(([, review]) => review.state === "APPROVED").at(-1);
-  if (approved !== undefined) {
-    const [by, review] = approved;
-    return { state: "approved", by, ...(review.body === "" ? {} : { note: review.body }) };
-  }
-  return { state: "none" };
-};
-
-async function ghReviews(d: Deps, mr: Mr): Promise<ReviewState> {
-  const r = await d.exec("gh", ["pr", "view", String(mr.number), "--repo", mr.repo, "--json", "reviews"]);
-  if (r.code !== 0) throw new Refusal(`gh pr view ${mr.repo}#${mr.number} failed: ${why(r)}`);
-  let raw: unknown;
-  try {
-    raw = JSON.parse(r.stdout);
-  } catch {
-    throw new Refusal(`gh pr view ${mr.repo}#${mr.number} printed no JSON`);
-  }
-  const reviews = asRecord(raw)?.["reviews"];
-  if (!Array.isArray(reviews)) throw new Refusal(`gh pr view ${mr.repo}#${mr.number} printed no reviews`);
-  return stateOfReview(reviews.map(asRecord).filter((review): review is Json => review !== undefined));
-}
-
-async function glabJson(d: Deps, path: string): Promise<unknown> {
-  const r = await d.exec("glab", ["api", path]);
-  if (r.code !== 0) throw new Refusal(`glab api ${path} failed: ${why(r)}`);
-  try {
-    return JSON.parse(r.stdout);
-  } catch {
-    throw new Refusal(`glab api ${path} printed no JSON`);
-  }
-}
-
-async function glabReviews(d: Deps, mr: Mr): Promise<ReviewState> {
-  const project = `projects/${encodeURIComponent(mr.repo)}/merge_requests/${mr.number}`;
-  const [approvals, detail] = await Promise.all([glabJson(d, `${project}/approvals`), glabJson(d, project)]);
-  const approvedBy = asRecord(approvals)?.["approved_by"];
-  const approved = Array.isArray(approvedBy) ? approvedBy.map(asRecord).filter((r): r is Json => r !== undefined) : [];
-  const record = asRecord(detail);
-  const reviewers = Array.isArray(record?.["reviewers"]) ? record["reviewers"] : [];
-  const requested = reviewers
-    .map(asRecord)
-    .filter((r): r is Json => r !== undefined)
-    .filter((r) => r["state"] === "requested_changes");
-  const changes = requested.length > 0 || record?.["detailed_merge_status"] === "requested_changes";
-  if (changes) {
-    const username = requested.at(-1)?.["username"];
-    return { state: "changes-requested", ...(typeof username === "string" && username !== "" ? { by: username } : {}) };
-  }
-  if (approved.length > 0) {
-    const username = asRecord(approved.at(-1)?.["user"])?.["username"];
-    return { state: "approved", ...(typeof username === "string" && username !== "" ? { by: username } : {}) };
-  }
-  return { state: "none" };
-}
-
-const reviewerName = (by: string | undefined, fallback: string | undefined): string => {
-  const name = (by ?? fallback ?? "").trim();
-  if (name === "") throw new Refusal("the review does not name its author; pass --by <name> to record who decided");
-  return name;
-};
-
-const firstLine = (text: string): string => text.split(/\r?\n/).find((line) => line.trim() !== "") ?? text;
-
-export type SyncOutcome = { readonly lines: readonly string[]; readonly code: number };
-
-/**
- * Reads the bundle MR's review state and reconciles it with the local gate. A pending gate takes the MR decision as its
- * own (same receipt as the typed command); a decided gate is compared and reported, never silently rewritten. A
- * mismatch is exit 1: the local receipt and the review page disagree, and only a person can say which one is right.
- */
-export async function syncGate(
-  d: Deps,
-  store: SopStore,
-  runId: string,
-  provider: MrProvider,
-  fallbackBy: string | undefined,
-): Promise<SyncOutcome> {
-  const run = store.run(runId);
-  const gate = run.gate;
-  if (gate === undefined) throw new Refusal(`run ${runId} has no approval gate to sync`);
-  const view = gateView(store, runId, gate.node);
-  const record = view.bundleRecord;
-  if (record === undefined)
-    throw new Refusal(`run ${runId}: bundle ${view.bundle} is missing (nothing to sync against)`);
-  const pr = record.pr;
-  if (pr === null)
-    throw new Refusal(`run ${runId}: bundle ${view.bundle} has no MR (run: dori bundle land ${view.bundle})`);
-  const mr: Mr = { repo: record.repo, number: pr.number, url: pr.url };
-
-  const review = provider === "gh" ? await ghReviews(d, mr) : await glabReviews(d, mr);
-  if (review.state === "none")
-    return {
-      lines: [
-        gate.state === "pending"
-          ? `SYNC ${runId} pending mr=no-decision`
-          : `SYNC ${runId} gate=${gate.state} mr=no-decision (nothing to compare)`,
-      ],
-      code: 0,
-    };
-
-  if (gate.state === "pending") {
-    const by = reviewerName(review.by, fallbackBy);
-    if (review.state === "approved") {
-      const { receipt } = decideGate(store, runId, "approve", by, undefined, review.note, d.now(), {
-        source: "mr",
-        mr: mr.url,
-      });
-      return { lines: [`SYNC ${runId} approve by=${by} receipt=${receipt} mr=${mr.url}`], code: 0 };
-    }
-    const reason = (review.reason ?? `changes requested on ${record.repo}#${pr.number}`).trim();
-    const { receipt } = decideGate(store, runId, "reject", by, reason, undefined, d.now(), {
-      source: "mr",
-      mr: mr.url,
-    });
-    return {
-      lines: [`SYNC ${runId} reject by=${by} receipt=${receipt} mr=${mr.url}`, `reason: ${firstLine(reason)}`],
-      code: 0,
-    };
-  }
-
-  const mrState = review.state === "approved" ? "approved" : "changes-requested";
-  if (gate.state === "skipped")
-    return { lines: [`SYNC ${runId} gate=skipped mr=${mrState} (a skip has no MR counterpart)`], code: 0 };
-  const agrees =
-    (gate.state === "approved" && review.state === "approved") ||
-    (gate.state === "rejected" && review.state === "changes-requested");
-  return agrees
-    ? { lines: [`SYNC ${runId} gate=${gate.state} mr=${mrState} (in sync)`], code: 0 }
-    : { lines: [`MISMATCH ${runId} gate=${gate.state} mr=${mrState}`], code: 1 };
 }

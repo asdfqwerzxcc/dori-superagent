@@ -61,10 +61,17 @@ describe("one human gate per SOP", () => {
       pr: { number: 7, url: "https://github.com/acme/fork/pull/7" },
       status: "open",
     });
-    w.gh = (argv) =>
-      argv[1] === "comment"
-        ? { code: 0, stdout: "https://github.com/acme/fork/pull/7#issuecomment-1\n" }
-        : { code: 1, stdout: "" };
+    const comment = "https://github.com/acme/fork/pull/7#issuecomment-1";
+    let comments: { body: string; url: string }[] = [];
+    w.gh = (argv) => {
+      if (argv[1] === "view") return { code: 0, stdout: JSON.stringify({ comments }) };
+      if (argv[1] === "comment") {
+        comments = [{ body: String(argv[argv.indexOf("--body") + 1]), url: comment }];
+        return { code: 0, stdout: `${comment}\n` };
+      }
+      if (argv[0] === "api") return { code: 0, stdout: "{}" };
+      return { code: 1, stdout: "" };
+    };
     const out = await cli(d, ["sop", "gate", "show", runId, "approve"]);
     expect(out.code).toBe(0);
     expect(out.out.split("\n")).toEqual([
@@ -72,8 +79,14 @@ describe("one human gate per SOP", () => {
       "bundle: b-1",
       "repo: acme/fork",
       "pr: #7 https://github.com/acme/fork/pull/7",
-      "post: https://github.com/acme/fork/pull/7#issuecomment-1",
+      `post: ${comment}`,
     ]);
+    const again = await cli(d, ["sop", "gate", "show", runId, "approve"]);
+    expect(again.out).toContain(`post: updated ${comment}`);
+    expect(w.calls.filter((c) => c.cmd === "gh" && c.argv[1] === "comment")).toHaveLength(1);
+    const patch = w.calls.find((c) => c.cmd === "gh" && c.argv[0] === "api")!;
+    expect(patch.argv).toContain("PATCH");
+    expect(patch.argv).toContain("repos/acme/fork/issues/comments/1");
   });
 
   test("gate show warns that the bundle is missing without failing", async () => {

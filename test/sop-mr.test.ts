@@ -42,7 +42,9 @@ async function started(d: Deps): Promise<string> {
 
 const stubGh = (w: World, reviews: unknown[], comment = "https://github.com/acme/fork/pull/7#issuecomment-9") => {
   w.gh = (argv) => {
-    if (argv[0] === "pr" && argv[1] === "view") return { code: 0, stdout: JSON.stringify({ reviews }) };
+    if (argv[0] === "pr" && argv[1] === "view" && argv.includes("reviews"))
+      return { code: 0, stdout: JSON.stringify({ reviews }) };
+    if (argv[0] === "pr" && argv[1] === "view") return { code: 0, stdout: JSON.stringify({ comments: [] }) };
     if (argv[0] === "pr" && argv[1] === "comment") return { code: 0, stdout: `${comment}\n` };
     return { code: 1, stdout: "" };
   };
@@ -105,15 +107,18 @@ describe("gate show posts to the MR", () => {
     const calls: string[][] = [];
     w.reviewer = (argv) => {
       calls.push([...argv]);
+      if (argv[0] === "api") return { code: 0, stdout: "[]" };
       return { code: 0, stdout: "" };
     };
     const runId = await started(d);
     const out = await cli(d, ["sop", "gate", "show", runId, "approve", "--provider", "glab"]);
     expect(out.code).toBe(0);
     expect(out.out).toContain("post: glab acme/fork#7");
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.slice(0, 3)).toEqual(["mr", "note", "7"]);
-    expect(calls[0]).toContain("acme/fork");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.slice(0, 2)).toEqual(["api", "projects/acme%2Ffork/merge_requests/7/notes?per_page=100"]);
+    const note = calls.find((argv) => argv[0] === "mr" && argv[1] === "note")!;
+    expect(note.slice(0, 3)).toEqual(["mr", "note", "7"]);
+    expect(note).toContain("acme/fork");
   });
 });
 
@@ -167,8 +172,8 @@ describe("sop sync reads the MR review", () => {
     const { w, d } = setup();
     d.store.saveBundle(bundle());
     stubGh(w, [
-      { state: "APPROVED", author: { login: "lee" }, body: "" },
-      { state: "CHANGES_REQUESTED", author: { login: "lee" }, body: "one more" },
+      { state: "CHANGES_REQUESTED", author: { login: "lee" }, body: "one more", submittedAt: "2026-11-21T11:00:00Z" },
+      { state: "APPROVED", author: { login: "lee" }, body: "", submittedAt: "2026-11-21T10:00:00Z" },
     ]);
     const runId = await started(d);
     expect((await cli(d, ["sop", "sync", runId])).out).toContain("reject by=lee");

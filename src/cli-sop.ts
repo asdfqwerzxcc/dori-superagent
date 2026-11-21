@@ -2,7 +2,8 @@ import { need, one, type Args } from "./cli-args.ts";
 import type { Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
 import { createRun, decideGate, gateView, pendingGates, rerunNode, stepRun } from "./sop-runs.ts";
-import { postGate, providerOf, syncGate } from "./sop-mr.ts";
+import { postGate, providerOf } from "./sop-mr.ts";
+import { syncGate } from "./sop-sync.ts";
 import { SopStore } from "./sop-store.ts";
 import {
   BUNDLE_ID_RE,
