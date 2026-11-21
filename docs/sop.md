@@ -107,9 +107,10 @@ SOP는 "번들 하나를 어떤 순서로 굴리고, 어디서 사람이 멈추�
 
 ### MR 리뷰가 판단 화면이다
 
-`dori sop gate show <run> <node>`는 게이트의 판단 근거(노드 체인과 노트, 번들 구성원과 영수증)를 번들 MR에
-코멘트로 게시한다. 같은 게이트를 다시 부르면 새 코멘트를 만들지 않고 그 코멘트를 갱신한다. 번들이 없거나
-아직 MR이 없으면 게시를 건너뛰고 그 이유만 출력한다.
+`dori sop gate show <run> <node>`는 게이트의 판단 근거(노드 체인과 노트, 번들 구성원과 영수증)를 출력한다.
+`--post`를 주면 그 근거를 번들 MR에 코멘트로 게시하고, 같은 게이트를 다시 부르면 새 코멘트를 만들지 않고 그
+코멘트를 갱신한다. `--post`가 없으면 gh/glab을 호출하지 않는다. 번들이 없거나 아직 MR이 없으면 게시를
+건너뛰고 그 이유만 출력한다.
 
 사람은 그 MR에서 승인하거나 변경 요청을 남긴다. `dori sop sync <run>`이 MR 리뷰 상태를 읽는다.
 
@@ -151,7 +152,7 @@ dori sop new <id> --title T [--from bundle|<id>]
 dori sop run <id> --bundle <bundle-id>
 dori sop step <run> <node> --state <state> [--note T]
 dori sop gate list [--json]
-dori sop gate show <run> <node> [--provider gh|glab]
+dori sop gate show <run> <node> [--post] [--provider gh|glab]
 dori sop gate approve <run> --by <name> [--note T]
 dori sop gate reject <run> --by <name> --reason T
 dori sop gate skip <run> --by <name> --reason T
@@ -163,8 +164,8 @@ dori sop rerun <run> <node>
 `--from`에 기존 SOP id를 주면 그 정의를 복사해 새 id로 만든다. `run`은 모든 노드를 `waiting`으로 두고
 런 id를 출력한다. `gate list`는 `pending` 게이트만 보여주며 `--json`은 `{ "ok": true, "gates": [...] }`를
 출력한다. `gate show`는 그 승인 노드가 가리키는 `bundle: <id>`와 번들 기록의 `repo`/`pr`을 출력하고,
-판단 근거를 그 MR 코멘트로 게시한다. 번들 파일이 없으면 `bundle missing` 경고만 남기고 게시를 건너뛴다.
-`sync`는 MR 리뷰를 읽어 게이트를 대조한다. 리뷰가 작성자를 밝히지 않으면 `--by`로 보완한다.
+`--post`가 있으면 판단 근거를 그 MR 코멘트로 게시한다. 번들 파일이 없으면 `bundle missing` 경고만 남기고
+게시를 건너뛴다. `sync`는 MR 리뷰를 읽어 게이트를 대조한다. 리뷰가 작성자를 밝히지 않으면 `--by`로 보완한다.
 
 예:
 
@@ -174,7 +175,7 @@ dori sop run bundle --bundle b-42
 dori sop step bundle-mbtx1 implement --state running
 dori sop step bundle-mbtx1 implement --state done --note "3 files, tests green"
 dori sop gate list
-dori sop gate show bundle-mbtx1 approve
+dori sop gate show bundle-mbtx1 approve --post
 dori sop gate approve bundle-mbtx1 --by lee --note "diff reviewed"
 dori sop sync bundle-mbtx1
 dori sop step bundle-mbtx1 verify --state running

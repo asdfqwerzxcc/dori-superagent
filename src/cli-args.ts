@@ -38,8 +38,8 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori sop step <run> <node> --state S [--note T]
                                               S = waiting|running|blocked|done|failed|skipped
   dori sop gate list [--json]                 runs waiting for a human decision
-  dori sop gate show <run> <node> [--provider gh|glab]
-                                              print the gate, then post its rationale as a comment on the bundle MR
+  dori sop gate show <run> <node> [--post] [--provider gh|glab]
+                                              read-only by default; --post publishes the rationale as one MR comment
   dori sop gate approve <run> --by NAME [--note T]
   dori sop gate reject|skip <run> --by NAME --reason T
                                               approval = the one human gate: at most one per SOP, and it names its bundle
@@ -109,6 +109,7 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "json",
   "online",
   "ready",
+  "post",
 ]);
 
 export function parse(argv: readonly string[]): Args {

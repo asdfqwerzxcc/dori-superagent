@@ -49,7 +49,7 @@
 ## 5. SOP 판단 UI (Helmr의 본체)
 
 > **대체됨 (2026-11-21, lane `gate-ui-mr`)**: 커스텀 판단 UI는 만들지 않는다. 번들 MR의 리뷰·체크 화면이 그
-> 화면이다 — `dori sop gate show`가 판단 근거를 MR 코멘트로 게시하고, `dori sop sync`가 승인/변경 요청을
+> 화면이다 — `dori sop gate show --post`가 판단 근거를 MR 코멘트로 게시하고, `dori sop sync`가 승인/변경 요청을
 > `approve`/`reject`와 같은 영수증으로 기록한다. 아래 Gate inbox/상세 요구는 MR 화면이 충족하는 항목과
 > 폐기된 항목으로 읽는다.
 

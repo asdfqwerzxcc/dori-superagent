@@ -47,7 +47,38 @@ describe("one human gate per SOP", () => {
     expect(out.out).toContain("RUN ");
   });
 
-  test("gate show prints the gate's bundle and that bundle's repo and PR, then posts it", async () => {
+  test("gate show is read-only by default: no gh or glab call", async () => {
+    const { w, d } = setup();
+    putSop(d, bound("b-1"));
+    const runId = runIdOf((await cli(d, ["sop", "run", "gate", "--bundle", "b-1"])).out);
+    d.store.saveBundle({
+      id: "b-1",
+      title: "One",
+      issue: null,
+      repo: "acme/fork",
+      members: [],
+      branch: "bundle/b-1",
+      pr: { number: 7, url: "https://github.com/acme/fork/pull/7" },
+      status: "open",
+    });
+    w.gh = () => {
+      throw new Error("gh must not run");
+    };
+    w.reviewer = () => {
+      throw new Error("glab must not run");
+    };
+    const out = await cli(d, ["sop", "gate", "show", runId, "approve"]);
+    expect(out.code).toBe(0);
+    expect(out.out.split("\n")).toEqual([
+      `GATE ${runId} sop=gate node=approve state=pending`,
+      "bundle: b-1",
+      "repo: acme/fork",
+      "pr: #7 https://github.com/acme/fork/pull/7",
+    ]);
+    expect(w.calls.filter((c) => c.cmd === "gh" || c.cmd === "glab")).toHaveLength(0);
+  });
+
+  test("gate show --post creates one comment and updates it in place", async () => {
     const { w, d } = setup();
     putSop(d, bound("b-1"));
     const runId = runIdOf((await cli(d, ["sop", "run", "gate", "--bundle", "b-1"])).out);
@@ -72,7 +103,7 @@ describe("one human gate per SOP", () => {
       if (argv[0] === "api") return { code: 0, stdout: "{}" };
       return { code: 1, stdout: "" };
     };
-    const out = await cli(d, ["sop", "gate", "show", runId, "approve"]);
+    const out = await cli(d, ["sop", "gate", "show", runId, "approve", "--post"]);
     expect(out.code).toBe(0);
     expect(out.out.split("\n")).toEqual([
       `GATE ${runId} sop=gate node=approve state=pending`,
@@ -81,7 +112,7 @@ describe("one human gate per SOP", () => {
       "pr: #7 https://github.com/acme/fork/pull/7",
       `post: ${comment}`,
     ]);
-    const again = await cli(d, ["sop", "gate", "show", runId, "approve"]);
+    const again = await cli(d, ["sop", "gate", "show", runId, "approve", "--post"]);
     expect(again.out).toContain(`post: updated ${comment}`);
     expect(w.calls.filter((c) => c.cmd === "gh" && c.argv[1] === "comment")).toHaveLength(1);
     const patch = w.calls.find((c) => c.cmd === "gh" && c.argv[0] === "api")!;
@@ -93,7 +124,7 @@ describe("one human gate per SOP", () => {
     const { d } = setup();
     putSop(d, bound("ghost"));
     const runId = runIdOf((await cli(d, ["sop", "run", "gate", "--bundle", "b-1"])).out);
-    const out = await cli(d, ["sop", "gate", "show", runId, "approve"]);
+    const out = await cli(d, ["sop", "gate", "show", runId, "approve", "--post"]);
     expect(out.code).toBe(0);
     expect(out.out).toContain("bundle: ghost");
     expect(out.out).toContain("bundle missing");

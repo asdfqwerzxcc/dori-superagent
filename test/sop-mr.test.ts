@@ -64,7 +64,7 @@ describe("gate show posts to the MR", () => {
     d.store.saveBundle(bundle());
     stubGh(w, []);
     const runId = await started(d);
-    const out = await cli(d, ["sop", "gate", "show", runId, "approve"]);
+    const out = await cli(d, ["sop", "gate", "show", runId, "approve", "--post"]);
     expect(out.code).toBe(0);
     expect(out.out.split("\n")).toEqual([
       `GATE ${runId} sop=gate node=approve state=pending`,
@@ -90,14 +90,14 @@ describe("gate show posts to the MR", () => {
       throw new Error("gh must not run");
     };
     const runId = await started(d);
-    const noPr = await cli(d, ["sop", "gate", "show", runId, "approve"]);
+    const noPr = await cli(d, ["sop", "gate", "show", runId, "approve", "--post"]);
     expect(noPr.code).toBe(0);
     expect(noPr.out).toContain(`post: skipped (bundle b-1 has no MR; run: dori bundle land b-1)`);
 
     const ghost = setup();
     putSop(ghost.d, { ...def(), nodes: def().nodes.map((n) => (n.id === "approve" ? { ...n, bundle: "ghost" } : n)) });
     const ghostRun = runIdOf((await cli(ghost.d, ["sop", "run", "gate", "--bundle", "b-1"])).out);
-    const missing = await cli(ghost.d, ["sop", "gate", "show", ghostRun, "approve"]);
+    const missing = await cli(ghost.d, ["sop", "gate", "show", ghostRun, "approve", "--post"]);
     expect(missing.out).toContain("post: skipped (bundle ghost is missing)");
   });
 
@@ -111,7 +111,7 @@ describe("gate show posts to the MR", () => {
       return { code: 0, stdout: "" };
     };
     const runId = await started(d);
-    const out = await cli(d, ["sop", "gate", "show", runId, "approve", "--provider", "glab"]);
+    const out = await cli(d, ["sop", "gate", "show", runId, "approve", "--post", "--provider", "glab"]);
     expect(out.code).toBe(0);
     expect(out.out).toContain("post: glab acme/fork#7");
     expect(calls).toHaveLength(2);

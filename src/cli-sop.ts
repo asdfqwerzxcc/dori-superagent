@@ -129,19 +129,19 @@ async function gate(store: SopStore, d: Deps, a: Args, now: number): Promise<num
 }
 
 async function gateShow(store: SopStore, d: Deps, runId: string, nodeId: string, a: Args): Promise<number> {
-  const provider = providerOf(one(a, "provider"));
   const view = gateView(store, runId, nodeId);
   console.log(`GATE ${view.run} sop=${view.sop} node=${view.node} state=${view.state}`);
   console.log(`bundle: ${view.bundle}`);
   const record = view.bundleRecord;
-  if (record === undefined) {
-    console.log(`WARN bundle missing: ${view.bundle}`);
-    for (const line of await postGate(d, store, runId, nodeId, provider)) console.log(line);
-    return 0;
+  if (record === undefined) console.log(`WARN bundle missing: ${view.bundle}`);
+  else {
+    console.log(`repo: ${record.repo}`);
+    console.log(`pr: ${record.pr === null ? "-" : `#${record.pr.number} ${record.pr.url}`}`);
   }
-  console.log(`repo: ${record.repo}`);
-  console.log(`pr: ${record.pr === null ? "-" : `#${record.pr.number} ${record.pr.url}`}`);
-  for (const line of await postGate(d, store, runId, nodeId, provider)) console.log(line);
+  if (a.flags.has("post")) {
+    const provider = providerOf(one(a, "provider"));
+    for (const line of await postGate(d, store, runId, nodeId, provider)) console.log(line);
+  }
   return 0;
 }
 
