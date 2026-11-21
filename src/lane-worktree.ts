@@ -174,10 +174,12 @@ export async function landWorktree(d: Deps, lane: Lane): Promise<string> {
     if (merged.code !== 0) {
       // A squash merge rewrites the lane's commits, so ancestry fails while `main` already holds the same tree.
       const same = await d.exec("git", ["-C", repo, "diff", "--quiet", branch, "HEAD"]);
-      if (same.code !== 0)
+      // `--quiet` answers through its exit code: 0 identical, 1 different, 2+ a git error that says nothing about content.
+      if (same.code === 1)
         throw new Refusal(
           `main moved: rebase required (lane ${lane.key} base ${base.slice(0, 12)}, main ${head.slice(0, 12)}); branch and worktree kept`,
         );
+      if (same.code !== 0) throw new Refusal(`diff 실패: ${gitWhy(same)}`);
       // Content is proven identical, and `-d` rejects a branch that is not an ancestor: drop it explicitly.
       await removeWorktree(d, lane, "-D");
       return `landed by content (squash): ${branch} on main`;
