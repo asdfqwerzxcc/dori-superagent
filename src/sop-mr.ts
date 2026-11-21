@@ -139,6 +139,7 @@ export async function postGate(
   const posted =
     provider === "gh" ? await ghPosted(d, mr, marker(runId, nodeId)) : await glabPosted(d, mr, marker(runId, nodeId));
   if (posted !== undefined) {
+    // GitHub wants owner/repo as two path segments here; unlike glab's project path, the slash stays literal.
     const r =
       provider === "gh"
         ? await d.exec("gh", [

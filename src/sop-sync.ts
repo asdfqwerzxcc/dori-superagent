@@ -8,7 +8,7 @@ import { asRecord, glabJson, why, type Json, type Mr, type MrProvider } from "./
 import { decideGate, gateView } from "./sop-runs.ts";
 import type { SopStore } from "./sop-store.ts";
 
-/** The latest decisive review per author: a later request for changes beats an earlier approval and vice versa. */
+/** The latest decisive review per author; any outstanding change request wins over approvals, as on GitHub. */
 type ReviewState =
   | { readonly state: "approved"; readonly by?: string; readonly note?: string }
   | { readonly state: "changes-requested"; readonly by?: string; readonly reason?: string }
@@ -69,6 +69,8 @@ async function glabReviews(d: Deps, mr: Mr): Promise<ReviewState> {
   const approvedBy = asRecord(approvals)?.["approved_by"];
   const approved = Array.isArray(approvedBy) ? approvedBy.map(asRecord).filter((r): r is Json => r !== undefined) : [];
   const record = asRecord(detail);
+  // GitLab signals requested changes either per reviewer (newer MR detail responses) or as the MR's
+  // detailed_merge_status; accept either so a version difference does not silently drop a change request.
   const reviewers = Array.isArray(record?.["reviewers"]) ? record["reviewers"] : [];
   const requested = reviewers
     .map(asRecord)
@@ -80,6 +82,7 @@ async function glabReviews(d: Deps, mr: Mr): Promise<ReviewState> {
     return { state: "changes-requested", ...(typeof username === "string" && username !== "" ? { by: username } : {}) };
   }
   if (approved.length > 0) {
+    // The approvals endpoint does not document an order; the last entry is the most recent in practice.
     const username = asRecord(approved.at(-1)?.["user"])?.["username"];
     return { state: "approved", ...(typeof username === "string" && username !== "" ? { by: username } : {}) };
   }
