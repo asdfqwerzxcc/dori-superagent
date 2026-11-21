@@ -125,6 +125,27 @@ describe("lane worktrees", () => {
     expect(d.store.lane("not-squashed")!.worktree).toBe(wtPath(d, "not-squashed"));
   });
 
+  test("done refuses a git diff error instead of reading it as a moved main", async () => {
+    const { w, d, brief } = setup();
+    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
+    fakeGit(w, repo);
+    await startLane(d, "diff-error", brief, { group: "w1" });
+    await ready(d, "diff-error", "done", ["file:///x"]);
+    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
+    await reviewLane(d, "diff-error");
+
+    repo.head = "c".repeat(40);
+    repo.ancestor = false;
+    repo.diffError = "fatal: unable to read tree deadbeef";
+    await expect(done(d, "diff-error")).rejects.toThrow("diff 실패: fatal: unable to read tree deadbeef");
+    const gits = gitCalls(w);
+    expect(gits).toContain("-C /repo diff --quiet lane/diff-error HEAD");
+    expect(gits).not.toContain(`-C /repo worktree remove ${wtPath(d, "diff-error")}`);
+    expect(gits).not.toContain("-C /repo branch -D lane/diff-error");
+    expect(d.store.lane("diff-error")!.status).toBe("ready");
+    expect(d.store.lane("diff-error")!.worktree).toBe(wtPath(d, "diff-error"));
+  });
+
   test("done keeps the ancestor path and never probes content", async () => {
     const { w, d, brief } = setup();
     const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
