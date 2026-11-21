@@ -26,6 +26,8 @@ export const providerOf = (value: string | undefined): MrProvider => {
 const glabProject = (repo: string, number: number): string =>
   `projects/${encodeURIComponent(repo)}/merge_requests/${number}`;
 
+const ghRepo = (repo: string): string => repo.split("/").map(encodeURIComponent).join("/");
+
 export async function glabJson(d: Deps, path: string): Promise<unknown> {
   const r = await d.exec("glab", ["api", path]);
   if (r.code !== 0) throw new Refusal(`glab api ${path} failed: ${why(r)}`);
@@ -139,14 +141,13 @@ export async function postGate(
   const posted =
     provider === "gh" ? await ghPosted(d, mr, marker(runId, nodeId)) : await glabPosted(d, mr, marker(runId, nodeId));
   if (posted !== undefined) {
-    // GitHub wants owner/repo as two path segments here; unlike glab's project path, the slash stays literal.
     const r =
       provider === "gh"
         ? await d.exec("gh", [
             "api",
             "--method",
             "PATCH",
-            `repos/${record.repo}/issues/comments/${posted.id}`,
+            `repos/${ghRepo(record.repo)}/issues/comments/${posted.id}`,
             "-f",
             `body=${body}`,
           ])

@@ -71,7 +71,10 @@ describe("syncGate", () => {
   test("a change request rejects with the review body as the reason", async () => {
     const { w, d } = setup();
     const runId = await started(d);
-    reviews(w, [{ state: "CHANGES_REQUESTED", author: { login: "kim" }, body: "needs tests" }]);
+    reviews(w, [
+      { state: "APPROVED", author: { login: "lee" }, body: "nice" },
+      { state: "CHANGES_REQUESTED", author: { login: "kim" }, body: "needs tests" },
+    ]);
     const outcome = await syncGate(d, storeOf(d), runId, "gh", undefined);
     expect(outcome.code).toBe(0);
     expect(outcome.lines[0]).toContain(`SYNC ${runId} reject by=kim`);
@@ -82,15 +85,29 @@ describe("syncGate", () => {
     expect(receipt(d)).toMatchObject({ decision: "reject", reason: "needs tests", source: "mr" });
   });
 
-  test("a decided gate is compared, and a mismatch exits 1 without rewriting it", async () => {
+  test("a decided gate is compared: in sync exits 0, a mismatch exits 1 without rewriting it", async () => {
     const { w, d } = setup();
     const runId = await started(d);
     await cli(d, ["sop", "gate", "approve", runId, "--by", "lee"]);
+    reviews(w, [{ state: "APPROVED", author: { login: "kim" }, body: "" }]);
+    const inSync = await syncGate(d, storeOf(d), runId, "gh", undefined);
+    expect(inSync.code).toBe(0);
+    expect(inSync.lines).toEqual([`SYNC ${runId} gate=approved mr=approved (in sync)`]);
     reviews(w, [{ state: "CHANGES_REQUESTED", author: { login: "kim" }, body: "no" }]);
     const outcome = await syncGate(d, storeOf(d), runId, "gh", undefined);
     expect(outcome.code).toBe(1);
     expect(outcome.lines).toEqual([`MISMATCH ${runId} gate=approved mr=changes-requested`]);
     expect(findRun(d, runId).gate?.state).toBe("approved");
+  });
+
+  test("an undecided review leaves the gate pending and writes no receipt", async () => {
+    const { w, d } = setup();
+    const runId = await started(d);
+    reviews(w, [{ state: "COMMENTED", author: { login: "lee" }, body: "hm" }]);
+    const outcome = await syncGate(d, storeOf(d), runId, "gh", undefined);
+    expect(outcome.lines).toEqual([`SYNC ${runId} pending mr=no-decision`]);
+    expect(findRun(d, runId).gate?.state).toBe("pending");
+    expect(sopReceipts(d)).toEqual([]);
   });
 
   test("a review that names no author refuses, and --by supplies the fallback", async () => {
