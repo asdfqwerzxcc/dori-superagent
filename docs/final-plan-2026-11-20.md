@@ -6,7 +6,7 @@
 
 | 층 | 무엇 | 소유하는 것 | 소유하지 않는 것 |
 |---|---|---|---|
-| **Helmr** | 제품/거버넌스 | SOP 정의·승인 게이트·영수증·감사, 판단 UI | 실행, 코드 상태 |
+| **Helmr** | 제품/거버넌스 | SOP 정의·승인 게이트·영수증·감사, 판단 UI(번들 MR 리뷰 화면) | 실행, 코드 상태 |
 | **dori** | 엔진/오케스트레이션 | 레인·워크트리·브리프·리뷰 게이트·`status:*` 라벨·백로그, 상태 | UI, LLM UI |
 | **up.computer** | 셸(UI) | 채팅·스레드·워커·태스크 화면 표시 | 상태 일절 |
 
@@ -48,6 +48,11 @@
 
 ## 5. SOP 판단 UI (Helmr의 본체)
 
+> **대체됨 (2026-11-21, lane `gate-ui-mr`)**: 커스텀 판단 UI는 만들지 않는다. 번들 MR의 리뷰·체크 화면이 그
+> 화면이다 — `dori sop gate show --post`가 판단 근거를 MR 코멘트로 게시하고, `dori sop sync`가 승인/변경 요청을
+> `approve`/`reject`와 같은 영수증으로 기록한다. 아래 Gate inbox/상세 요구는 MR 화면이 충족하는 항목과
+> 폐기된 항목으로 읽는다.
+
 - **Gate inbox**: `프로젝트·번들·노드·기다린 시간`, 위험 표시 우선(범위 밖 파일·검증 없음).
 - **SOP run 상세**: 노드 체인 상태 + diff stat + 번들 구성원 + 실행된 검증 + 실패 로그. 결정: 승인/변경 요청(사유)/건너뜀/재실행/중단. 모든 결정은 영수증.
 - **데이터는 dori 소유**: `sops/<id>.json`, `state/sop-runs.json`, `dori sop list|show|approve|reject|skip|rerun`. UI는 API만 사용.
@@ -78,7 +83,7 @@
 
 1. **`glab-backend`**(p3) — 회사 GitLab이 실제 업무 경로. T3 패턴(인증 탐색 + glab api)으로.
 2. **`dori sop` 데이터 모델 + CLI** — Gate inbox의 토대.
-3. **Gate inbox 실데이터 목업(ds-v4)** — 판단 UX 검증.
+3. ~~Gate inbox 실데이터 목업(ds-v4)~~ — **폐기**: 번들 MR 리뷰 화면을 그대로 쓰고 `dori sop gate show`/`sync`로 잇는다.
 4. **페어링 + `dori devices`** — 원격 ergonomics.
 5. **up.computer 설치·`dori acp` 등록** — 셸 검증.
 6. **LoopForge식 SOP 템플릿**으로 번들 처리 자동화.

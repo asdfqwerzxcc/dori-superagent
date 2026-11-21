@@ -19,7 +19,7 @@
 | 문서 | 상태 | 내용 |
 |---|---|---|
 | [board.md](board.md) | 구현 | Vercel Board 모델의 로컬 이식: 태스크=스레드, 리스, `needs` DAG |
-| [sop.md](sop.md) | 구현 | SOP 정의/런, 한 번들=한 게이트, `sop gate` 영수증 |
+| [sop.md](sop.md) | 구현 | SOP 정의/런, 한 번들=한 게이트, MR 근거 게시와 `sop sync` 영수증 |
 | [bundle.md](bundle.md) | 구현 | 레인 영수증 게이트, `bundle land`로 MR 1개, `merge --bundle` |
 | [dori-link.md](dori-link.md) | 구현 | LAN 페어링(8자 코드+지문), `dori devices` |
 | [portable-install.md](portable-install.md) | 구현 | 새 머신/회사 PC 준비물, `dori doctor`, `DORI_HOME` 분리 |
@@ -33,7 +33,7 @@
 |---|---|---|
 | [final-plan-2026-11-20.md](final-plan-2026-11-20.md) | 계획 | Helmr/dori/up.computer 3층, 토폴로지, 순서 |
 | [dori-topology-2026-11-20.md](dori-topology-2026-11-20.md) | 계획 | 메인(PM)·프로젝트 도리, 다채널 인박스, 원격 데몬 |
-| [helmr-review-2026-11-20.md](helmr-review-2026-11-20.md) | 계획 | Helmr 거버넌스 계층, SOP 판단 UI 스펙 |
+| [helmr-review-2026-11-20.md](helmr-review-2026-11-20.md) | 대체됨 | Helmr 거버넌스 계층; SOP 판단 UI는 번들 MR 리뷰 화면으로 대체 |
 | [goat-omo-dori-loopforge-plan-2026-11-20.md](goat-omo-dori-loopforge-plan-2026-11-20.md) | 레퍼런스 | GOAT 개조안(포크 비권장) |
 | [dori-multi-machine-options-2026-11-19.md](dori-multi-machine-options-2026-11-19.md) | 레퍼런스 | 원격 실행 선택지 4개 비교 |
 | [loopforge-assessment-2026-11-19.md](loopforge-assessment-2026-11-19.md) | 레퍼런스 | LoopForge 소스 조사 |
