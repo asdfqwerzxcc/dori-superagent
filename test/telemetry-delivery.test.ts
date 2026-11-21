@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Telemetry } from "../src/telemetry.ts";
@@ -48,6 +48,33 @@ function rig(
       clock += ms;
     },
   };
+}
+
+// Reads a child's stdout line by line without waiting for it to exit: the racing test releases every child only
+// after all of them have loaded and reported ready.
+function lineReader(stream: ReadableStream<Uint8Array>) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const more = async () => {
+    const { done, value } = await reader.read();
+    if (!done) buffer += decoder.decode(value, { stream: true });
+    return !done;
+  };
+  const line = async () => {
+    while (!buffer.includes("\n") && (await more())) {}
+    const nl = buffer.indexOf("\n");
+    const out = nl === -1 ? buffer : buffer.slice(0, nl);
+    buffer = nl === -1 ? "" : buffer.slice(nl + 1);
+    return out.trim();
+  };
+  const rest = async () => {
+    while (await more()) {}
+    const out = buffer;
+    buffer = "";
+    return out.trim();
+  };
+  return { line, rest };
 }
 
 describe("telemetry", () => {
@@ -122,17 +149,34 @@ describe("telemetry", () => {
     const script = `const { Telemetry } = await import(${JSON.stringify(join(import.meta.dir, "../src/telemetry.ts"))});
       const hashes = [];
       const t = new Telemetry(process.argv[1], {}, async (url, body) => { if (url.endsWith("/v1/logs")) hashes.push(JSON.parse(body).resourceLogs[0].resource.attributes.find((a) => a.key === "dori.install.hash").value.stringValue); return { status: 200, text: JSON.stringify({ key: "k" }) }; }, Date.now, () => {});
+      console.log("ready");
+      await Bun.stdin.text();
       t.record({ name: "dori.lane_started", open_lanes: 1 }); await t.flush(5000); console.log(hashes[0] ?? "none");`;
     const runs = Array.from({ length: 6 }, () =>
-      Bun.spawn(["bun", "-e", script, home], { stdout: "pipe", stderr: "pipe" }),
-    );
-    const outs = await Promise.all(
-      runs.map(async (p) => {
-        await p.exited;
-        return (await new Response(p.stdout).text()).trim();
+      Bun.spawn([process.execPath, "-e", script, home], {
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+        env: process.env,
       }),
     );
-    expect(outs.every((o) => /^[0-9a-f]{64}$/.test(o))).toBe(true);
-    expect(new Set(outs).size).toBe(1);
+    // Every child blocks on stdin, so releasing them in one go makes the first claim and the state writes actually
+    // overlap; process start order cannot decide the race.
+    const readers = runs.map((p) => lineReader(p.stdout));
+    expect(await Promise.all(readers.map((r) => r.line()))).toEqual(Array(6).fill("ready"));
+    for (const p of runs) {
+      p.stdin.write("go\n");
+      p.stdin.end();
+    }
+    const outs = await Promise.all(
+      runs.map(async (p, i) => {
+        const code = await p.exited;
+        return { code, out: await readers[i]!.rest() };
+      }),
+    );
+    expect(outs.map((o) => o.code)).toEqual(Array(6).fill(0));
+    expect(outs.every((o) => /^[0-9a-f]{64}$/.test(o.out))).toBe(true);
+    expect(new Set(outs.map((o) => o.out)).size).toBe(1);
+    expect(readdirSync(home)).toEqual(["telemetry.json"]);
   });
 });
