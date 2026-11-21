@@ -4,6 +4,7 @@ import type {
   SopDecision,
   SopDef,
   SopGate,
+  SopGateOrigin,
   SopGateState,
   SopNodeDef,
   SopNodeState,
@@ -112,6 +113,7 @@ export function decideGate(
   reason: string | undefined,
   note: string | undefined,
   now: number,
+  origin?: SopGateOrigin,
 ): { run: SopRun; receipt: string } {
   const name = by.trim();
   const why = reason?.trim();
@@ -139,6 +141,7 @@ export function decideGate(
     at: now,
     ...(why === undefined || why === "" ? {} : { reason: why }),
     ...(comment === undefined || comment === "" ? {} : { note: comment }),
+    ...(origin === undefined ? {} : { source: origin.source, mr: origin.mr }),
   };
   const path = store.receipts.saveSop(receipt);
 

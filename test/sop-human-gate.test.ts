@@ -47,8 +47,8 @@ describe("one human gate per SOP", () => {
     expect(out.out).toContain("RUN ");
   });
 
-  test("gate show prints the gate's bundle and that bundle's repo and PR", async () => {
-    const { d } = setup();
+  test("gate show prints the gate's bundle and that bundle's repo and PR, then posts it", async () => {
+    const { w, d } = setup();
     putSop(d, bound("b-1"));
     const runId = runIdOf((await cli(d, ["sop", "run", "gate", "--bundle", "b-1"])).out);
     d.store.saveBundle({
@@ -61,6 +61,10 @@ describe("one human gate per SOP", () => {
       pr: { number: 7, url: "https://github.com/acme/fork/pull/7" },
       status: "open",
     });
+    w.gh = (argv) =>
+      argv[1] === "comment"
+        ? { code: 0, stdout: "https://github.com/acme/fork/pull/7#issuecomment-1\n" }
+        : { code: 1, stdout: "" };
     const out = await cli(d, ["sop", "gate", "show", runId, "approve"]);
     expect(out.code).toBe(0);
     expect(out.out.split("\n")).toEqual([
@@ -68,6 +72,7 @@ describe("one human gate per SOP", () => {
       "bundle: b-1",
       "repo: acme/fork",
       "pr: #7 https://github.com/acme/fork/pull/7",
+      "post: https://github.com/acme/fork/pull/7#issuecomment-1",
     ]);
   });
 
@@ -79,5 +84,6 @@ describe("one human gate per SOP", () => {
     expect(out.code).toBe(0);
     expect(out.out).toContain("bundle: ghost");
     expect(out.out).toContain("bundle missing");
+    expect(out.out).toContain("post: skipped (bundle ghost is missing)");
   });
 });

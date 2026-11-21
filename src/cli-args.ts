@@ -38,10 +38,13 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori sop step <run> <node> --state S [--note T]
                                               S = waiting|running|blocked|done|failed|skipped
   dori sop gate list [--json]                 runs waiting for a human decision
-  dori sop gate show <run> <node>             the gate's bundle and that bundle's repo/PR; a missing bundle only warns
+  dori sop gate show <run> <node> [--provider gh|glab]
+                                              print the gate, then post its rationale as a comment on the bundle MR
   dori sop gate approve <run> --by NAME [--note T]
   dori sop gate reject|skip <run> --by NAME --reason T
                                               approval = the one human gate: at most one per SOP, and it names its bundle
+  dori sop sync <run> [--provider gh|glab] [--by NAME]
+                                              read the MR reviews: approval or change request -> the same receipt as approve|reject
   dori sop rerun <run> <node>                 reset that node and everything after it
   dori labels [--repo owner/name] [--apply]   one status: label per issue/PR; fixes 0 or 2+; dry-run unless --apply
   dori stale [--repo owner/name] [--days-pr 14] [--days-comment 7] [--apply]

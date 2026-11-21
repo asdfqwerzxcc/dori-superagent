@@ -2,6 +2,7 @@ import { need, one, type Args } from "./cli-args.ts";
 import type { Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
 import { createRun, decideGate, gateView, pendingGates, rerunNode, stepRun } from "./sop-runs.ts";
+import { postGate, providerOf, syncGate } from "./sop-mr.ts";
 import { SopStore } from "./sop-store.ts";
 import {
   BUNDLE_ID_RE,
@@ -13,12 +14,12 @@ import {
   type SopNodeState,
 } from "./sop-types.ts";
 
-const SOP_COMMANDS = "list|show|validate|new|run|step|gate|rerun";
+const SOP_COMMANDS = "list|show|validate|new|run|step|gate|sync|rerun";
 const GATE_COMMANDS = "list|show|approve|reject|skip";
 
 const iso = (at: number): string => new Date(at).toISOString();
 
-export function runSop(d: Deps, a: Args, x: string | undefined): number {
+export async function runSop(d: Deps, a: Args, x: string | undefined): Promise<number> {
   const store = new SopStore(d.store.root);
   switch (x) {
     case "list":
@@ -34,7 +35,9 @@ export function runSop(d: Deps, a: Args, x: string | undefined): number {
     case "step":
       return step(store, need(a.pos[2], "run id"), need(a.pos[3], "node id"), a, d.now());
     case "gate":
-      return gate(store, a, d.now());
+      return gate(store, d, a, d.now());
+    case "sync":
+      return sync(store, d, need(a.pos[2], "run id"), a);
     case "rerun":
       return rerun(store, need(a.pos[2], "run id"), need(a.pos[3], "node id"), d.now());
     default:
@@ -104,10 +107,10 @@ function step(store: SopStore, runId: string, nodeId: string, a: Args, now: numb
   return 0;
 }
 
-function gate(store: SopStore, a: Args, now: number): number {
+async function gate(store: SopStore, d: Deps, a: Args, now: number): Promise<number> {
   const sub = need(a.pos[2], `gate command (${GATE_COMMANDS})`);
   if (sub === "list") return gateList(store, a, now);
-  if (sub === "show") return gateShow(store, need(a.pos[3], "run id"), need(a.pos[4], "node id"));
+  if (sub === "show") return gateShow(store, d, need(a.pos[3], "run id"), need(a.pos[4], "node id"), a);
   const runId = need(a.pos[3], "run id");
   const by = need(one(a, "by"), "--by <name>");
   if (sub === "approve") {
@@ -124,18 +127,27 @@ function gate(store: SopStore, a: Args, now: number): number {
   throw new Refusal(`unknown gate command ${sub}\n\ndori sop gate ${GATE_COMMANDS}`);
 }
 
-function gateShow(store: SopStore, runId: string, nodeId: string): number {
+async function gateShow(store: SopStore, d: Deps, runId: string, nodeId: string, a: Args): Promise<number> {
+  const provider = providerOf(one(a, "provider"));
   const view = gateView(store, runId, nodeId);
   console.log(`GATE ${view.run} sop=${view.sop} node=${view.node} state=${view.state}`);
   console.log(`bundle: ${view.bundle}`);
   const record = view.bundleRecord;
   if (record === undefined) {
     console.log(`WARN bundle missing: ${view.bundle}`);
+    for (const line of await postGate(d, store, runId, nodeId, provider)) console.log(line);
     return 0;
   }
   console.log(`repo: ${record.repo}`);
   console.log(`pr: ${record.pr === null ? "-" : `#${record.pr.number} ${record.pr.url}`}`);
+  for (const line of await postGate(d, store, runId, nodeId, provider)) console.log(line);
   return 0;
+}
+
+async function sync(store: SopStore, d: Deps, runId: string, a: Args): Promise<number> {
+  const outcome = await syncGate(d, store, runId, providerOf(one(a, "provider")), one(a, "by"));
+  for (const line of outcome.lines) console.log(line);
+  return outcome.code;
 }
 
 function gateList(store: SopStore, a: Args, now: number): number {
