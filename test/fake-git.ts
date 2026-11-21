@@ -12,6 +12,8 @@ export type Repo = {
   remotes?: Record<string, string>;
   mergeBase?: string;
   diff?: string;
+  /** Output of `diff --quiet <branch> HEAD`; empty means the same tree (a squash merge). Defaults to `diff`. */
+  contentDiff?: string;
   dirty?: string;
   /** false makes `merge-base --is-ancestor` say the branch does not descend. */
   ancestor?: boolean;
@@ -69,7 +71,12 @@ export function fakeGit(w: World, repo: Repo): void {
         : { code: 0, stdout: "", stderr: "" };
     if (cmd === "merge-base") return { code: 0, stdout: `${repo.mergeBase ?? repo.head}\n` };
     if (args.includes("diff") && args.includes("--diff-filter=U")) return { code: 0, stdout: repo.conflictFiles ?? "" };
-    if (args.includes("diff")) return { code: 0, stdout: repo.diff ?? defaultDiff };
+    if (args.includes("diff")) {
+      const out = (args.includes("--quiet") ? repo.contentDiff : undefined) ?? repo.diff ?? defaultDiff;
+      // `git diff --quiet` signals differences through its exit code, not its output.
+      if (args.includes("--quiet")) return { code: out.trim() === "" ? 0 : 1, stdout: "", stderr: "" };
+      return { code: 0, stdout: out };
+    }
     if (cmd === "merge") {
       const fails =
         repo.mergeFails !== undefined && (repo.mergeFailOn === undefined || args.includes(repo.mergeFailOn));
