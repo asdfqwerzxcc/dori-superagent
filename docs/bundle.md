@@ -34,5 +34,5 @@ dori bundle close <id> [--text T]       # PR 머지 후: 대표 이슈만 Closes
 
 ## 아직 없는 것
 
-- UI 없음(Gate inbox는 별도).
+- Gate inbox 화면 없음: 판단은 번들 MR 리뷰 화면에서 하고 `dori sop gate show`/`sync`가 근거와 영수증을 잇는다.
 - `land`는 포크만 대상으로 한다(업스트림 금지). `bundle/<id>`를 로컬에서만 유지하는 옵션은 없다.

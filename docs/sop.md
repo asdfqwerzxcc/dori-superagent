@@ -1,8 +1,9 @@
 # SOP 모델 + 게이트 큐 (v1)
 
-SOP는 "번들 하나를 어떤 순서로 굴리고, 어디서 사람이 멈추는가"를 파일로 고정한다. v1은 데이터와 CLI만
-소유한다. 화면, 보드 연동, 실제 에이전트 실행은 없다. 노드의 실행 자체는 사람이나 레인이
-`dori sop step`으로 보고한다.
+SOP는 "번들 하나를 어떤 순서로 굴리고, 어디서 사람이 멈추는가"를 파일로 고정한다. dori는 데이터와 CLI만
+소유하고 판단 화면은 만들지 않는다. 게이트의 판단 근거는 번들 MR의 코멘트로 게시되고(`gate show`),
+사람의 승인/변경 요청은 MR 리뷰로 남으며 `dori sop sync`가 그것을 영수증으로 기록한다. 노드의 실행 자체는
+사람이나 레인이 `dori sop step`으로 보고한다.
 
 ## 1. 파일
 
@@ -104,6 +105,25 @@ SOP는 "번들 하나를 어떤 순서로 굴리고, 어디서 사람이 멈추�
 모든 결정은 영수증을 남긴다. 파일에는 누가(`by`), 언제(`at`), 무엇을(`decision`), 어느
 런/번들/노드인지, 왜(`reason`, 거절/건너뜀)가 들어간다.
 
+### MR 리뷰가 판단 화면이다
+
+`dori sop gate show <run> <node>`는 게이트의 판단 근거(노드 체인과 노트, 번들 구성원과 영수증)를 출력한다.
+`--post`를 주면 그 근거를 번들 MR에 코멘트로 게시하고, 같은 게이트를 다시 부르면 새 코멘트를 만들지 않고 그
+코멘트를 갱신한다. `--post`가 없으면 gh/glab을 호출하지 않는다. 번들이 없거나 아직 MR이 없으면 게시를
+건너뛰고 그 이유만 출력한다.
+
+사람은 그 MR에서 승인하거나 변경 요청을 남긴다. `dori sop sync <run>`이 MR 리뷰 상태를 읽는다.
+
+| MR 리뷰 | 게이트가 `pending`일 때 | 게이트가 이미 결정됐을 때 |
+|---|---|---|
+| 최신 승인 | `approve`와 같은 영수증, 승인 노드 `done` | `approved`면 `in sync`, 아니면 `MISMATCH`(exit 1) |
+| 최신 변경 요청 | `reject`와 같은 영수증(사유=리뷰 본문) | `rejected`면 `in sync`, 아니면 `MISMATCH`(exit 1) |
+| 결정 없음 | `pending` 유지 | `mr=no-decision`만 보고 |
+
+작성자별 최신 리뷰 하나만 센다: 같은 사람이 변경 요청 뒤 승인하면 승인이다. `sync`가 쓴 영수증에는
+`source: "mr"`과 읽은 MR 주소(`mr`)가 추가된다. `sync`는 이미 결정된 게이트를 조용히 덮어쓰지 않는다.
+GitHub는 `gh`, GitLab은 `glab`을 쓰며 `--provider gh|glab`로 고른다(기본 `gh`).
+
 ### 정직성 규칙
 
 승인 노드는 `dori sop step`으로 바꿀 수 없다. 게이트 명령만 바꾼다. 터미널 노드를 `done`으로
@@ -132,18 +152,20 @@ dori sop new <id> --title T [--from bundle|<id>]
 dori sop run <id> --bundle <bundle-id>
 dori sop step <run> <node> --state <state> [--note T]
 dori sop gate list [--json]
-dori sop gate show <run> <node>
+dori sop gate show <run> <node> [--post] [--provider gh|glab]
 dori sop gate approve <run> --by <name> [--note T]
 dori sop gate reject <run> --by <name> --reason T
 dori sop gate skip <run> --by <name> --reason T
+dori sop sync <run> [--provider gh|glab] [--by NAME]
 dori sop rerun <run> <node>
 ```
 
 `new`의 기본 템플릿은 `bundle`(agent -> approval -> script)이고, 승인 노드의 `bundle`은 SOP id를 쓴다.
 `--from`에 기존 SOP id를 주면 그 정의를 복사해 새 id로 만든다. `run`은 모든 노드를 `waiting`으로 두고
 런 id를 출력한다. `gate list`는 `pending` 게이트만 보여주며 `--json`은 `{ "ok": true, "gates": [...] }`를
-출력한다. `gate show`는 그 승인 노드가 가리키는 `bundle: <id>`와 번들 기록의 `repo`/`pr`을 출력한다.
-번들 파일이 없으면 `bundle missing` 경고만 남기고 실패하지 않는다.
+출력한다. `gate show`는 그 승인 노드가 가리키는 `bundle: <id>`와 번들 기록의 `repo`/`pr`을 출력하고,
+`--post`가 있으면 판단 근거를 그 MR 코멘트로 게시한다. 번들 파일이 없으면 `bundle missing` 경고만 남기고
+게시를 건너뛴다. `sync`는 MR 리뷰를 읽어 게이트를 대조한다. 리뷰가 작성자를 밝히지 않으면 `--by`로 보완한다.
 
 예:
 
@@ -153,8 +175,9 @@ dori sop run bundle --bundle b-42
 dori sop step bundle-mbtx1 implement --state running
 dori sop step bundle-mbtx1 implement --state done --note "3 files, tests green"
 dori sop gate list
-dori sop gate show bundle-mbtx1 approve
+dori sop gate show bundle-mbtx1 approve --post
 dori sop gate approve bundle-mbtx1 --by lee --note "diff reviewed"
+dori sop sync bundle-mbtx1
 dori sop step bundle-mbtx1 verify --state running
 dori sop step bundle-mbtx1 verify --state done
 ```
@@ -164,6 +187,6 @@ dori sop step bundle-mbtx1 verify --state done
 - 파일 하나(`state/sop-runs.json`)를 읽고 고쳐 쓰는 단일 writer 모델이다. 동시 실행이 필요하면 잠금과
   이벤트 로그로 바꾼다.
 - 노드를 실제로 실행하지 않는다. 실행 주체가 `step`으로 보고한다.
-- UI, 보드 연동, 번들 도구(`dori bundle`)는 이번 범위가 아니다. 게이트 인박스는 이 파일과 CLI를
-  읽기/쓰기 API로 쓴다.
+- 커스텀 웹 UI는 만들지 않는다. 게이트 판단은 MR 리뷰·체크 화면을 그대로 쓰고, dori는 근거 게시와 영수증
+  기록만 한다. 보드 연동은 이번 범위가 아니다.
 - `dori review` / `dori merge`는 바뀌지 않았다.

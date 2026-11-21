@@ -60,7 +60,13 @@ export type SopReceipt = {
   at: number;
   reason?: string;
   note?: string;
+  /** `mr`: the decision was read from a PR/MR review by `dori sop sync`, and `mr` names that review surface. */
+  source?: "mr";
+  mr?: string;
 };
+
+/** Where a gate decision came from when it was not typed locally: the review surface `dori sop sync` read. */
+export type SopGateOrigin = { readonly source: "mr"; readonly mr: string };
 
 /** SOP ids become file names under `sops/`, so they may not contain a separator or start with a dot. */
 export const SOP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
