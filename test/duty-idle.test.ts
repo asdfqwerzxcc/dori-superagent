@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { dutyTick } from "../src/duty.ts";
 import { send } from "../src/inbox.ts";
 import { WORKING_STALE_MS } from "../src/lane-watch.ts";
-import { startLane } from "../src/lanes.ts";
+import { startLane, report } from "../src/lanes.ts";
 import { setup } from "./harness-setup.ts";
 
 const screen = (name: string) => Bun.file(join(import.meta.dir, "fixtures", "screens", `${name}.txt`)).text();
@@ -23,6 +23,7 @@ describe("a lane whose record says working while its pane is idle", () => {
     expect(await dutyTick(d)).toContainEqual({ pane: lane.paneId, action: "flushed" });
     expect(pane.received).toEqual(["hello"]);
     expect(d.store.lane("stuck")!.status).toBe("working");
+    expect(d.store.lane("stuck")!.watch).toBeDefined();
   });
 
   test("a pane that keeps printing holds the queue and is never demoted", async () => {
@@ -91,6 +92,23 @@ describe("a lane whose record says working while its pane is idle", () => {
       detail: "no output or file change for 5 min",
     });
     expect(d.store.lane("footer")!.status).toBe("waiting");
+  });
+
+  test("a demoted lane that reports again is promoted back to working", async () => {
+    const { w, d, brief } = setup();
+    const lane = await startLane(d, "resumed", brief, { group: "w1" });
+    const pane = w.panes.get(lane.paneId)!;
+    pane.status = "idle";
+    pane.screen = await screen("omo-idle-live-monitors");
+    w.clock = lane.createdAt;
+    expect(await dutyTick(d)).toEqual([]);
+    w.clock = lane.createdAt + 5 * 60_000;
+    expect(await dutyTick(d)).toContainEqual({ lane: "resumed", action: "demoted", detail: expect.any(String) });
+    expect(d.store.lane("resumed")!.status).toBe("waiting");
+    await report(d, "resumed", "checked the fixture again");
+    const record = d.store.lane("resumed")!;
+    expect(record.status).toBe("working");
+    expect(record.demotedAt).toBeUndefined();
   });
 
   test("a file written in the lane worktree counts as activity when the screen is still", async () => {

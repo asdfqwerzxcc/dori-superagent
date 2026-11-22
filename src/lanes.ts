@@ -137,10 +137,9 @@ export async function report(
   lane.log.push({ at: now, kind: "report", text });
   lane.lastActivityAt = now;
   lane.nudges = 0;
-  if (status) {
-    lane.status = status;
-    delete lane.demotedAt;
-  }
+  if (status) lane.status = status;
+  else if (lane.demotedAt !== undefined) lane.status = "working";
+  delete lane.demotedAt;
   d.store.saveLane(lane);
   void runHook(d, "onReport", { key, text, evidence: "" });
   return settled(tellLead(d, `[REPORT ${key}${status === "waiting" ? " WAITING" : ""}] ${text}`, key));
