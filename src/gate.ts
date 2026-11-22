@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { bundleGate } from "./bundles.ts";
 import { prompt, type Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
-import { loadHooks, substitute } from "./hooks.ts";
+import { loadHooks, loadReviewSettings, substitute } from "./hooks.ts";
 import type { MergeOutcome } from "./telemetry.ts";
 
 export type PrRef = { repo: string; number: number; id: string };
@@ -36,33 +36,52 @@ export async function review(
   // hooks.reviewCommand replaces the built-in reviewer; it must print a VERDICT line like the built-in one.
   const hook = loadHooks(d.store.root).reviewCommand;
   const sha = await headSha(d, pr);
-  const vars = { pr: pr.id, repo: pr.repo, number: String(pr.number), sha };
+  const view = JSON.parse(await gh(d, ["pr", "view", String(pr.number), "--repo", pr.repo, "--json", "title,body"]));
+  const diff = await gh(d, ["pr", "diff", String(pr.number), "--repo", pr.repo]);
+  const vars = {
+    pr: pr.id,
+    repo: pr.repo,
+    number: String(pr.number),
+    sha,
+    title: `${String(view.title ?? "")}\n\n${String(view.body ?? "")}`.trim(),
+    diff,
+  };
   const text = prompt("review.md", vars);
   const [cmd, ...argv] = hook
     ? substitute(hook, { ...vars, text })
     : [d.agentCmd, "-p", "--no-session", ...(model ? ["--model", model] : []), text];
   const res = await d.exec(cmd ?? d.agentCmd, argv);
-  const verdicts = [...res.stdout.matchAll(/^VERDICT:\s*(CLEAR|BLOCK)\b/gm)];
+  const first = [...res.stdout.matchAll(/^VERDICT:\s*(CLEAR|BLOCK)\b/gm)].at(-1);
+  // A reviewer that cannot answer is a provider problem, not a verdict: retry once on the configured fallback so a
+  // disabled or saturated primary never turns into a silent "no receipt" failure.
+  const fallback = hook === undefined ? loadReviewSettings(d.store.root).fallbackModel : undefined;
+  const retry =
+    first === undefined && fallback !== undefined && fallback !== model
+      ? await d.exec(d.agentCmd, ["-p", "--no-session", "--model", fallback, text]).catch(() => undefined)
+      : undefined;
+  const answered = retry ?? res;
+  const out = retry ? `${res.stdout}\n${retry.stdout}` : res.stdout;
+  const verdicts = [...answered.stdout.matchAll(/^VERDICT:\s*(CLEAR|BLOCK)\b/gm)];
   const last = verdicts.at(-1);
   if (!last) {
     const name = `${pr.id.replaceAll("/", "__").replace("#", "_")}@${sha}-${randomUUID()}.noverdict.txt`;
     const diagnostic = join(d.store.root, "receipts", name);
-    writeFileSync(diagnostic, res.stdout.split(/\r?\n/).slice(-200).join("\n"), { flag: "wx", mode: 0o600 });
+    writeFileSync(diagnostic, out.split(/\r?\n/).slice(-200).join("\n"), { flag: "wx", mode: 0o600 });
     const reason =
-      res.code === 0
+      answered.code === 0
         ? "reviewer printed no VERDICT line"
-        : `reviewer exited ${res.code}: ${res.stderr.trim() || "no VERDICT line in its output"}`;
+        : `reviewer exited ${answered.code}: ${answered.stderr.trim() || "no VERDICT line in its output"}`;
     throw new Error(`${reason}; no receipt written; reviewer output saved to ${diagnostic}`);
   }
-  if (res.code !== 0) throw new Error(`reviewer exited ${res.code}: ${res.stderr.trim()}`);
+  if (answered.code !== 0) throw new Error(`reviewer exited ${answered.code}: ${answered.stderr.trim()}`);
   const verdict = last[1] as "CLEAR" | "BLOCK";
   d.store.saveReceipt({
     pr: pr.id,
     sha,
     verdict,
-    model: hook ? "hook" : (model ?? "default"),
+    model: hook ? "hook" : retry ? `${fallback} (fallback)` : (model ?? "default"),
     at: d.now(),
-    summary: res.stdout.trim().slice(-4000),
+    summary: answered.stdout.trim().slice(-4000),
   });
   d.usage.record({ name: "dori.review_completed", verdict });
   return { verdict, sha };

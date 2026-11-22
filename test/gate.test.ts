@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { mergeGate, review } from "../src/gate.ts";
 import type { World } from "./fake.ts";
@@ -13,7 +13,9 @@ describe("review + merge gate", () => {
   const head = "a".repeat(40);
   function gh(w: World, checks: unknown[]) {
     w.gh = (argv) => {
-      if (argv[1] === "view") return { code: 0, stdout: JSON.stringify({ headRefOid: head }) };
+      if (argv[1] === "view")
+        return { code: 0, stdout: JSON.stringify({ headRefOid: head, title: "t", body: "b" }) };
+      if (argv[1] === "diff") return { code: 0, stdout: "diff --git a/x b/x\n+line\n" };
       if (argv[1] === "checks") return { code: 0, stdout: JSON.stringify(checks) };
       if (argv[1] === "merge") return { code: 0, stdout: "" };
       return { code: 1, stdout: "" };
@@ -48,6 +50,23 @@ describe("review + merge gate", () => {
       w.usage.filter((e) => e.name === "dori.merge_decided").map((e) => (e as { outcome: string }).outcome),
     ).toEqual(["no_receipt", "review_block", "no_checks", "checks_red", "checks_all_skipped", "merged"]);
     expect(w.usage.filter((e) => e.name === "dori.review_completed")).toHaveLength(2);
+  });
+
+  test("a reviewer that never answers is retried once on the configured fallback model", async () => {
+    const { w, d } = setup();
+    gh(w, []);
+    writeFileSync(
+      join(d.store.root, "config.json"),
+      JSON.stringify({ reviewModel: "primary/model", reviewFallbackModel: "fallback/model" }),
+    );
+    let call = 0;
+    w.reviewer = () =>
+      ++call === 1 ? { code: 0, stdout: "provider refused" } : { code: 0, stdout: "ok\nVERDICT: CLEAR" };
+    expect((await review(d, "o/r#9")).verdict).toBe("CLEAR");
+    expect(d.store.receipt("o/r#9", head)!.model).toBe("fallback/model (fallback)");
+    expect(w.calls.filter((c) => c.argv.includes("--model")).map((c) => c.argv[c.argv.indexOf("--model") + 1])).toEqual([
+      "fallback/model",
+    ]);
   });
 
   test("exit 0 without a VERDICT line: bounded stdout tail kept privately, no receipt", async () => {
