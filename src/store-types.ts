@@ -30,9 +30,20 @@ export type Lane = {
   createdAt: number;
   lastActivityAt: number;
   nudges: number;
+  /** Set when the duty loop demoted this lane for inactivity, so it keeps the nudge/escalation path. */
+  demotedAt?: number;
   final?: { text: string; evidence: string[]; at: number };
-  log: { at: number; kind: "start" | "report" | "ready" | "nudge" | "done" | "lost" | "dropped"; text: string }[];
+  /** The last pane output and checkout signature the duty loop saw, for demoting a stale `working` record. */
+  watch?: LaneWatch;
+  log: {
+    at: number;
+    kind: "start" | "report" | "ready" | "nudge" | "demoted" | "done" | "lost" | "dropped";
+    text: string;
+  }[];
 };
+
+/** `at`: when the current output/files snapshot was first seen; hashes, so the lane record stays small. */
+export type LaneWatch = { at: number; screen?: string; files?: string };
 
 /** The sessions `dori up` opens; roles.json maps each to a ref string (a bare herdr pane id, or `hc:t7`). */
 export type Role = "lead" | "duty" | "duty-loop" | "hourly-loop";

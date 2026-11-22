@@ -19,10 +19,19 @@ describe("omoScreenIdle (#62: herdr reports an omo with live monitors as working
     expect(omoScreenIdle("")).toBe(false);
   });
 
-  test("esc to interrupt anywhere, or an idle box scrolled up above other output, is not idle", async () => {
+  test("esc to interrupt or a spinner is busy; extra footer lines do not hide an idle box", async () => {
     const idle = await screen("omo-idle-live-monitors");
-    expect(omoScreenIdle("── • Working (9s • esc to interrupt) ──\n" + idle)).toBe(false);
-    expect(omoScreenIdle(idle + "\n".repeat(2) + ["more", "output", "below", "the", "box"].join("\n"))).toBe(false);
+    expect(omoScreenIdle(`── • Working (9s • esc to interrupt) ──\n${idle}`)).toBe(false);
+    expect(omoScreenIdle(`⠋ working\n${idle}`)).toBe(false);
+    const footer = [
+      "Tip: /reflect reviews the session now.",
+      "(2h 14m)",
+      "~/work/project • CH42% • $0.120 • 90K/1M (9.0%) (auto) • effort high (shift+tab)",
+    ].join("\n");
+    expect(omoScreenIdle(`${idle}\n${footer}`)).toBe(true);
+    expect(omoScreenIdle(`${footer}\n${idle}`)).toBe(true);
+    const unknown = ["more", "output", "below", "the", "box"].join("\n");
+    expect(omoScreenIdle(`${idle}\n${unknown}`)).toBe(false);
   });
 
   test("probe of a working pane reads 30 recent lines and reports idle only for an idle omo screen", async () => {
