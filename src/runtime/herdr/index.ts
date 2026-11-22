@@ -20,7 +20,7 @@ import { close, create, createGroup, type Env, list, self, start } from "./sessi
 
 export type { Sleep } from "./deliver.ts";
 export { HerdrError } from "./exec.ts";
-export { omoScreenIdle } from "./probe.ts";
+export { omoScreenIdle } from "../screen.ts";
 
 export type HerdrOptions = { readonly env?: Env; readonly sleep?: Sleep };
 

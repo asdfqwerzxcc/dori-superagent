@@ -1,31 +1,11 @@
 import { interactiveShellInFront } from "../foreground.ts";
+import { omoScreenIdle, SCREEN_LINES } from "../screen.ts";
 import type { AgentStatus, ForegroundProcess, Probe } from "../types.ts";
 import { type HerdrCli, reasonOf, ToolError } from "./exec.ts";
 
-const INPUT_RULE = /^─{10,}$/;
-/** Lines omo prints below its input box (cwd/model line, status line); more than this and the box is not at the bottom. */
-const FOOTER_MAX_LINES = 3;
-/** Recent lines read to look for omo's idle input box. */
-const SCREEN_LINES = 30;
 /** What a failed lookup means outside a delivery: the status is read as doubt, and nothing is held by the probe itself. */
 const AS_DOUBT = "status read as doubt";
 const HERDR_STATES: ReadonlySet<string> = new Set(["idle", "working", "blocked", "done"]);
-
-/**
- * True only when an omo screen positively shows its idle input at the bottom: a bare rule, an empty `❯`
- * line, a bare rule, and no `esc to interrupt` anywhere. Anything else (a turn, a dialog, a draft in the
- * input, an unknown layout) is false, so the caller keeps queueing. Stopgap for #62: herdr reports an omo
- * whose live monitors or background cells are running as `working` even between turns.
- */
-export function omoScreenIdle(screen: string): boolean {
-  if (screen.includes("esc to interrupt")) return false;
-  const lines = screen.split("\n").map((l) => l.trimEnd());
-  while (lines.length > 0 && lines.at(-1) === "") lines.pop();
-  const input = lines.lastIndexOf("❯");
-  if (input < 1 || input + 1 >= lines.length) return false;
-  if (!INPUT_RULE.test(lines[input - 1] ?? "") || !INPUT_RULE.test(lines[input + 1] ?? "")) return false;
-  return lines.length - 1 - (input + 1) <= FOOTER_MAX_LINES;
-}
 
 export type PaneAgent = { status: AgentStatus; agent?: string; title?: string; cwd?: string };
 

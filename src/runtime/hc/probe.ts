@@ -1,12 +1,10 @@
 import { interactiveShellInFront } from "../foreground.ts";
-import { omoScreenIdle } from "../herdr/probe.ts";
+import { omoScreenIdle, SCREEN_LINES } from "../screen.ts";
 import type { AgentStatus, ForegroundProcess, Probe } from "../types.ts";
 import type { Exec } from "../exec.ts";
 import { hcCall, isKind } from "./exec.ts";
 
 /** Recent lines read to look for omo's idle input box (the same window the herdr runtime reads). */
-const SCREEN_LINES = 30;
-
 const REPORTED: ReadonlySet<string> = new Set(["idle", "working", "blocked", "error", "done"]);
 
 const rec = (value: unknown): Record<string, unknown> | undefined =>

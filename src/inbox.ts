@@ -4,6 +4,7 @@ import { Refusal } from "./refusal.ts";
 import { resolveLiveTarget, StaleRole } from "./target.ts";
 import { refText } from "./refs.ts";
 import type { AgentStatus, SessionRef } from "./runtime/types.ts";
+import { omoScreenIdle, SCREEN_LINES } from "./runtime/screen.ts";
 import { migrating } from "./store-journal.ts";
 import type { DeliveryAttempt, QueuedMessage } from "./store-types.ts";
 
@@ -91,8 +92,16 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
   const queued = all.filter((m) => m.attempt?.state !== "ambiguous");
   const rt = d.runtimes.for(ref);
   // The probe carries the #62 screen check on herdr: an omo with live monitors between turns reads idle.
-  // Its live status is the whole readiness gate: a stale `working` lane record never holds a message this pane can read.
-  const { status } = await rt.probe(ref);
+  // Its live status is the readiness gate; a stale `working` lane record never holds a message this pane can read.
+  let { status } = await rt.probe(ref);
+  // A runtime word that lags the screen (live monitors, #62/#178): a positive idle box is the pane's real signal.
+  if (status === "working") {
+    try {
+      if (omoScreenIdle(await rt.read(ref, SCREEN_LINES))) status = "idle";
+    } catch {
+      // A failed read is doubt: the message stays queued.
+    }
+  }
   // Before the held check, so a gone session with only held messages says so instead of delivery-ambiguous forever (#108).
   if (status === "gone") throw new Refusal(`pane ${refText(ref)} is gone; ${all.length} message(s) kept in its inbox`);
   if (queued.length === 0) return "held";
