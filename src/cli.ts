@@ -18,7 +18,7 @@ import { runDoctor } from "./doctor.ts";
 import { queueLaneReview, reviewJobId } from "./review-queue.ts";
 import { need, one, parse, textOf, USAGE } from "./cli-args.ts";
 import { defaultDeps, ROLES, type Deps } from "./harness.ts";
-import { ConfigError, hooksSettled } from "./hooks.ts";
+import { ConfigError, hooksSettled, loadReviewSettings } from "./hooks.ts";
 import { send, type SendResult } from "./inbox.ts";
 import { inboxList, releaseHeld, sendToShell } from "./inbox-held.ts";
 import { Refusal } from "./refusal.ts";
@@ -179,7 +179,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
         console.log(`REVIEW_LANE ${lane} tip=${r.tip} verdict=${r.verdict}`);
         return r.verdict === "CLEAR" ? 0 : 1;
       }
-      const r = await review(d, need(x, "PR"), one(a, "model"));
+      const r = await review(d, need(x, "PR"), one(a, "model") ?? loadReviewSettings(d.store.root).fallbackModel);
       console.log(`REVIEW ${x} head=${r.sha} verdict=${r.verdict}`);
       return r.verdict === "CLEAR" ? 0 : 1;
     }
