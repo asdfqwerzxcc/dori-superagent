@@ -49,7 +49,7 @@ export async function review(
   const text = prompt("review.md", vars);
   const [cmd, ...argv] = hook
     ? substitute(hook, { ...vars, text })
-    : [d.agentCmd, "-p", "--no-session", ...(model ? ["--model", model] : []), text];
+    : [d.agentCmd, "-p", "--no-session", "-nt", ...(model ? ["--model", model] : []), text];
   const res = await d.exec(cmd ?? d.agentCmd, argv);
   const first = [...res.stdout.matchAll(/^VERDICT:\s*(CLEAR|BLOCK)\b/gm)].at(-1);
   // A reviewer that cannot answer is a provider problem, not a verdict: retry once on the configured fallback so a
