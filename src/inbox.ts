@@ -91,6 +91,7 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
   const queued = all.filter((m) => m.attempt?.state !== "ambiguous");
   const rt = d.runtimes.for(ref);
   // The probe carries the #62 screen check on herdr: an omo with live monitors between turns reads idle.
+  // Its live status is the whole readiness gate: a stale `working` lane record never holds a message this pane can read.
   const { status } = await rt.probe(ref);
   // Before the held check, so a gone session with only held messages says so instead of delivery-ambiguous forever (#108).
   if (status === "gone") throw new Refusal(`pane ${refText(ref)} is gone; ${all.length} message(s) kept in its inbox`);

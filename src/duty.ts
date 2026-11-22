@@ -2,6 +2,7 @@ import { DeliveryUncertain, failureDetail } from "./delivery.ts";
 import { type Deps, prompt } from "./harness.ts";
 import { runHook } from "./hooks.ts";
 import { flushInbox, sendOrThrow, tellLead } from "./inbox.ts";
+import { nextWatch, observe, WORKING_STALE_MS } from "./lane-watch.ts";
 import { Refusal } from "./refusal.ts";
 import { refText, sameSession } from "./refs.ts";
 import { drainReviewQueue } from "./review-queue.ts";
@@ -54,8 +55,7 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
           d.store.saveInbox(ref, []);
           events.push({ pane: paneId, action: "inbox-dropped", detail: `${dropped} message(s) for a closed target` });
         }
-      }
-      else if (e instanceof DeliveryUncertain && !e.typed)
+      } else if (e instanceof DeliveryUncertain && !e.typed)
         events.push({ pane: paneId, action: "delivery-ambiguous", detail: failureDetail(e) });
       else events.push({ pane: paneId, action: "flush-failed", detail: failureDetail(e) });
     }
@@ -65,7 +65,7 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
     try {
       const { status: st } = await d.runtimes.for(listed.sessionRef).probe(listed.sessionRef);
       // Re-read right before deciding and saving: a report, a READY or a migration may have landed during the probe.
-      const lane = d.store.lane(listed.key);
+      let lane = d.store.lane(listed.key);
       if (lane === undefined || !watched(lane) || lane.sessionRef.id !== listed.sessionRef.id) continue;
       const now = d.now();
       if (st === "gone") {
@@ -77,11 +77,20 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
         events.push({ lane: lane.key, action: "lost" });
         continue;
       }
-      if (st === "working") {
-        lane.lastActivityAt = now;
-        d.store.saveLane(lane);
-        continue;
+      if (lane.status === "working") {
+        if (await settleWorking(d, lane, st === "working", now)) {
+          events.push({
+            lane: lane.key,
+            action: "demoted",
+            detail: `no output or file change for ${WORKING_STALE_MS / 60_000} min`,
+          });
+          continue;
+        }
+        const reread = d.store.lane(lane.key);
+        if (reread === undefined || !watched(reread) || reread.sessionRef.id !== lane.sessionRef.id) continue;
+        lane = reread;
       }
+      if (st === "working") continue;
       if (lane.status === "waiting" || st === "blocked" || st === "error") continue;
       const idleMin = (now - lane.lastActivityAt) / 60_000;
       const due = NUDGE_MINUTES[lane.nudges];
@@ -127,4 +136,48 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
     lost: count((a) => a === "lost"),
   });
   return events;
+}
+
+/**
+ * The pane's word is a hint: a lane record can keep saying `working` long after its pane went quiet. Output and files
+ * are the evidence, and a working lane whose evidence stopped moving for WORKING_STALE_MS is demoted to `waiting`.
+ * Returns true when it was demoted. With no readable signal, a pane that says working counts as activity (as before)
+ * and an idle one is left alone, so its idle minutes still accumulate for the nudges.
+ */
+async function settleWorking(d: Deps, lane: Lane, paneWorking: boolean, now: number): Promise<boolean> {
+  const seen = await observe(d, lane);
+  // The read is async: a report, a READY or a migration may have landed meanwhile, and must not be overwritten.
+  const current = d.store.lane(lane.key);
+  if (
+    current === undefined ||
+    current.status !== "working" ||
+    !watched(current) ||
+    current.sessionRef.id !== lane.sessionRef.id ||
+    current.lastActivityAt !== lane.lastActivityAt ||
+    current.watch?.at !== lane.watch?.at
+  )
+    return false;
+  const next = nextWatch(current, seen, now);
+  if (next === undefined) {
+    if (!paneWorking) return false;
+    current.lastActivityAt = now;
+    d.store.saveLane(current);
+    return false;
+  }
+  if (next.moved || current.watch === undefined) {
+    current.watch = next.watch;
+    if (next.moved) current.lastActivityAt = now;
+    d.store.saveLane(current);
+    return false;
+  }
+  if (now - Math.max(next.watch.at, current.lastActivityAt) < WORKING_STALE_MS) return false;
+  current.status = "waiting";
+  delete current.watch;
+  current.log.push({
+    at: now,
+    kind: "demoted",
+    text: `no pane output or file change for ${WORKING_STALE_MS / 60_000} min`,
+  });
+  d.store.saveLane(current);
+  return true;
 }
