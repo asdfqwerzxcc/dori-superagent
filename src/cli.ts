@@ -179,7 +179,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
         console.log(`REVIEW_LANE ${lane} tip=${r.tip} verdict=${r.verdict}`);
         return r.verdict === "CLEAR" ? 0 : 1;
       }
-      const r = await review(d, need(x, "PR"), one(a, "model") ?? loadReviewSettings(d.store.root).fallbackModel);
+      const r = await review(d, need(x, "PR"), one(a, "model") ?? loadReviewSettings(d.store.root).model);
       console.log(`REVIEW ${x} head=${r.sha} verdict=${r.verdict}`);
       return r.verdict === "CLEAR" ? 0 : 1;
     }
