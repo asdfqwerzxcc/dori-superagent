@@ -110,6 +110,7 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "online",
   "ready",
   "post",
+  "attest",
 ]);
 
 export function parse(argv: readonly string[]): Args {

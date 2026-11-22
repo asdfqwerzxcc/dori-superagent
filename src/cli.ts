@@ -12,7 +12,7 @@ import { done, ready, report, startLane } from "./lanes.ts";
 import { runLabels } from "./labels.ts";
 import { runStale } from "./stale.ts";
 import { listWorktrees, pruneWorktrees } from "./worktrees.ts";
-import { mergeGate, review } from "./gate.ts";
+import { attest, mergeGate, review } from "./gate.ts";
 import { reviewLane } from "./lane-review.ts";
 import { runDoctor } from "./doctor.ts";
 import { queueLaneReview, reviewJobId } from "./review-queue.ts";
@@ -179,8 +179,21 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
         console.log(`REVIEW_LANE ${lane} tip=${r.tip} verdict=${r.verdict}`);
         return r.verdict === "CLEAR" ? 0 : 1;
       }
-      const r = await review(d, need(x, "PR"), one(a, "model") ?? loadReviewSettings(d.store.root).model);
-      console.log(`REVIEW ${x} head=${r.sha} verdict=${r.verdict}`);
+      const prId = need(x, "PR");
+      if (a.flags.has("attest")) {
+        const verdict = one(a, "verdict");
+        if (verdict !== "CLEAR" && verdict !== "BLOCK") throw new Refusal("--attest needs --verdict CLEAR|BLOCK");
+        const r = await attest(d, prId, {
+          verdict,
+          reviewer: need(one(a, "reviewer"), "--reviewer"),
+          summary: one(a, "summary"),
+          evidence: a.flags.get("evidence") ?? [],
+        });
+        console.log(`ATTESTED ${prId} head=${r.sha} verdict=${r.verdict}`);
+        return r.verdict === "CLEAR" ? 0 : 1;
+      }
+      const r = await review(d, prId, one(a, "model") ?? loadReviewSettings(d.store.root).model);
+      console.log(`REVIEW ${prId} head=${r.sha} verdict=${r.verdict}`);
       return r.verdict === "CLEAR" ? 0 : 1;
     }
     case "merge": {

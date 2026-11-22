@@ -26,6 +26,29 @@ export async function headSha(d: Deps, pr: PrRef): Promise<string> {
   return String(out.headRefOid);
 }
 
+/** Records a receipt for a review that already happened elsewhere (a gate-reviewer subagent, a human, an external tool).
+ * The built-in reviewer spawns `omo -p`, which stalls on long prompts on this host, so this is the reliable path: the
+ * caller names the reviewer and the evidence it rested on, and the receipt still binds to the PR's exact head. */
+export async function attest(
+  d: Deps,
+  prId: string,
+  opts: { verdict: "CLEAR" | "BLOCK"; reviewer: string; summary?: string; evidence: readonly string[] },
+): Promise<{ verdict: "CLEAR" | "BLOCK"; sha: string }> {
+  const pr = parsePr(prId);
+  const sha = await headSha(d, pr);
+  if (opts.evidence.length === 0) throw new Refusal("--attest needs at least one --evidence link (task id, path or url)");
+  d.store.saveReceipt({
+    pr: pr.id,
+    sha,
+    verdict: opts.verdict,
+    model: `attested: ${opts.reviewer}`,
+    at: d.now(),
+    summary: [opts.summary ?? "", ...opts.evidence].filter(Boolean).join("\n"),
+  });
+  d.usage.record({ name: "dori.review_completed", verdict: opts.verdict });
+  return { verdict: opts.verdict, sha };
+}
+
 /** Runs a fresh, non-interactive reviewer session pinned to the PR head and records its verdict as a receipt. */
 export async function review(
   d: Deps,
