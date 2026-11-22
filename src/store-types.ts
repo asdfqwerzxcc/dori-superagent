@@ -30,6 +30,8 @@ export type Lane = {
   createdAt: number;
   lastActivityAt: number;
   nudges: number;
+  /** Set when the duty loop demoted this lane for inactivity, so it keeps the nudge/escalation path. */
+  demotedAt?: number;
   final?: { text: string; evidence: string[]; at: number };
   /** The last pane output and checkout signature the duty loop saw, for demoting a stale `working` record. */
   watch?: LaneWatch;

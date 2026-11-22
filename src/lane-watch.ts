@@ -29,6 +29,25 @@ export type Seen = { readonly screen?: string; readonly files?: string };
 
 const digest = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 16);
 
+const INPUT = /^❯/;
+const RULE = /^─{10,}$/;
+
+/**
+ * The screen above omo's input box: agent output lives there, and the box is the `❯` line followed by a bare rule.
+ * A footer below it (relative age, monitor count) redraws without new output and must not look like one.
+ */
+export function outputRegion(screen: string): string {
+  const lines = screen.split("\n").map((line) => line.trimEnd());
+  for (let i = lines.length - 1; i > 0; i--) {
+    if (!INPUT.test(lines[i] ?? "") || !RULE.test(lines[i + 1] ?? "")) continue;
+    return lines
+      .slice(0, i - 1)
+      .join("\n")
+      .trimEnd();
+  }
+  return lines.join("\n").trimEnd();
+}
+
 /**
  * One signature of the lane's checkout: how many files it holds and the newest mtime among them. A file written,
  * added or removed changes it; nothing else does. Undefined without a worktree or when no file can be read.
@@ -71,7 +90,7 @@ export function checkoutStamp(root: string | undefined): string | undefined {
 export async function observe(d: Deps, lane: Lane): Promise<Seen> {
   let screen: string | undefined;
   try {
-    screen = digest(await d.runtimes.for(lane.sessionRef).read(lane.sessionRef, SCREEN_LINES));
+    screen = digest(outputRegion(await d.runtimes.for(lane.sessionRef).read(lane.sessionRef, SCREEN_LINES)));
   } catch {
     screen = undefined;
   }

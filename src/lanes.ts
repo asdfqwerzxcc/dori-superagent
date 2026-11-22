@@ -4,7 +4,16 @@ import { shq } from "./delivery.ts";
 import { prompt, type Deps } from "./harness.ts";
 import { laneGate } from "./lane-gate.ts";
 import { repoHead, resolveLaneRepo } from "./lane-repo.ts";
-import { assertCleanWorktree, createLaneWorktree, discardWorktree, dropLane, landWorktree, paneWorktreeMismatch, rebaseLaneWorktree, worktreeRoot } from "./lane-worktree.ts";
+import {
+  assertCleanWorktree,
+  createLaneWorktree,
+  discardWorktree,
+  dropLane,
+  landWorktree,
+  paneWorktreeMismatch,
+  rebaseLaneWorktree,
+  worktreeRoot,
+} from "./lane-worktree.ts";
 import { settled, tellLead, type SendResult } from "./inbox.ts";
 import { Refusal } from "./refusal.ts";
 import { runHook } from "./hooks.ts";
@@ -128,7 +137,10 @@ export async function report(
   lane.log.push({ at: now, kind: "report", text });
   lane.lastActivityAt = now;
   lane.nudges = 0;
-  if (status) lane.status = status;
+  if (status) {
+    lane.status = status;
+    delete lane.demotedAt;
+  }
   d.store.saveLane(lane);
   void runHook(d, "onReport", { key, text, evidence: "" });
   return settled(tellLead(d, `[REPORT ${key}${status === "waiting" ? " WAITING" : ""}] ${text}`, key));

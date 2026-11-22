@@ -37,7 +37,7 @@ describe("a lane whose record says working while its pane is idle", () => {
       return dutyTick(d);
     };
     expect(await at(0)).toEqual([]);
-    pane.screen = `${await screen("omo-turn")}\n## Progress\n 5 of 9 files read`;
+    pane.screen = `## Progress\n 5 of 9 files read\n${await screen("omo-turn")}`;
     expect(await at(6)).toEqual([]);
     expect(pane.received).toEqual([]);
     expect(d.store.queued(lane.sessionRef).map((m) => m.text)).toEqual(["hello"]);
@@ -68,6 +68,29 @@ describe("a lane whose record says working while its pane is idle", () => {
     expect(record.status).toBe("waiting");
     expect(record.log.at(-1)).toMatchObject({ kind: "demoted" });
     expect(record.log.at(-1)!.text).toContain("5 min");
+    pane.status = "idle";
+    w.clock = lane.createdAt + 10 * 60_000;
+    expect(await dutyTick(d)).toContainEqual({ lane: "stalled", action: "nudge-1" });
+    expect(pane.received.at(-1)).toContain("idle for 10 minutes");
+  });
+
+  test("a redrawing footer is not output: a quiet lane is still demoted at 5 minutes", async () => {
+    const { w, d, brief } = setup();
+    const lane = await startLane(d, "footer", brief, { group: "w1" });
+    const pane = w.panes.get(lane.paneId)!;
+    pane.status = "idle";
+    const idle = await screen("omo-idle-live-monitors");
+    pane.screen = idle;
+    w.clock = lane.createdAt;
+    expect(await dutyTick(d)).toEqual([]);
+    pane.screen = idle.replace("3m ago", "4m ago").replace("12h 58m", "13h 3m");
+    w.clock = lane.createdAt + 5 * 60_000;
+    expect(await dutyTick(d)).toContainEqual({
+      lane: "footer",
+      action: "demoted",
+      detail: "no output or file change for 5 min",
+    });
+    expect(d.store.lane("footer")!.status).toBe("waiting");
   });
 
   test("a file written in the lane worktree counts as activity when the screen is still", async () => {
