@@ -5,8 +5,8 @@ import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Exec } from "./runtime/exec.ts";
 
-/** The default reviewer deadline: long enough for a real review, short enough that a hung provider fails the lane. */
-export const REVIEW_TIMEOUT_MS = 600_000;
+/** The default reviewer deadline: long enough for a real review of a large diff (the design lanes take 11-16 minutes), short enough that a hung provider still fails the lane. */
+export const REVIEW_TIMEOUT_MS = 1_800_000;
 /** How often a still-running reviewer says so, so a lead can tell "slow" from "dead". */
 export const REVIEW_PROGRESS_MS = 30_000;
 /** After the kill, how long to wait for the process to report an exit code; the timeout stands either way. */
