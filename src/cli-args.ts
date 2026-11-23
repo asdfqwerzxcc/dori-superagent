@@ -55,12 +55,16 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
                                              record a review done elsewhere as the receipt (no child process)
   dori review --lane <key> [--model M]        queue the lane's own diff for dori duty -> QUEUED <key> <tip> <job>;
                                               with no duty loop running, review it inline now -> lane receipt
+  dori merge <lane-key|lane/key> [--dry-run]  default gate: CLEAR lane receipt at the head -> push lane/<key> to the
+                                              lane repo's own remote (fork when present, else origin) -> PR against
+                                              main -> merge commit -> delete the remote branch
   dori merge <owner/repo#N> [--dry-run] [--bundle <id>]
-                                              CLEAR receipt at head (or every bundle member CLEAR) + green checks -> squash merge
+                                              explicit bundle mode: CLEAR receipt at head (or every member CLEAR)
+                                              + green checks -> squash merge
   dori bundle open <id> --title T [--issue N] [--repo owner/name]
   dori bundle add <id> <lane-key>...          only when the lane receipt is CLEAR at the current lane/<key> head
   dori bundle list [<id>] [--json]            bundles under state/bundles/<id>.json
-  dori bundle land <id> [--dry-run]           bundle/<id> from main (members merged --no-ff) + fork PR
+  dori bundle land <id> [--dry-run]           bundle/<id> from main (members merged --no-ff) + fork PR (explicit mode)
   dori bundle close <id> [--text T]           after the PR merges: verify only issue N is Closes, comment Refs
   dori bundle show <id> [--json]
   dori done <key> [--rebase]                  lead closes a READY lane; needs a CLEAR lane receipt unless it committed nothing

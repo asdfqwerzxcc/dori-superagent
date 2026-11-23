@@ -9,8 +9,13 @@ import type { MergeOutcome } from "./telemetry.ts";
 
 export type PrRef = { repo: string; number: number; id: string };
 
+const PR_ID_RE = /^([\w.-]+\/[\w.-]+)#(\d+)$/;
+
+/** A PR id (`owner/repo#123`) and a lane key never overlap: a key cannot contain `/` or `#`. */
+export const isPrId = (s: string): boolean => PR_ID_RE.test(s);
+
 export function parsePr(s: string): PrRef {
-  const m = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(s);
+  const m = PR_ID_RE.exec(s);
   if (!m) throw new Refusal(`PR must look like owner/repo#123, got ${s}`);
   return { repo: m[1]!, number: Number(m[2]), id: s };
 }
@@ -36,7 +41,8 @@ export async function attest(
 ): Promise<{ verdict: "CLEAR" | "BLOCK"; sha: string }> {
   const pr = parsePr(prId);
   const sha = await headSha(d, pr);
-  if (opts.evidence.length === 0) throw new Refusal("--attest needs at least one --evidence link (task id, path or url)");
+  if (opts.evidence.length === 0)
+    throw new Refusal("--attest needs at least one --evidence link (task id, path or url)");
   d.store.saveReceipt({
     pr: pr.id,
     sha,

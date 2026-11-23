@@ -12,8 +12,9 @@ import { done, ready, report, startLane } from "./lanes.ts";
 import { runLabels } from "./labels.ts";
 import { runStale } from "./stale.ts";
 import { listWorktrees, pruneWorktrees } from "./worktrees.ts";
-import { attest, mergeGate, review } from "./gate.ts";
+import { attest, isPrId, mergeGate, review } from "./gate.ts";
 import { reviewLane } from "./lane-review.ts";
+import { mergeLane } from "./lane-land.ts";
 import { runDoctor } from "./doctor.ts";
 import { queueLaneReview, reviewJobId } from "./review-queue.ts";
 import { need, one, parse, textOf, USAGE } from "./cli-args.ts";
@@ -183,10 +184,11 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       if (a.flags.has("attest")) {
         const verdict = one(a, "verdict");
         if (verdict !== "CLEAR" && verdict !== "BLOCK") throw new Refusal("--attest needs --verdict CLEAR|BLOCK");
+        const summary = one(a, "summary");
         const r = await attest(d, prId, {
           verdict,
           reviewer: need(one(a, "reviewer"), "--reviewer"),
-          summary: one(a, "summary"),
+          ...(summary === undefined ? {} : { summary }),
           evidence: a.flags.get("evidence") ?? [],
         });
         console.log(`ATTESTED ${prId} head=${r.sha} verdict=${r.verdict}`);
@@ -198,11 +200,18 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     }
     case "merge": {
       const bundle = one(a, "bundle");
+      const lane = one(a, "lane");
+      const dryRun = one(a, "dry-run") === "true";
+      if (lane !== undefined && x !== undefined) throw new Refusal("give a lane key or --lane, not both");
+      const target = lane ?? x;
+      if (target !== undefined && !isPrId(target)) {
+        if (bundle !== undefined) throw new Refusal("--bundle needs a PR id: dori merge <owner/repo#N> --bundle <id>");
+        const key = target.startsWith("lane/") ? target.slice("lane/".length) : target;
+        for (const line of await mergeLane(d, key, { dryRun })) console.log(line);
+        return 0;
+      }
       console.log(
-        await mergeGate(d, need(x, "PR"), {
-          dryRun: one(a, "dry-run") === "true",
-          ...(bundle === undefined ? {} : { bundle }),
-        }),
+        await mergeGate(d, need(target, "PR or lane key"), { dryRun, ...(bundle === undefined ? {} : { bundle }) }),
       );
       return 0;
     }

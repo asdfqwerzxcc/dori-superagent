@@ -15,6 +15,7 @@ import { setup } from "./harness-setup.ts";
 const passing = (): DoctorProbes => ({
   runtime: async () => ({ status: "PASS", detail: "bun 1.4.4" }),
   git: async () => ({ status: "PASS", detail: "clean worktree" }),
+  mergeGuard: async () => ({ status: "PASS", detail: "main matches origin/main" }),
   home: async () => ({ status: "PASS", detail: "home ok" }),
   session: async () => ({ status: "PASS", detail: "herdr running" }),
   agent: async () => ({ status: "PASS", detail: "omo configured" }),
@@ -37,10 +38,11 @@ test("--json prints one report with the documented shape and exits 0 when nothin
   expect(report.schemaVersion).toBe(1);
   expect(report.online).toBe(false);
   expect(report.ok).toBe(true);
-  expect(report.summary).toEqual({ pass: 9, warn: 0, fail: 0 });
+  expect(report.summary).toEqual({ pass: 10, warn: 0, fail: 0 });
   expect(report.checks.map((check) => check.id)).toEqual([
     "runtime",
     "git",
+    "mergeGuard",
     "home",
     "session",
     "agent",
@@ -60,12 +62,12 @@ test("a FAIL check exits 1 and a WARN check still exits 0", async () => {
   const failed = await runJson({ ...passing(), runtime: async () => ({ status: "FAIL", detail: "bun missing" }) });
   expect(failed.code).toBe(1);
   expect(failed.report.ok).toBe(false);
-  expect(failed.report.summary).toEqual({ pass: 8, warn: 0, fail: 1 });
+  expect(failed.report.summary).toEqual({ pass: 9, warn: 0, fail: 1 });
 
   const warned = await runJson({ ...passing(), git: async () => ({ status: "WARN", detail: "not a repo" }) });
   expect(warned.code).toBe(0);
   expect(warned.report.ok).toBe(true);
-  expect(warned.report.summary).toEqual({ pass: 8, warn: 1, fail: 0 });
+  expect(warned.report.summary).toEqual({ pass: 9, warn: 1, fail: 0 });
 });
 
 test("text output is a PASS/WARN/FAIL table with hints and a summary", async () => {
@@ -79,7 +81,7 @@ test("text output is a PASS/WARN/FAIL table with hints and a summary", async () 
   expect(lines[0]).toBe("dori doctor (offline)");
   expect(lines.some((line) => line.startsWith("WARN  git"))).toBe(true);
   expect(lines.some((line) => line.includes("hint: cd into one"))).toBe(true);
-  expect(lines.at(-1)).toBe("SUMMARY pass=8 warn=1 fail=0");
+  expect(lines.at(-1)).toBe("SUMMARY pass=9 warn=1 fail=0");
 });
 
 test("a probe that throws becomes a FAIL check instead of ending the run", async () => {

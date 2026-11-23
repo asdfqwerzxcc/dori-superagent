@@ -1,4 +1,4 @@
-# 표준 워크플로우 (모든 프로젝트 공통) — 2026-11-20 확정
+# 표준 워크플로우 (모든 프로젝트 공통) — 2026-11-23 갱신
 
 Lee: "이게 나의 정형적인 워크플로우가 될 거야. 어떠한 프로젝트를 해도 지금 dori 쪽에 반영하는 것은 **테스트하면서 맞춘다**고 생각하자."
 
@@ -8,49 +8,42 @@ Lee: "이게 나의 정형적인 워크플로우가 될 거야. 어떠한 프로
 
 | 단위 | 무엇 | 어디에 있나 |
 |---|---|---|
-| **로컬 PR** | 레인 하나 = 워크트리 + 브랜치 + 영수증 | 로컬(`worktrees/<key>`), 원격 없음 |
-| **번들** | 관련 로컬 PR 묶음(최대 10) | `bundle/<id>` 통합 브랜치 |
-| **MR** | 번들 1개 = MR 1개 | 우리 포크 `fork:main` |
-| **게이트** | 번들 1개 = 사람 승인 1회 | 리뷰 영수증 + CI |
+| **레인** | 레인 하나 = 워크트리 + 브랜치 + 영수증 | `worktrees/<key>`, 브랜치 `lane/<key>` |
+| **레인 PR(기본)** | 레인 1개 = PR 1개 = 게이트 1회 | `lane/<key>` → 레인 레포의 main |
+| **번들(선택)** | 여러 레인을 한 PR로 묶을 때만 | `bundle/<id>` 통합 브랜치 → 레인 레포의 main |
+| **게이트** | 레인별 리뷰 영수증 | `dori review --lane <key>` → `dori merge <key>` |
 
 ## 2. 흐름
 
 1. **요구 → 백로그**: 메시징/PM 도리가 요구를 백로그 항목 + 브리프로 만든다.
 2. **레인**: `dori start <key> --brief <f>` → 워크트리에서 작업 → **로컬 커밋** → `dori ready`(증거 링크).
-3. **번들**: 끝난 레인들을 `bundle/<id>`로 묶는다(대표 이슈 + `Refs #…`).
-4. **MR**: `bundle/<id>` → `fork:main` PR 1개. 본문은 `.github/PULL_REQUEST_TEMPLATE.md`(무엇/왜/막힌 것/검증).
+3. **레인 착지(기본)**: `dori merge <key>`가 ⑴ 해당 head의 **CLEAR 레인 영수증**을 확인하고 ⑵ `lane/<key>`를 레인 레포의 자기 리모트(`fork`가 있으면 `fork`, 없으면 `origin`)에 push하고 ⑶ PR을 생성/갱신하고 ⑷ **merge commit**으로 머지한 뒤 ⑸ 원격 브랜치를 삭제한다. PR 대상은 `lane.repo`에서 유도하며, design 레포(`asdfqwerzxcc/dori-design-system`, `origin`만 있음)도 같은 기본 경로를 쓴다.
+4. **묶음 착지(선택, 명시적 모드)**: 여러 레인을 한 PR로 묶어야 할 때만 `dori bundle open`/`add`/`land` → `dori merge <owner/repo#N> --bundle <id>`. 기본 경로가 아니다.
 5. **CI**: PR에서 `bun install` → `typecheck` → `test`(무료 티어, 런당 ~15초).
-6. **리뷰 게이트**: `dori review <fork/repo#N>` → **CLEAR** 영수증이 PR head에 묶인다.
-7. **머지**: `dori merge <fork/repo#N>` — **영수증 CLEAR + 체크 green** 둘 다 필요.
-8. **반영**: 로컬 main 동기화 → 실행 중 하네스면 `dori restart`(≈4초).
+6. **리뷰 게이트**: 기본은 레인마다 `dori review --lane <key>` → 그 head에 묶인 CLEAR 영수증. 번들 모드는 PR head 리뷰 또는 구성원 영수증 전원 CLEAR다.
+7. **머지/반영**: `dori merge`가 머지한다(레인 모드 merge commit, 번들 모드 squash + 체크 green). 로컬 main은 `git fetch` 후 fast-forward로 동기화하고 `dori done <key>`로 워크트리와 브랜치를 정리한다.
 
 ## 3. 이 워크플로우를 지키는 규칙
 
-- 레인은 **푸시하지 않는다**(로컬 PR). 원격은 번들 MR 하나뿐이다.
-- 한 번들 = 한 게이트. 노드가 여러 개여도 사람이 결정하는 지점은 하나.
-- 레인 종료 후에도 **CI와 리뷰를 통과하지 못하면 머지 금지**. 우회 플래그를 만들지 않는다.
+- **기본은 레인 게이트**: 레인은 리뷰 영수증을 받은 뒤 `dori merge <key>`로만 원격에 착지한다. push·PR·머지·브랜치 삭제가 한 명령에 묶여 있다.
+- **로컬 main 직접 머지 금지**: main을 로컬에서 fast-forward로 움직이면 PR 없는 커밋이 생긴다. 그 상태는 `dori doctor`의 merge guard가 경고한다.
+- **번들은 묶음 전용**: 여러 레인을 한 MR/한 승인으로 묶을 때만 `dori bundle`을 쓴다. 한 번들 = 한 게이트.
+- **우회 플래그 금지**: 영수증 없음, BLOCK, stale sha, 체크 red는 머지 거부다. 우회 플래그를 만들지 않는다.
 - dori 쪽 변경은 **테스트로 고정**: 워크플로우 규칙(프롬프트·CLI·게이트)을 바꾸면 그 규칙을 검사하는 테스트나 실행 증거를 같이 남긴다.
 - 프로젝트에 전파할 때: `skills/dori-mode`, `.github/workflows/ci.yml`, `prompts/lane-footer.md`, `docs/ops-protocol.md` 네 개를 복사하고 리모트 이름만 바꾼다.
 
-## 3.5 리뷰 위치: 두 가지 모드 (2026-11-20)
+## 3.5 두 착지 모드 (2026-11-23)
 
-- **번들 게이트 모드(현재 dori 기본)**: 레인은 로컬 커밋만 하고, 리뷰는 **번들 MR head에서 한 번** 한다. 게이트 1회, 비용 최소.
-- **레인 게이트 모드(회사 방식)**: **레인마다 리뷰**한다(`dori review --lane <key>`). 각 로컬 PR이 CLEAR여야 번들에 들어갈 수 있고, 번들 MR은 CI·최종 확인만 한다.
+- **레인 게이트(기본)**: `dori review --lane <key>` → `dori merge <key>`. 레인마다 리뷰하고 레인마다 PR을 만든다.
+- **번들 게이트(명시적)**: `dori bundle add`가 레인 영수증 CLEAR와 sha를 검사하고, `dori merge --bundle <id>`가 구성원 영수증과 체크로 판정한다. 여러 레인을 한 번에 묶을 때만 쓴다.
 
-레인 게이트 모드의 규칙:
-1. `dori bundle add <key>`는 그 레인의 **영수증이 CLEAR이고 head sha가 최신**일 때만 통과한다.
-2. 번들에는 **구성원 영수증 목록**(lane key, sha, verdict, reviewer)이 기록된다.
-3. `dori merge`는 ⑴ PR head 영수증 CLEAR 또는 ⑵ 구성원 전원 CLEAR + CI green 중 하나를 만족하면 통과한다(⑵를 쓰려면 번들 기록이 있어야 한다).
-4. 레인 리뷰가 BLOCK이면 **번들에 못 들어간다** — 수정 후 재리뷰가 강제된다.
-
-즉 "리뷰를 어디서 하느냐"만 다르고, **한 번들 = 한 사람 승인** 원칙은 유지된다(레인 모드에서는 승인이 레인 단계로 내려가고, 번들 머지는 기계적 확인).
-
-> **임시 상태(2026-11-20)**: `dori bundle`이 아직 없어서, 그 전까지 리드가 레인을 **로컬 main에 직접 머지**한다(포크로 푸시는 하되 MR은 열지 않음). 번들 도구가 착지하면 그때부터 **번들 MR 1개**가 원격 단위가 된다.
+즉 "리뷰를 어디서 하느냐"만 다르고, **한 번들 = 한 사람 승인** 원칙은 번들 모드에서 유지된다.
 
 ## 4. 지금 상태
 
-- 로컬 PR/영수증: **있음**(레인)
-- 번들 MR: **규칙만 있음** — `dori bundle` 도구는 다음 작업
-- CI: **있음**(`.github/workflows/ci.yml`, 포크에서 검증 완료)
-- 리뷰 게이트: **있음**(`dori review`/`dori merge`)
+- 레인 게이트: **있음**(`dori review --lane`, `dori merge <key>` — 영수증 → push → PR → merge commit → 브랜치 삭제)
+- 번들 게이트: **있음, 명시적 모드**(`dori bundle`, `dori merge --bundle`)
+- 로컬 merge 가드: **있음**(`dori doctor` merge guard)
+- CI: **있음**(`.github/workflows/ci.yml`)
+- 리뷰 게이트: **있음**(레인 영수증, PR 리뷰)
 - 게이트 인박스 UI: **없음**(Helmr)

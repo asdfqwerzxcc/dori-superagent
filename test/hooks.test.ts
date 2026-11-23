@@ -144,8 +144,10 @@ describe("reviewCommand and DORI_PROMPTS_DIR", () => {
     const { w, d } = setup();
     w.gh = (argv) =>
       argv[1] === "view"
-        ? { code: 0, stdout: JSON.stringify({ headRefOid: head }) }
-        : { code: 0, stdout: "diff --git a/x b/x\n" };
+        ? { code: 0, stdout: JSON.stringify({ headRefOid: head, title: "t", body: "b" }) }
+        : argv[1] === "diff"
+          ? { code: 0, stdout: "diff --git a/x b/x\n+line\n" }
+          : { code: 1, stdout: "" };
     config(d, { hooks: { reviewCommand: ["my-reviewer", "{repo}", "{number}", "{sha}", "{pr}"] } });
     w.reviewer = () => ({ code: 0, stdout: "looked\nVERDICT: BLOCK\nVERDICT: CLEAR" });
     expect(await review(d, "o/r#5", "ignored/model")).toEqual({ verdict: "CLEAR", sha: head });
