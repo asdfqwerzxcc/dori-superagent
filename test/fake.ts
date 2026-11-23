@@ -27,6 +27,7 @@ type Pane = {
   agent?: string;
   pgid?: number;
   cwd?: string;
+  shellPid?: number;
 };
 
 export class World {
@@ -124,7 +125,7 @@ export class World {
       return ok({
         process_info: {
           pane_id: argv[3],
-          shell_pid: 100,
+          shell_pid: target.shellPid ?? 100,
           foreground_process_group_id: target.pgid ?? 101,
           foreground_processes: procs.map((x, i) => ({ ...x, pid: 101 + i })),
         },

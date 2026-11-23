@@ -9,6 +9,7 @@ import { pluginCommand } from "./cli-plugins.ts";
 import { runRemote } from "./cli-remotes.ts";
 import { status, up } from "./cli-up.ts";
 import { done, ready, report, startLane } from "./lanes.ts";
+import { leadRestart } from "./cli-lead-restart.ts";
 import { runLabels } from "./labels.ts";
 import { runStale } from "./stale.ts";
 import { listWorktrees, pruneWorktrees } from "./worktrees.ts";
@@ -53,6 +54,7 @@ const COMMANDS = new Set([
   "stale",
   "migrate",
   "restart",
+  "lead-restart",
   "plugin",
   "remote",
   "agent",
@@ -231,6 +233,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     }
     case "migrate":
       return runMigrate(d, a);
+    case "lead-restart":
+      return leadRestart(d, a, x);
     case "restart": {
       const r = await restartSupervisors(d.store.root);
       for (const line of formatSupervised(r.health)) console.log(line);

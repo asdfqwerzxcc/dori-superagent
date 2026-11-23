@@ -78,6 +78,9 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
                [--wait-minutes N] [--resume]  hand sessions over to another runtime; MIGRATED, SKIP, DEFERRED,
                                               or MIGRATE_ROLLBACK (exit 3) per session
   dori restart                                restart the supervisor tree; waits for a fresh heartbeat and all five units
+  dori lead-restart [--dry-run] [--force] [--session FILE] [--drain-timeout SECONDS]
+                                              find the lead by the pane's process tree, kill it, and relaunch the same session
+                                              once the pane is a shell; --dry-run prints PID, session and engine only
   dori plugin list | enable <name> | disable <name>
                                               the registry and state/plugins.json; the supervisor re-reads it every 5 s
   dori remote add <name> --ssh <user@host> [--repo PATH] [--os linux|windows]
