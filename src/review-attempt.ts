@@ -25,11 +25,11 @@ export const attemptSafely = async (
   }
 };
 
-/** The primary's first failure that names a dead provider; every later chunk quotes this cause and diagnostic. */
-export type PrimaryDown = { readonly cause: string; readonly diagnostic: string };
+/** The primary's first failure that names a dead provider; every later chunk quotes this cause. */
+export type PrimaryDown = { readonly cause: string };
 
 export type ChunkAttemptResult =
-  | { readonly kind: "resplit"; readonly result: LaneResult }
+  | { readonly kind: "resplit"; readonly result: LaneResult; readonly primaryDown?: PrimaryDown }
   | {
       readonly kind: "done";
       readonly result: LaneResult;
@@ -61,7 +61,7 @@ export async function attemptChunk(args: ChunkAttemptArgs, down: PrimaryDown | u
   if (down !== undefined && fallback !== undefined && fallback !== args.chosen) {
     const result = await attemptSafely(() => args.attempt(args.run, fallback, slice()), args.run, fallback);
     result.retried = `skipped: ${down.cause}`;
-    result.retryDiagnostic = down.diagnostic;
+    if (args.canResplit(result)) return { kind: "resplit", result };
     return { kind: "done", result, skippedPrimary: true, retriedOnFallback: true };
   }
   let result = await attemptSafely(() => args.attempt(args.run, args.chosen, slice()), args.run, args.chosen);
@@ -69,13 +69,13 @@ export async function attemptChunk(args: ChunkAttemptArgs, down: PrimaryDown | u
   if (failed(result) && fallback !== undefined && fallback !== args.chosen && args.deadline > Date.now()) {
     const primary = result;
     const primaryDiag = args.diagnose(primary, { retried: true, retryModel: fallback });
-    const primaryDown = primaryUnusable(primary)
-      ? { cause: failureCause(primary), diagnostic: primaryDiag.path }
-      : undefined;
+    const primaryDown = primaryUnusable(primary) ? { cause: failureCause(primary) } : undefined;
     const remaining = Math.max(1, Math.min(args.attemptMs, args.deadline - Date.now()));
     result = await attemptSafely(() => args.attempt(args.run, fallback, remaining), args.run, fallback);
     result.retried = `${primary.model ?? "default"} ${failureKind(primary)}`;
     result.retryDiagnostic = primaryDiag.path;
+    if (args.canResplit(result))
+      return { kind: "resplit", result, ...(primaryDown === undefined ? {} : { primaryDown }) };
     return {
       kind: "done",
       result,

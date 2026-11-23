@@ -110,8 +110,9 @@ that cannot be split) writes a `reviewer_empty` receipt, also carrying stderr an
 A failed run also writes one JSON diagnostic, `receipts/lane_<key>@<tip>-<uuid>.diagnostic.json` (mode 0600), with
 `exitCode`, `durationMs`, `stdoutTail`, `stderrTail`, `argv` (the prompt elided, or `null` when the reviewer could
 not be started at all), `model` and `cause` (one line, e.g. `exit 1: No API key found for opencode.`); a chunked review
-adds `chunk`. A failure that started a fallback retry also carries `retried: true` and `retryModel`, so the diagnostic
-pair names both attempts. The same compact JSON is in the refusal line. That
+adds `chunk`. The failed attempt that starts a fallback retry carries `retried: true` and `retryModel`; a failed retry
+carries `retried: true` with its own model, so the diagnostic pair names both attempts. The same compact JSON is in the
+refusal line. That
 is what turns a zero-byte answer into a diagnosis: the exit code, the duration, the stderr and the argv (including the
 model) are all on disk.
 

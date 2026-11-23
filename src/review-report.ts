@@ -75,12 +75,14 @@ export const failureCause = (r: LaneResult): string => {
 /**
  * A primary that could not be started or was refused by the provider (a missing key, a rejected one) fails the same way
  * on every chunk, so the rest of the job goes straight to the fallback instead of paying for the same failure again.
+ * Only a failure before any answer counts: a non-zero exit after stdout may be a crash, not a dead provider.
  */
 export const primaryUnusable = (r: LaneResult): boolean =>
   r.outcome.kind === "error" ||
   (r.outcome.kind === "exit" &&
     r.outcome.code !== 0 &&
-    (AUTH_FAILURE.test(r.outcome.stderr) || AUTH_FAILURE.test(r.outcome.stdout)));
+    r.outcome.stdout.trim() === "" &&
+    AUTH_FAILURE.test(r.outcome.stderr));
 
 const detail = (r: LaneResult): string => {
   const stderr = r.outcome.kind === "error" ? r.outcome.message : r.outcome.stderr;

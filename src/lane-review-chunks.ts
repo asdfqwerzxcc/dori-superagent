@@ -76,7 +76,7 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
   let firstFailure: { diagnostic: ReviewDiagnostic; path: string } | undefined;
   let budgetHit = false;
   /** Set by the first primary failure that names a dead provider; later chunks skip the primary entirely. */
-  let primaryDown: { cause: string; diagnostic: string } | undefined;
+  let primaryDown: { cause: string } | undefined;
   const fallback = ctx.fallback;
 
   await savePartial();
@@ -134,6 +134,7 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
       },
       primaryDown,
     );
+    if (outcome.primaryDown !== undefined) primaryDown = outcome.primaryDown;
     if (outcome.kind === "resplit") {
       const result = outcome.result;
       const chunk = run.chunk!;
@@ -157,7 +158,6 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
       await savePartial();
       continue;
     }
-    if (outcome.primaryDown !== undefined) primaryDown = outcome.primaryDown;
     const { result, skippedPrimary, retriedOnFallback } = outcome;
     results.push(result);
     const note =

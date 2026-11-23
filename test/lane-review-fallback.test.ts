@@ -171,4 +171,44 @@ describe("lane review fallback on immediate failure", () => {
     expect(fallback.cause).toContain("exit 1");
     expect(fallback.stderrTail).toContain("fallback key rejected");
   });
+
+  test("a non-zero exit after an answer that mentions auth does not mark the primary down", async () => {
+    const { w, d } = await lane("stdout-auth");
+    writeFileSync(join(d.store.root, "config.json"), JSON.stringify({ reviewFallbackModel: "fallback/m" }));
+    w.reviewer = (argv) =>
+      argv.includes("fallback/m")
+        ? { code: 0, stdout: "VERDICT: CLEAR" }
+        : { code: 1, stdout: "the 401 handler is fine\n", stderr: "stream reset" };
+
+    expect(await reviewLane(d, "stdout-auth", "primary/m", { timeoutMs: 5_000, budgetMs: 20_000 })).toEqual({
+      verdict: "CLEAR",
+      base,
+      tip,
+    });
+    expect(reviewerCalls(w).filter((c) => c.argv.includes("primary/m"))).toHaveLength(2);
+    const receipt = d.store.laneReceipt("stdout-auth", tip)!;
+    expect(receipt.chunks?.some((c) => c.primaryDown === true)).toBe(false);
+  });
+
+  test("an empty fallback answer on a skipped chunk is re-split before it is called empty", async () => {
+    const { w, d } = await lane("skip-resplit");
+    writeFileSync(join(d.store.root, "config.json"), JSON.stringify({ reviewFallbackModel: "fallback/m" }));
+    w.reviewer = (argv) => {
+      const text = argv.at(-1) ?? "";
+      if (!argv.includes("fallback/m")) return { code: 1, stdout: "", stderr: AUTH };
+      return text.includes("src/a.ts, src/b.ts") ? { code: 0, stdout: "" } : { code: 0, stdout: "VERDICT: CLEAR" };
+    };
+
+    expect(await reviewLane(d, "skip-resplit", "primary/m", { timeoutMs: 5_000, budgetMs: 20_000 })).toEqual({
+      verdict: "CLEAR",
+      base,
+      tip,
+    });
+    const receipt = d.store.laneReceipt("skip-resplit", tip)!;
+    expect(receipt.verdict).toBe("CLEAR");
+    expect(receipt.summary).toContain("re-split");
+    expect(receipt.chunks?.some((c) => c.state === "empty" && (c.note ?? "").includes("re-split"))).toBe(true);
+    expect(receipt.chunks?.filter((c) => c.state === "CLEAR")).toHaveLength(3);
+    expect(reviewerCalls(w).filter((c) => c.argv.includes("primary/m"))).toHaveLength(1);
+  });
 });
