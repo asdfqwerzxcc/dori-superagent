@@ -34,14 +34,17 @@ export async function gateMember(d: Deps, key: string): Promise<MemberGate> {
     if (older !== undefined)
       return {
         ok: false,
-        reason: `lane ${key} has a stale sha: reviewed ${short(older.tip)}, head ${short(head)} (run: dori review --lane ${key})`,
+        reason: `lane ${key} has a stale sha: reviewed ${short(older.tip)}, head ${short(head)} (queue it with dori review --lane ${key}, then attest the reviewer verdict)`,
       };
-    return { ok: false, reason: `lane ${key} has no receipt at ${short(head)} (run: dori review --lane ${key})` };
+    return {
+      ok: false,
+      reason: `lane ${key} has no receipt at ${short(head)} (queue it with dori review --lane ${key}, then attest the reviewer verdict)`,
+    };
   }
   if (receipt.verdict !== "CLEAR")
     return {
       ok: false,
-      reason: `lane ${key} at ${short(head)} is ${receipt.verdict} (run: dori review --lane ${key})`,
+      reason: `lane ${key} at ${short(head)} is ${receipt.verdict} (queue it with dori review --lane ${key}, then attest the reviewer verdict)`,
     };
   return { ok: true, member: { lane: key, sha: head, verdict: "CLEAR", reviewer: receipt.reviewer } };
 }

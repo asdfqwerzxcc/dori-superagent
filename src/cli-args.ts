@@ -52,11 +52,14 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
                                               no --repo = this checkout's github origin; writes need config/repos.json allow
   dori review <owner/repo#N> [--model M]      fresh omo reviewer at the exact head -> receipt
   dori review <owner/repo#N> --attest --verdict CLEAR|BLOCK --reviewer R --evidence E
-                                             record a review done elsewhere as the receipt (no child process)
-  dori review --lane <key> [--model M] [--restart]
-                                              queue the lane's own diff for dori duty -> QUEUED <key> <tip> <job>;
-                                              an in-flight request -> already queued <job> (<state>); --restart kills
-                                              that reviewer tree first; with no duty loop, review it inline now
+                                             record a review done elsewhere as the PR receipt (no child process)
+  dori review <lane-key> --attest --verdict CLEAR|BLOCK --reviewer R --evidence E [--summary S]
+                                             record the lead reviewer's verdict as the lane receipt
+  dori review --lane <key> [--model M] [--restart] [--legacy-kill]
+                                              record the request and print QUEUED <key> <tip> <job>; duty never
+                                              spawns a reviewer; the lead reviews as a subagent and attests it.
+                                              --restart replaces the request; --legacy-kill also kills a reviewer
+                                              tree an older dori recorded
   dori merge <lane-key|lane/key> [--dry-run]  default gate: CLEAR lane receipt at the head -> push lane/<key> to the
                                               lane repo's own remote (fork when present, else origin) -> PR against
                                               main -> checks green (or none) -> merge commit -> delete the remote branch
@@ -123,6 +126,7 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "post",
   "attest",
   "restart",
+  "legacy-kill",
 ]);
 
 export function parse(argv: readonly string[]): Args {
