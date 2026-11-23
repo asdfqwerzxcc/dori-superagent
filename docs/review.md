@@ -60,22 +60,24 @@ last progress behind. `dori done` refuses `review_partial` like every other non-
 A job never downgrades a completed verdict. The decision is made against the canonical receipt on disk at write time
 under a per-lane+tip lock, not a snapshot from job start: while a tip already has CLEAR or BLOCK, progress goes to
 `state/reviews/<key>@<tip>.progress.json` instead of the canonical receipt, and a job that ends in failure writes its
-failure to that sidecar (plus its diagnostic) rather than replacing the CLEAR/BLOCK. An older epoch never writes the
-canonical receipt at all: if the receipt on disk has a newer `writerAt`, the job was preempted and writes only the
-sidecar. Among writers that still hold the current epoch, BLOCK wins at the same tip: a later CLEAR never replaces a
-BLOCK (it goes to the sidecar/history), and a lane clears a BLOCK only by moving the tip. A job that produces a
-stronger verdict may replace the canonical one. This keeps an interrupted or failed re-review, and a job that started
-before another job's CLEAR, from erasing a valid answer.
+failure to that sidecar (plus its diagnostic) rather than replacing the CLEAR/BLOCK. BLOCK wins at the same tip: a
+later CLEAR never replaces a BLOCK (it goes to the sidecar/history), and a lane clears a BLOCK only by moving the tip.
+A job that produces a stronger verdict may replace the canonical one. The write-time re-read remains defence in
+depth: a newer `writerAt` already on disk sends the result to the sidecar only. A live owner is never preempted, so a
+holder cannot resume after a fence and overwrite the newer answer.
 
 The receipt read-modify-write is serialized per lane and tip by a directory lock at
-`state/reviews/<key>@<tip>.receipt.lock`. `mkdir` is the atomic acquire; the acquirer immediately writes `owner.json`
-with `{token, pid, acquiredAt}`. A lock whose owner record is older than 10 s is taken over, and the taker writes its
-own owner after winning the `mkdir`. A release removes the directory only when `owner.json` still carries its token, so
-a preempted holder paused past the TTL leaves the new owner's lock alone. Every canonical receipt carries
-`writerAt` = the writer's `acquiredAt`; before the canonical write the writer re-reads the receipt, and a newer
-`writerAt` sends its result to the sidecar only. A writer waits up to 15 s for the lock before reporting it stuck.
-`savePartialReceipt`, `saveFinalReceipt` and the sidecar clear all run under this lock; the stale-holder path is what
-the reviewer's probe exercises.
+`state/reviews/<key>@<tip>.receipt.lock`. Acquisition creates `lock.new.<token>` with `owner.json`
+`{token, pid, acquiredAt}` first, then renames it to the lock directory; the rename is atomic and a lock directory can
+never exist without its owner record (except a legacy/corrupt bare directory). A release renames the lock to a
+tombstone and removes it only when `owner.json` still carries its token. A waiter never preempts a live pid, no matter
+how old the record is: it checks the owner with `kill(pid, 0)`; ESRCH means the owner is dead and the waiter takes the
+lock over immediately (rename to a tombstone, retry), while EPERM or success means alive and the waiter gives up after
+15 s with `held by live pid N since T` and writes no receipt. A bare directory without `owner.json` is legacy/corrupt
+and is taken over only after the 10 s TTL. Every canonical receipt carries `writerAt` = the writer's `acquiredAt`.
+`savePartialReceipt`, `saveFinalReceipt` and the sidecar clear all run under this lock; the clear is fenced by the
+caller's `writerAt`, so a stale older caller cannot delete a newer sidecar. A live but hung owner keeps the lock: the
+fail-closed outcome is the held-by-live-pid report, and duty can kill that process.
 
 A failed chunk no longer ends the job: the remaining chunks are still reviewed, so one timed-out chunk cannot hide
 what the other chunks said. A reviewer whose process cannot be started at all (the exec throws, for example a missing

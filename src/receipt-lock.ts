@@ -1,8 +1,8 @@
-// The per-lane+tip receipt lock: an atomically created directory with an owner token, a stale TTL for takeover, and a
-// release that only removes a lock the caller still owns.
+// The per-lane+tip receipt lock: an owner-first atomic acquire, a takeover only for a dead owner, and a release that
+// only removes a lock the caller still owns.
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { readJson, writeJson } from "./json-file.ts";
 
@@ -14,14 +14,14 @@ export type ReceiptLockOwner = {
 
 export type ReceiptLock = { readonly token: string; readonly acquiredAt: number };
 
-/** Test seams: pause before the fenced read/write, and after the write while still holding the lock. */
+/** Test seams: pause before the fenced write, observe a contending writer, and shorten the wait budget. */
 export type ReceiptWriteHooks = {
   readonly beforeWrite?: () => void | Promise<void>;
-  readonly beforeRelease?: () => void | Promise<void>;
   readonly onLockWait?: () => void;
+  readonly waitMs?: number;
 };
 
-/** A lock whose owner record is older than this is taken over; the critical section is a small read and write. */
+/** A bare legacy lock directory older than this is taken over; a live owner is never preempted by age. */
 export const RECEIPT_LOCK_TTL_MS = 10_000;
 const LOCK_WAIT_MS = 15_000;
 const LOCK_RETRY_MS = 10;
@@ -42,18 +42,51 @@ const readOwner = (lock: string): ReceiptLockOwner | undefined => {
   }
 };
 
-const acquiredAtOf = (lock: string): number | undefined => readOwner(lock)?.acquiredAt;
+/** `kill(pid, 0)` is the liveness probe: ESRCH means dead; EPERM (or no error) means alive. */
+const pidAlive = (pid: number): boolean => {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+};
 
-const release = (lock: string, token: string): void => {
-  const owner = readOwner(lock);
-  if (owner?.token === token) rmSync(lock, { recursive: true, force: true });
+const contention = (e: unknown): boolean => {
+  const code = (e as NodeJS.ErrnoException).code;
+  return code === "EEXIST" || code === "ENOTEMPTY" || code === "EPERM";
 };
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+const takeOver = (lock: string): void => {
+  const tomb = `${lock}.stale.${randomUUID()}`;
+  try {
+    renameSync(lock, tomb);
+    rmSync(tomb, { recursive: true, force: true });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+};
+
+const release = (lock: string, token: string): void => {
+  const owner = readOwner(lock);
+  if (owner?.token !== token) return;
+  const tomb = `${lock}.released.${token}`;
+  try {
+    renameSync(lock, tomb);
+    rmSync(tomb, { recursive: true, force: true });
+  } catch {
+    // A lock that cannot be renamed is left for the dead-owner takeover; the process is already done with it.
+  }
+};
+
 /**
- * Acquires the lane+tip lock and runs `fn` with its epoch. A writer that finds an owner record older than the TTL
- * removes the directory and retries; a release only removes a directory whose owner.json still carries its token.
+ * Creates `lock.new.<token>` with owner.json first, then renames it to the lock directory. Rename fails when the
+ * target exists, so a lock directory can never exist without its owner record (except a legacy/corrupt bare dir).
+ * A live owner is waited for and then reported; a dead owner is taken over immediately; a bare directory is taken
+ * over only after the TTL.
  */
 export async function withReceiptLock<T>(
   root: string,
@@ -63,35 +96,64 @@ export async function withReceiptLock<T>(
   hooks?: ReceiptWriteHooks,
 ): Promise<T> {
   const lock = receiptLockPath(root, key, tip);
-  const deadline = Date.now() + LOCK_WAIT_MS;
+  const waitMs = hooks?.waitMs ?? LOCK_WAIT_MS;
+  const deadline = Date.now() + waitMs;
   for (;;) {
-    let mine: ReceiptLockOwner | undefined;
+    const token = randomUUID();
+    const temp = `${lock}.new.${token}`;
     try {
-      mkdirSync(lock);
-      mine = { token: randomUUID(), pid: process.pid, acquiredAt: Date.now() };
+      mkdirSync(temp);
+      const owner: ReceiptLockOwner = { token, pid: process.pid, acquiredAt: Date.now() };
       try {
-        writeJson(ownerPath(lock), mine);
+        writeJson(join(temp, "owner.json"), owner);
       } catch (e) {
-        rmSync(lock, { recursive: true, force: true });
+        rmSync(temp, { recursive: true, force: true });
         throw e;
       }
+      if (existsSync(lock)) {
+        const error = new Error("lock exists") as NodeJS.ErrnoException;
+        error.code = "EEXIST";
+        throw error;
+      }
+      renameSync(temp, lock);
+      try {
+        return await fn({ token: owner.token, acquiredAt: owner.acquiredAt });
+      } finally {
+        release(lock, owner.token);
+      }
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      rmSync(temp, { recursive: true, force: true });
+      if (!contention(e)) throw e;
       hooks?.onLockWait?.();
-      const acquiredAt = acquiredAtOf(lock);
-      if (acquiredAt !== undefined && Date.now() - acquiredAt > RECEIPT_LOCK_TTL_MS) {
-        rmSync(lock, { recursive: true, force: true });
+      const owner = readOwner(lock);
+      if (owner !== undefined) {
+        if (pidAlive(owner.pid)) {
+          if (Date.now() >= deadline)
+            throw new Error(
+              `receipt lock for ${key}@${tip} held by live pid ${owner.pid} since ${new Date(owner.acquiredAt).toISOString()} (waited ${waitMs} ms)`,
+            );
+          await sleep(LOCK_RETRY_MS);
+          continue;
+        }
+        // Re-check the token immediately before the rename, so a new owner that won the freed lock is never removed.
+        if (readOwner(lock)?.token === owner.token) takeOver(lock);
         continue;
       }
-      if (Date.now() >= deadline) throw new Error(`receipt lock for ${key}@${tip} held longer than ${LOCK_WAIT_MS} ms`);
+      let mtime: number | undefined;
+      try {
+        mtime = statSync(lock).mtimeMs;
+      } catch {
+        continue;
+      }
+      if (Date.now() - mtime > RECEIPT_LOCK_TTL_MS) {
+        if (readOwner(lock) === undefined) takeOver(lock);
+        continue;
+      }
+      if (Date.now() >= deadline)
+        throw new Error(
+          `receipt lock for ${key}@${tip} is a bare directory and did not become stale within ${waitMs} ms`,
+        );
       await sleep(LOCK_RETRY_MS);
-      continue;
-    }
-    if (mine === undefined) throw new Error("receipt lock acquire failed");
-    try {
-      return await fn({ token: mine.token, acquiredAt: mine.acquiredAt });
-    } finally {
-      release(lock, mine.token);
     }
   }
 }

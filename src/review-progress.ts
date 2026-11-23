@@ -82,14 +82,15 @@ const readSidecar = (path: string): LaneReceipt | undefined => {
   }
 };
 
-/** Removes the sidecar only when no newer epoch wrote it; the canonical receipt must not carry a newer writerAt. */
-export async function clearProgress(d: Deps, key: string, tip: string): Promise<void> {
+/** The sidecar is deleted under the lock only when its `writerAt` and the canonical's are not newer than the fence. */
+export async function clearProgress(d: Deps, key: string, tip: string, writerAt?: number): Promise<void> {
   await withReceiptLock(d.store.root, key, tip, (lock) => {
+    const fence = writerAt ?? lock.acquiredAt;
     const path = progressPath(d.store.root, key, tip);
     const sidecar = readSidecar(path);
-    if (sidecar?.writerAt !== undefined && sidecar.writerAt > lock.acquiredAt) return;
+    if (sidecar?.writerAt !== undefined && sidecar.writerAt > fence) return;
     const current = d.store.laneReceipt(key, tip);
-    if (current?.writerAt !== undefined && current.writerAt > lock.acquiredAt) return;
+    if (current?.writerAt !== undefined && current.writerAt > fence) return;
     rmSync(path, { force: true });
   });
 }
@@ -134,10 +135,9 @@ export async function savePartialReceipt(args: {
 export type FinalSave = { readonly where: "canonical" } | { readonly where: "sidecar"; readonly kept: LaneVerdict };
 
 /**
- * Saves the final verdict under the lock without downgrading a completed one. The writer re-reads the canonical after
- * any injected pause and compares epochs: a canonical `writerAt` newer than its own means it was preempted, so it
- * writes the sidecar only. Otherwise BLOCK wins over CLEAR at the same tip, a CLEAR never replaces a BLOCK, and a
- * failure never replaces a completed verdict.
+ * Saves the final verdict under the lock without downgrading a completed one. The canonical is re-read at write time
+ * under the lock: an older epoch writes only the sidecar, BLOCK wins over CLEAR at the same tip, and a failure never
+ * replaces a completed verdict.
  */
 export async function saveFinalReceipt(
   args: {
@@ -148,7 +148,7 @@ export async function saveFinalReceipt(
   },
   hooks?: ReceiptWriteHooks,
 ): Promise<FinalSave> {
-  const saved = await withReceiptLock(
+  const result = await withReceiptLock(
     args.d.store.root,
     args.key,
     args.tip,
@@ -162,15 +162,16 @@ export async function saveFinalReceipt(
       const blockWins = current?.verdict === "BLOCK" && receipt.verdict === "CLEAR";
       if (preempted || (completed && !newCompleted) || blockWins) {
         writeJson(progressPath(args.d.store.root, args.key, args.tip), receipt);
-        await hooks?.beforeRelease?.();
-        return { where: "sidecar", kept: current?.verdict ?? "review_partial" } as const;
+        return {
+          save: { where: "sidecar", kept: current?.verdict ?? "review_partial" } as const,
+          writerAt: lock.acquiredAt,
+        };
       }
       args.d.store.saveLaneReceipt(receipt);
-      rmSync(progressPath(args.d.store.root, args.key, args.tip), { force: true });
-      await hooks?.beforeRelease?.();
-      return { where: "canonical" } as const;
+      return { save: { where: "canonical" } as const, writerAt: lock.acquiredAt };
     },
     hooks,
   );
-  return saved;
+  if (result.save.where === "canonical") await clearProgress(args.d, args.key, args.tip, result.writerAt);
+  return result.save;
 }
