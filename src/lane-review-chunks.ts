@@ -146,6 +146,7 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
         if (result.model !== undefined) parentUnit.model = result.model;
         parentUnit.durationMs = result.outcome.durationMs;
         parentUnit.note = `re-split into ${subChunks.length} sub-chunks`;
+        if (primaryDown !== undefined) parentUnit.primaryDown = true;
       }
       notes.push(
         `--- re-split ${run.label} [${chunk.label ?? chunk.paths.join(", ")}] after empty output; ${subChunks.length} sub-chunks; diagnostic ${parent.path}${result.retryDiagnostic === undefined ? "" : `; primary diagnostic ${result.retryDiagnostic}`}`,

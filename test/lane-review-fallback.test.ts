@@ -208,6 +208,7 @@ describe("lane review fallback on immediate failure", () => {
     expect(receipt.verdict).toBe("CLEAR");
     expect(receipt.summary).toContain("re-split");
     expect(receipt.chunks?.some((c) => c.state === "empty" && (c.note ?? "").includes("re-split"))).toBe(true);
+    expect(receipt.chunks?.[0]?.primaryDown).toBe(true);
     expect(receipt.chunks?.filter((c) => c.state === "CLEAR")).toHaveLength(3);
     expect(reviewerCalls(w).filter((c) => c.argv.includes("primary/m"))).toHaveLength(1);
   });

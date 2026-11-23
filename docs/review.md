@@ -40,9 +40,9 @@ The lane record also carries the current `tipSha`, refreshed at each review.
    retry resumes them. Output streams to `state/reviews/<key>.log` with one "still running" line every 30 s; a failed
    attempt (timeout, non-zero exit, empty stdout or no verdict) is retried once with `reviewFallbackModel` from
    `config.json` when that key is set and differs from the first model. An attempt that fails without a verdict is
-   retried on the fallback at once; only a clean exit-zero empty answer is re-split first. A missing or rejected key on
-   stderr, or a process that cannot be started, marks the primary down for the rest of the job: later chunks go straight
-   to the fallback instead of repeating the same failure;
+   retried on the fallback at once; only a clean exit-zero empty answer is re-split first. A non-zero exit before any
+   output whose stderr names a missing or rejected key, or a process that cannot be started, marks the primary down for
+   the rest of the job: later chunks go straight to the fallback instead of repeating the same failure;
 5. reads exactly one final `VERDICT: CLEAR|BLOCK` line per chunk, continues with the remaining chunks after one fails,
    and writes `receipts/lane_<key>@<tip>.json` with the verdict, base, tip, brief path, reviewer command (including its
    `--model`, and the fallback when one ran), time and, for a chunked review, a `chunks` array naming every chunk's
