@@ -155,7 +155,7 @@ export type Item = {
   log: { at: number; kind: "add" | "start" | "reopen" | "done" | "drop" | "ask" | "remind" | "decide"; text: string }[];
 };
 
-export type HostLoad = { load1: number; cores: number; memFreePct: number };
+export type HostLoad = { load1: number; cores: number; memFreePct: number; memFreeMb: number };
 
 export type LoopRun = {
   at: number;

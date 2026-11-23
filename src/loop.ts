@@ -40,6 +40,8 @@ async function rememberQuiet(d: Deps, run: LoopRun): Promise<void> {
   } catch {}
 }
 export const MEM_FREE_MIN_PCT = 10;
+/** Absolute floor too: on a 7.7 GB host 10% is 770 MB, less than one agent's private memory. */
+export const MEM_FREE_MIN_MB = 1200;
 
 export type LoopOpts = { interval?: number; maxLanes?: number; maxStarts?: number; maxLoad?: number; force?: boolean };
 
@@ -110,9 +112,9 @@ async function pull(
     .items()
     .filter((i) => i.status === "open" && !i.decision && !served.has(i.id))
     .sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt || a.id.localeCompare(b.id));
-  if (candidates.length > 0 && (host.load1 > (maxLoad ?? host.cores) || host.memFreePct < MEM_FREE_MIN_PCT)) {
+  if (candidates.length > 0 && (host.load1 > (maxLoad ?? host.cores) || host.memFreePct < MEM_FREE_MIN_PCT || host.memFreeMb < MEM_FREE_MIN_MB)) {
     run.held.push(
-      `host busy: load ${host.load1.toFixed(1)} (limit ${maxLoad ?? host.cores}), mem free ${host.memFreePct}%`,
+      `host busy: load ${host.load1.toFixed(1)} (limit ${maxLoad ?? host.cores}), mem free ${host.memFreePct}% (${host.memFreeMb} MB)`,
     );
     starts = 0;
   }

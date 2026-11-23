@@ -36,7 +36,7 @@ export class World {
   hc = new FakeHc();
   calls: { cmd: string; argv: readonly string[] }[] = [];
   clock = 1_000_000;
-  host: HostLoad = { load1: 1, cores: 8, memFreePct: 50 };
+  host: HostLoad = { load1: 1, cores: 8, memFreePct: 50, memFreeMb: 4096 };
   next = 1;
   /** pane id -> herdr error text returned by `agent prompt` (exit 1) */
   promptFails = new Map<string, string>();

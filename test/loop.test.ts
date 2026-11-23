@@ -57,12 +57,12 @@ describe("hourly loop", () => {
     expect(full.held[0]).toContain("0 free of 2 lanes");
     expect(full.status!.adhoc).toEqual(["hand-a", "hand-b"]);
 
-    w.host = { load1: 20, cores: 8, memFreePct: 50 };
-    expect((await tick({ maxLanes: 5 })).held[0]).toBe("host busy: load 20.0 (limit 8), mem free 50%");
-    expect((await tick({ maxLanes: 5, maxLoad: 10 })).held[0]).toBe("host busy: load 20.0 (limit 10), mem free 50%");
-    w.host = { load1: 1, cores: 8, memFreePct: 5 };
+    w.host = { load1: 20, cores: 8, memFreePct: 50, memFreeMb: 4096 };
+    expect((await tick({ maxLanes: 5 })).held[0]).toBe("host busy: load 20.0 (limit 8), mem free 50% (4096 MB)");
+    expect((await tick({ maxLanes: 5, maxLoad: 10 })).held[0]).toBe("host busy: load 20.0 (limit 10), mem free 50% (4096 MB)");
+    w.host = { load1: 1, cores: 8, memFreePct: 5, memFreeMb: 4096 };
     expect((await tick({ maxLanes: 5 })).held[0]).toContain("mem free 5%");
-    w.host = { load1: 1, cores: 8, memFreePct: 50 };
+    w.host = { load1: 1, cores: 8, memFreePct: 50, memFreeMb: 4096 };
     expect((await tick({ maxLanes: 5 })).started).toEqual(["next (p5)"]);
     expect(d.store.item("blocked")!.status).toBe("open");
   });
