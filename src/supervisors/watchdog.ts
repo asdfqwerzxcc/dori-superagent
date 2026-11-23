@@ -65,7 +65,7 @@ export async function runWatchdog(): Promise<never> {
     const wsAge = ageMs(join(state, WS_HEARTBEAT), now);
     if (now >= graceUntil && ((supervisorAge ?? Infinity) > STALE_MS || (wsAge ?? Infinity) > STALE_MS)) {
       log(`WATCHDOG_STALE supervisor=${secs(supervisorAge)} ws=${secs(wsAge)}`);
-      const killed = await killSupervisorTree(await listProcesses());
+      const killed = await killSupervisorTree((await listProcesses()) ?? []);
       log(`WATCHDOG_KILL pids=${killed.join(",") || "-"}`);
       await Bun.sleep(2000);
       const pid = spawnDetached(entryFor(home, "supervisor"), home);

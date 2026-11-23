@@ -1,6 +1,6 @@
 import type { SessionRef } from "../runtime/types.ts";
 import type { PlacedUnit } from "./panes.ts";
-import { oneLine } from "./panes.ts";
+import { oneLine, PaneUnknown } from "./panes.ts";
 
 /** The shell a pane's run/send types into: PowerShell on Windows herdr panes, sh everywhere hc runs. */
 export type PaneShell = "powershell" | "sh";
@@ -39,6 +39,7 @@ export type RunUnitOptions = {
 export async function runUnitInPane(o: RunUnitOptions): Promise<never> {
   const poll = o.pollMs ?? 1_000;
   const restart = o.restartMs ?? 5_000;
+  let unknownLogged = false;
   for (;;) {
     if (o.enabled !== undefined && !o.enabled()) {
       await o.sleep(poll);
@@ -48,9 +49,19 @@ export async function runUnitInPane(o: RunUnitOptions): Promise<never> {
     try {
       placed = await o.place();
     } catch (e) {
+      // An unreadable process list is not a dead unit: retry placement instead of starting a headless second copy.
+      if (e instanceof PaneUnknown) {
+        if (!unknownLogged) {
+          o.log(`SUPERVISED ${o.name}_pane_unknown reason=${oneLine(e)}`);
+          unknownLogged = true;
+        }
+        await o.sleep(poll);
+        continue;
+      }
       o.log(`SUPERVISED ${o.name}_pane_fallback reason=${oneLine(e)}`);
       return o.headless();
     }
+    unknownLogged = false;
     o.onStart(placed);
     let stopped = false;
     while (o.alive(placed.pid)) {

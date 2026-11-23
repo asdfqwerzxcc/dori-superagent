@@ -2,8 +2,9 @@ import { type Exec, spawnExec } from "../runtime/exec.ts";
 import { hcCall, isKind } from "../runtime/hc/exec.ts";
 import { parseProbe } from "../runtime/hc/probe.ts";
 import { close as hcClose, slugName } from "../runtime/hc/sessions.ts";
-import type { SessionRef } from "../runtime/types.ts";
-import type { PaneAdapter } from "./panes.ts";
+import type { Probe, SessionRef } from "../runtime/types.ts";
+import type { PaneAdapter, PaneProbe } from "./panes.ts";
+import { oneLine } from "./panes.ts";
 
 const OPS_GROUP = "dori-ops";
 
@@ -42,17 +43,18 @@ export class HcPanes implements PaneAdapter {
     await hcCall(this.exec, ["ls", "--label", `dori.group=${OPS_GROUP}`]);
   }
 
-  async find(name: string): Promise<SessionRef | undefined> {
+  async panes(name: string): Promise<readonly SessionRef[]> {
     const listed = rows((await hcCall(this.exec, ["ls", "--label", `dori.group=${OPS_GROUP}`]))["terminals"]).filter(
       (t) => str(t["state"]) === "live" && local(str(t["address"])),
     );
+    const found: SessionRef[] = [];
     for (const terminal of listed) {
       const id = str(terminal["address"]);
       const detail = await hcCall(this.exec, ["get", id]);
       const unit = str(asRow(detail["labels"])?.["dori.unit"]);
-      if (unit === name || str(detail["name"]) === slugName(name)) return { runtime: "hc", id, group: OPS_GROUP };
+      if (unit === name || str(detail["name"]) === slugName(name)) found.push({ runtime: "hc", id, group: OPS_GROUP });
     }
-    return undefined;
+    return found;
   }
 
   async open(name: string): Promise<SessionRef> {
@@ -73,10 +75,17 @@ export class HcPanes implements PaneAdapter {
     await hcCall(this.exec, ["send", ref.id, "--", command]);
   }
 
-  async pid(ref: SessionRef, _marker: readonly string[]): Promise<number | undefined> {
-    const probe = parseProbe(await hcCall(this.exec, ["get", ref.id]));
-    if (probe.status === "gone" || probe.shellInFront) return undefined;
-    return probe.foreground?.[0]?.pid;
+  async pid(ref: SessionRef, _marker: readonly string[]): Promise<PaneProbe> {
+    let probe: Probe;
+    try {
+      probe = parseProbe(await hcCall(this.exec, ["get", ref.id]));
+    } catch (e) {
+      if (isKind(e, "not_found", "finished")) return { kind: "stopped" };
+      return { kind: "unknown", why: oneLine(e) };
+    }
+    if (probe.status === "gone" || probe.shellInFront) return { kind: "stopped" };
+    const pid = probe.foreground?.[0]?.pid;
+    return pid === undefined ? { kind: "unknown", why: "foreground pid missing" } : { kind: "running", pid };
   }
 
   async close(ref: SessionRef): Promise<void> {

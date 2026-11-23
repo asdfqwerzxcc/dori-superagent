@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { Exec } from "../src/runtime/exec.ts";
 import {
   ensureUpHealth,
   formatEnsureUp,
@@ -9,7 +10,7 @@ import {
   supervisorHealth,
   writeSupervisorRecord,
 } from "../src/supervisors.ts";
-import { matchPids, parseCim, parsePs } from "../src/supervisor-run.ts";
+import { listProcesses, matchPids, parseCim, parsePs } from "../src/supervisor-run.ts";
 import { FIVE_UNITS, NOW, beat, homeWithState, supervisorRecord, watchdogRecord } from "./supervisor-fixtures.ts";
 
 describe("supervisor records and heartbeats", () => {
@@ -72,6 +73,21 @@ describe("supervisor records and heartbeats", () => {
     expect(ensureUpHealth(home, NOW)).toMatchObject({ pid: process.pid, alive: true, heartbeatAgeMs: 0 });
     expect(formatEnsureUp(ensureUpHealth(home, NOW), false)).toContain("ENSURE-UP up pid=");
     expect(formatEnsureUp({ alive: false }, true)).toBe("ENSURE-UP off (ensure-up.off)");
+  });
+
+  test("a failed process query is unavailable, and the parsers keep parent pids", async () => {
+    const failing: Exec = async () => ({ code: 1, stdout: "", stderr: "no powershell" });
+    expect(await listProcesses(failing)).toBeUndefined();
+    const empty: Exec = async () => ({ code: 0, stdout: "[]", stderr: "" });
+    expect(await listProcesses(empty)).toEqual([]);
+    expect(matchPids(undefined, "x")).toEqual([]);
+    expect(parseCim(JSON.stringify({ ProcessId: 7, ParentProcessId: 3, CommandLine: "bun x" }))).toEqual([
+      { pid: 7, command: "bun x", parent: 3 },
+    ]);
+    expect(parsePs("  10  5 bun a.ts\n  11 bun b.ts\n")).toEqual([
+      { pid: 10, command: "bun a.ts", parent: 5 },
+      { pid: 11, command: "bun b.ts" },
+    ]);
   });
 
   test("process lists parse on both shapes and match the merged entry plus a pre-merge shim", () => {

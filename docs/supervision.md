@@ -25,12 +25,16 @@ command in its own pane instead of a headless pipe, so `herdr pane list` shows t
 - **Title**: the pane label is the unit name (`discord-gateway`, `duty`, `loop`, and every enabled plugin).
 - **Log**: `herdr pane read <pane> --lines 200` (or `hc read <terminal>`) is the unit's log in this mode; headless
   children keep writing `state/gateway.log` / `state/loops.log`.
-- **No duplicates**: before opening a pane, the supervisor looks for the unit's title in the ops workspace and adopts it
-  when the unit process (matched by its command line) is still alive. A dead unit restarts in that same pane; a pane that
-  refuses the command is closed, and a failed close is one warning before a fresh pane is opened.
+- **No duplicates**: before opening a pane, the supervisor looks for every pane with the unit's title in the ops
+  workspace and adopts the one whose own shell subtree holds the unit process (herdr: the process's parent chain reaches
+  the pane's `shell_pid`; hc: the terminal's foreground). Two same-titled panes cannot be confused. A dead unit restarts
+  in that same pane; a pane that refuses the command is closed (retried) and only a confirmed close is replaced. A close
+  that keeps failing, or a process list that cannot be read, never starts a second copy: the close failure falls back to
+  the headless child, and unknown liveness waits and retries placement.
 - **Fallback**: a missing runtime, no runtime on PATH, or a runtime that does not answer at startup logs one
   `SUPERVISED panes_unavailable ... headless=1` line and keeps the headless children. A pane that fails later logs
-  `SUPERVISED <unit>_pane_fallback ...` for that unit.
+  `SUPERVISED <unit>_pane_fallback ...` and falls back; an unreadable process list logs `_pane_unknown` once and keeps
+  retrying placement instead of starting a second copy.
 - **Restart**: killing a unit process is noticed within a second and the unit is started again in its pane after the
   usual 5 s delay; `dori restart` kills and restarts the supervisor, and the panes are reused, not duplicated.
 

@@ -3,7 +3,7 @@ import { ToolError } from "../runtime/exec.ts";
 import { HerdrCli } from "../runtime/herdr/exec.ts";
 import type { SessionRef } from "../runtime/types.ts";
 import { listProcesses, type Proc } from "../supervisor-run.ts";
-import type { PaneAdapter } from "./panes.ts";
+import type { PaneAdapter, PaneProbe } from "./panes.ts";
 
 const OPS_LABEL = "dori-ops";
 
@@ -28,23 +28,33 @@ const matches = (command: string, marker: readonly string[]): boolean => {
   return marker.every((part) => text.includes(normalized(part)));
 };
 
+/** The process's parent chain reaches `ancestor`; the pane's shell itself need not be in a bun-only process list. */
+const descends = (pid: number, ancestor: number, byPid: ReadonlyMap<number, Proc>): boolean => {
+  let current = byPid.get(pid)?.parent;
+  for (let depth = 0; depth < 32 && current !== undefined; depth++) {
+    if (current === ancestor) return true;
+    current = byPid.get(current)?.parent;
+  }
+  return false;
+};
+
 export type HerdrPanesOptions = {
   readonly home: string;
   readonly env: Readonly<Record<string, string>>;
   readonly exec?: Exec;
   readonly session?: string;
-  readonly procs?: () => Promise<readonly Proc[]>;
+  readonly procs?: () => Promise<readonly Proc[] | undefined>;
 };
 
 /**
  * herdr's half of pane placement: one workspace labelled `dori-ops`, one tab and pane per unit. The workspace's first
- * shell becomes the first unit's pane; every later unit gets a tab created without focus. A process is found by its
- * command line because herdr's process-info reports only the pane's shell on Windows.
+ * shell becomes the first unit's pane; every later unit gets a tab created without focus. A unit's process is verified
+ * against its own pane's shell pid, because a command-line match alone would adopt a same-titled pane's unit.
  */
 export class HerdrPanes implements PaneAdapter {
   readonly kind = "herdr" as const;
   private readonly cli: HerdrCli;
-  private readonly procs: () => Promise<readonly Proc[]>;
+  private readonly procs: () => Promise<readonly Proc[] | undefined>;
   private workspace: string | undefined;
   private spare: Row | undefined;
   private cached: { at: number; procs: readonly Proc[] } | undefined;
@@ -79,10 +89,10 @@ export class HerdrPanes implements PaneAdapter {
     this.spare = root;
   }
 
-  async find(name: string): Promise<SessionRef | undefined> {
+  async panes(name: string): Promise<readonly SessionRef[]> {
+    if (this.workspace === undefined) return [];
     const listed = rows((await this.cli.call(["pane", "list"]))["panes"]);
-    const pane = listed.find((p) => str(p["workspace_id"]) === this.workspace && titled(p, name));
-    return pane === undefined ? undefined : toRef(pane);
+    return listed.filter((p) => str(p["workspace_id"]) === this.workspace && titled(p, name)).map(toRef);
   }
 
   async open(name: string): Promise<SessionRef> {
@@ -116,9 +126,23 @@ export class HerdrPanes implements PaneAdapter {
     await this.cli.call(["pane", "run", ref.id, command]);
   }
 
-  async pid(_ref: SessionRef, marker: readonly string[]): Promise<number | undefined> {
+  async pid(ref: SessionRef, marker: readonly string[]): Promise<PaneProbe> {
+    const shell = await this.paneShell(ref.id);
+    if (shell === undefined) return { kind: "unknown", why: `pane ${ref.id} process-info is unreadable` };
     const procs = await this.list();
-    return procs.find((p) => matches(p.command, marker))?.pid;
+    if (procs === undefined) return { kind: "unknown", why: "process list unavailable" };
+    const candidates = procs.filter((p) => matches(p.command, marker));
+    if (candidates.length === 0) return { kind: "stopped" };
+    const byPid = new Map(procs.map((p) => [p.pid, p]));
+    let unparented: string | undefined;
+    for (const candidate of candidates) {
+      if (candidate.parent === undefined) {
+        unparented ??= "process parent pid unavailable";
+        continue;
+      }
+      if (descends(candidate.pid, shell, byPid)) return { kind: "running", pid: candidate.pid };
+    }
+    return unparented === undefined ? { kind: "stopped" } : { kind: "unknown", why: unparented };
   }
 
   async close(ref: SessionRef): Promise<void> {
@@ -131,14 +155,25 @@ export class HerdrPanes implements PaneAdapter {
     }
   }
 
+  private async paneShell(paneId: string): Promise<number | undefined> {
+    try {
+      const info = asRow((await this.cli.call(["pane", "process-info", "--pane", paneId]))["process_info"]);
+      const shell = info?.["shell_pid"];
+      return typeof shell === "number" && Number.isInteger(shell) && shell > 0 ? shell : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private envFlags(): string[] {
     return Object.entries(this.options.env).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
   }
 
-  private async list(): Promise<readonly Proc[]> {
+  private async list(): Promise<readonly Proc[] | undefined> {
     const now = Date.now();
     if (this.cached !== undefined && now - this.cached.at < 500) return this.cached.procs;
     const procs = await this.procs();
+    if (procs === undefined) return undefined;
     this.cached = { at: now, procs };
     return procs;
   }
