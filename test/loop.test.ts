@@ -78,6 +78,9 @@ describe("hourly loop", () => {
     await ready(d, "item-a", "fixed", ["note.txt"]);
     w.panes.get(a.paneId)!.status = "idle";
     await done(d, "item-a");
+    // Closing the lane closes its item right away, so the next tick has nothing to reconcile or start.
+    expect(d.store.item("item-a")).toMatchObject({ status: "done" });
+    expect(d.store.item("item-a")!.log.at(-1)).toMatchObject({ kind: "done", text: "lane item-a done" });
 
     w.panes.delete(d.store.lane("item-b")!.paneId);
     const lost = d.store.lane("item-b")!;
@@ -88,11 +91,7 @@ describe("hourly loop", () => {
     w.gh = (argv) => ({ code: 0, stdout: JSON.stringify({ state: argv[2] === "9" ? "MERGED" : "OPEN" }) });
 
     const run = await tick({ maxStarts: 0 });
-    expect(run.synced).toEqual([
-      "item-a done (lane done)",
-      "item-b reopened (lane lost, attempt 1)",
-      "item-c done (PR merged)",
-    ]);
+    expect(run.synced).toEqual(["item-b reopened (lane lost, attempt 1)", "item-c done (PR merged)"]);
     expect(run.findings).toContain("item-c READY and its PR merged: dori done item-c");
     expect(d.store.item("item-b")).toMatchObject({ status: "open", attempts: 1 });
     expect(d.store.item("item-b")!.decision).toBeUndefined();
@@ -113,6 +112,57 @@ describe("hourly loop", () => {
     const ghDown = await tick();
     expect(ghDown.findings.some((f) => f.startsWith("gh: "))).toBe(true);
     expect(d.store.lastRun()!.at).toBe(ghDown.at);
+  });
+
+  test("done closes the item its lane served, and a done item is never started again", async () => {
+    const { w, d, add } = setup();
+    add("landed");
+    await loopTick(d, { force: true });
+    const lane = d.store.lane("landed")!;
+    expect(lane.item).toBe("landed");
+    expect(d.store.item("landed")!.status).toBe("running");
+    await ready(d, "landed", "done", ["file:///x"]);
+    w.panes.get(lane.paneId)!.status = "idle";
+    await done(d, "landed");
+    const item = d.store.item("landed")!;
+    expect(item.status).toBe("done");
+    expect(item.log.at(-1)).toMatchObject({ kind: "done", text: "lane landed done" });
+
+    const run = await loopTick(d, { force: true });
+    expect(run.started).toEqual([]);
+    expect(d.store.item("landed")!.status).toBe("done");
+  });
+
+  test("done closes an open item served by a lane the loop did not start", async () => {
+    const { w, d, add, tick } = setup();
+    add("manual-item");
+    const lane = await startLane(d, "manual-item", d.store.item("manual-item")!.brief, { group: "w1" });
+    expect(lane.item).toBe("manual-item");
+    // The observed bug: a hand-started lane leaves the item open, so the loop saw it as fresh work after the landing.
+    expect(d.store.item("manual-item")!.status).toBe("open");
+    await ready(d, "manual-item", "landed", ["file:///x"]);
+    w.panes.get(lane.paneId)!.status = "idle";
+    await done(d, "manual-item");
+    expect(d.store.item("manual-item")!.status).toBe("done");
+
+    const run = await tick();
+    expect(run.started).toEqual([]);
+    expect(d.store.item("manual-item")!.status).toBe("done");
+  });
+
+  test("done --drop closes the item as dropped and the loop leaves it alone", async () => {
+    const { d, add } = setup();
+    add("abandoned");
+    await loopTick(d, { force: true });
+    expect(d.store.item("abandoned")!.status).toBe("running");
+    await done(d, "abandoned", { drop: "not worth it" });
+    const item = d.store.item("abandoned")!;
+    expect(item.status).toBe("dropped");
+    expect(item.log.at(-1)).toMatchObject({ kind: "drop", text: "lane abandoned dropped: not worth it" });
+
+    const run = await loopTick(d, { force: true });
+    expect(run.started).toEqual([]);
+    expect(d.store.item("abandoned")!.status).toBe("dropped");
   });
 
   test("audit flags stale, long-waiting, unclosed-READY and vanished lanes without touching them", async () => {

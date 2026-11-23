@@ -1,7 +1,7 @@
 // The hourly loop: sync the backlog with live lanes, audit for missed work, start the next item
 // that needs no decision, ask the lead the open questions, and record the run. It never merges,
 // never pushes, never closes a pane and never edits a lane record. See docs/hourly-loop.md.
-import { log, MAX_ATTEMPTS, reconcileRunningItems } from "./backlog.ts";
+import { laneForItem, log, MAX_ATTEMPTS, reconcileRunningItems, type ReconcileEvent } from "./backlog.ts";
 import type { Deps } from "./harness.ts";
 import { tellLead } from "./inbox.ts";
 import { startLane } from "./lanes.ts";
@@ -51,12 +51,13 @@ async function ghState(d: Deps, kind: "pr" | "issue", repo: string, n: string): 
   return String((JSON.parse(r.stdout) as { state?: string }).state);
 }
 
-async function sync(d: Deps, run: LoopRun): Promise<void> {
-  for (const event of reconcileRunningItems(d, { countAttempts: true })) run.synced.push(event.text);
+async function sync(d: Deps, run: LoopRun): Promise<ReconcileEvent[]> {
+  const reconciled = reconcileRunningItems(d, { countAttempts: true });
+  for (const event of reconciled) run.synced.push(event.text);
   for (const item of d.store.items()) {
     try {
       if (item.status === "running") {
-        const lane = d.store.lane(item.id);
+        const lane = laneForItem(d, item.id);
         if (lane?.status === "ready") {
           const m = lane.final?.evidence.map((e) => PR_RE.exec(e)).find(Boolean);
           if (m && (await ghState(d, "pr", m[1]!, m[2]!)) === "MERGED") {
@@ -78,6 +79,7 @@ async function sync(d: Deps, run: LoopRun): Promise<void> {
       run.findings.push(`gh: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
+  return reconciled;
 }
 
 const isOpenLane = (status: string): boolean => status !== "done" && status !== "lost" && status !== "dropped";
@@ -97,9 +99,15 @@ async function pull(
   const host = d.host();
   const open = d.store.lanes().filter((l) => isOpenLane(l.status)).length;
   let starts = Math.max(0, Math.min(maxLanes - open, maxStarts));
+  const served = new Set(
+    d.store
+      .lanes()
+      .filter((l) => isOpenLane(l.status))
+      .map((l) => l.item ?? l.key),
+  );
   const candidates = d.store
     .items()
-    .filter((i) => i.status === "open" && !i.decision && !isOpenLane(d.store.lane(i.id)?.status ?? "done"))
+    .filter((i) => i.status === "open" && !i.decision && !served.has(i.id))
     .sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt || a.id.localeCompare(b.id));
   if (candidates.length > 0 && (host.load1 > (maxLoad ?? host.cores) || host.memFreePct < MEM_FREE_MIN_PCT)) {
     run.held.push(
@@ -117,7 +125,7 @@ async function pull(
       break;
     }
     try {
-      await startLane(d, item.id, item.brief, { cwd: item.cwd });
+      await startLane(d, item.id, item.brief, { cwd: item.cwd, item: item.id });
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
       const lane = d.store.lane(item.id);
@@ -190,17 +198,20 @@ export async function loopTick(d: Deps, opts: LoopOpts = {}): Promise<LoopRun> {
       return { at: d.now(), skipped: `ran ${Math.floor((d.now() - last.at) / 60_000)}m ago`, ...empty };
     }
     const run: LoopRun = { at: d.now(), synced: [], findings: [], started: [], held: [], asked: [] };
-    await sync(d, run);
+    const reconciled = await sync(d, run);
     await audit(d, run);
     await pull(d, run, maxLanes, maxStarts, opts.maxLoad, lock.nonce);
     ask(d, run);
+    // A stale running item resolved by sync is reported, not just listed: the operator may need to fix why the lane
+    // vanished. Appended after pull so a start failure keeps its place as the run's first finding.
+    for (const event of reconciled) if (event.kind === "reopen") run.findings.push(event.text);
     const items = d.store.items();
     const running = new Set(items.filter((i) => i.status === "running").map((i) => i.id));
     const lanes = d.store.lanes().filter((l) => isOpenLane(l.status));
     run.status = {
       lanes: lanes.length,
       maxLanes,
-      adhoc: lanes.filter((l) => !running.has(l.key)).map((l) => l.key),
+      adhoc: lanes.filter((l) => !running.has(l.item ?? l.key)).map((l) => l.key),
       items: {
         open: items.filter((i) => i.status === "open").length,
         decide: items.filter((i) => i.status === "open" && i.decision).length,

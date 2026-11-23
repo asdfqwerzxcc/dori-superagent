@@ -135,7 +135,38 @@ describe("hardening", () => {
     rmSync(join(d.store.root, "lanes", "ghost.json"));
     const run = await tick();
     expect(run.synced[0]).toBe("ghost reopened (lane record missing, attempt 1)");
+    expect(run.findings).toContain("ghost reopened (lane record missing, attempt 1)");
+    expect(d.store.item("ghost")!.log.map((l) => l.kind)).toContain("reopen");
     expect(d.store.item("ghost")!.status).not.toBe("done");
+  });
+
+  test("an open item whose lane already landed is closed by sync and never started", async () => {
+    const { d, add, tick } = setup();
+    add("open-landed");
+    const lane = await startLane(d, "open-landed", d.store.item("open-landed")!.brief, { group: "w1" });
+    expect(d.store.item("open-landed")!.status).toBe("open");
+    // A landing recorded without the item transition, the state found after a crash or an older dori.
+    lane.status = "done";
+    d.store.saveLane(lane);
+    const run = await tick();
+    expect(run.synced).toEqual(["open-landed done (lane done)"]);
+    expect(run.started).toEqual([]);
+    expect(d.store.item("open-landed")!.status).toBe("done");
+  });
+
+  test("an item re-added after its lane closed is new work, not a landing to reconcile", async () => {
+    const { w, d, add, tick } = setup();
+    add("rework");
+    await tick();
+    const lane = d.store.lane("rework")!;
+    lane.status = "done";
+    d.store.saveLane(lane);
+    await tick();
+    expect(d.store.item("rework")!.status).toBe("done");
+    w.clock += 1000;
+    add("rework");
+    const run = await tick();
+    expect(run.started).toEqual(["rework (p5)"]);
   });
 
   test("lost lanes and failed starts are counted apart, so a question never states a mixed count", async () => {

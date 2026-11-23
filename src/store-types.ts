@@ -23,6 +23,8 @@ export type Lane = {
   brief: string;
   cwd: string;
   worktree?: string;
+  /** The backlog item this lane serves, so closing the lane closes the item even when their keys differ. */
+  item?: string;
   repo?: string;
   baseSha?: string;
   tipSha?: string;

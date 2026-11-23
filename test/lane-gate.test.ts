@@ -3,8 +3,10 @@ import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { status } from "../src/cli-up.ts";
+import { backlogAdd } from "../src/backlog.ts";
 import { reviewLane } from "../src/lane-review.ts";
 import { done, ready, startLane } from "../src/lanes.ts";
+import { loopTick } from "../src/loop.ts";
 import { fakeGit, type Repo } from "./fake-git.ts";
 import { setup } from "./harness-setup.ts";
 import { captureIo } from "./inbox-setup.ts";
@@ -131,6 +133,35 @@ describe("lane review gate", () => {
     await startLane(d, "legacy", brief, { group: "w1" });
     await ready(d, "legacy", "done", ["file:///x"]);
     expect(await done(d, "legacy")).toBe("no review gate: lane legacy has no recorded base commit");
+  });
+
+  test("done closes the backlog item with the reviewed tip and its CLEAR receipt", async () => {
+    const { w, d, brief } = setup();
+    const repo: Repo = { head: base, mergeBase: base, diff };
+    fakeGit(w, repo);
+    const item = backlogAdd(d, "fix-login", brief, { cwd: d.store.root });
+    const lane = await startLane(d, "fix-login", item.brief, { group: "w1" });
+    expect(lane.item).toBe("fix-login");
+    await ready(d, "fix-login", "fixed", ["file:///x"]);
+    repo.head = tip;
+    d.store.saveLaneReceipt({
+      lane: "fix-login",
+      verdict: "CLEAR",
+      base,
+      tip,
+      brief: lane.brief,
+      reviewer: "omo",
+      at: 1,
+      summary: "LGTM",
+    });
+    expect(await done(d, "fix-login")).toBeUndefined();
+    expect(d.store.item("fix-login")!.status).toBe("done");
+    expect(d.store.item("fix-login")!.log.at(-1)).toMatchObject({
+      kind: "done",
+      text: `lane fix-login done at ${tip.slice(0, 12)} (CLEAR receipt lane_fix-login@${tip})`,
+    });
+    const run = await loopTick(d, { force: true });
+    expect(run.started).toEqual([]);
   });
 
   test("status prints reviewed, BLOCK or no receipt beside each lane", async () => {
