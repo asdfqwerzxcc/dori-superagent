@@ -54,20 +54,29 @@ review again.
 A chunked review writes its receipt before the first reviewer starts: verdict `review_partial`, every planned chunk
 marked `pending`, then rewritten after each chunk (`running`, then `CLEAR`, `BLOCK`, `timed out`, `empty`, `failed` or
 `not run`). The receipt is therefore never missing while a large review is in flight, and a killed worker leaves its
-last progress behind. `dori done` refuses `review_partial` like every other non-CLEAR verdict. A re-review of a tip that
-already has a CLEAR or BLOCK receipt keeps that verdict in the canonical receipt and writes the progress to
-`state/reviews/<key>@<tip>.progress.json` instead, so an interrupted re-review can never erase a valid answer.
+last progress behind. `dori done` refuses `review_partial` like every other non-CLEAR verdict.
+
+A job never downgrades a completed verdict. The decision is made against the canonical receipt on disk at write time,
+not a snapshot from job start: while a tip already has CLEAR or BLOCK, progress goes to
+`state/reviews/<key>@<tip>.progress.json` instead of the canonical receipt, and a job that ends in failure writes its
+failure to that sidecar (plus its diagnostic) rather than replacing the CLEAR/BLOCK. A job that itself produces
+CLEAR or BLOCK may replace the canonical verdict. This keeps an interrupted or failed re-review, and a job that
+started before another job's CLEAR, from erasing a valid answer.
 
 A failed chunk no longer ends the job: the remaining chunks are still reviewed, so one timed-out chunk cannot hide
-what the other chunks said. The final verdict is `reviewer_timeout` when a chunk timed out or the budget ran out,
+what the other chunks said. A reviewer whose process cannot be started at all (the exec throws, for example a missing
+agent binary) is that chunk's `failed` result with the error text; later chunks are still attempted and the final
+receipt names it. The final verdict is `reviewer_timeout` when a chunk timed out or the budget ran out,
 `reviewer_empty` when a chunk printed nothing, `review_partial` when a chunk failed without one of those verdicts,
 otherwise `BLOCK` when any chunk blocked, otherwise `CLEAR`. The summary and the `chunks` field carry every chunk's
 state and each failure's diagnostic.
 
 Chunks that answered are checkpointed in `state/reviews/<key>@<tip>.chunks.json`, keyed by the rendered chunk prompt and
-by the reviewer command. A retry at the same tip reuses those answers instead of spawning the reviewer again; only the
-chunks that timed out, printed nothing or were never run are attempted. The checkpoint is deleted when the review
-finishes `CLEAR` or `BLOCK`, and one written for another tip or another `--model` is ignored.
+by the reviewer command. A retry at the same tip reuses only the chunks that answered `CLEAR` or `BLOCK`; a chunk that
+exited non-zero, printed no verdict, threw, timed out or was never run is attempted again. A re-split parent is
+attempted again even when its sub-chunks are reused: the parent's empty answer is what triggers the re-split, and the
+sub-chunks that already answered are read from the checkpoint. The checkpoint is deleted when the review finishes
+`CLEAR` or `BLOCK`, and one written for another tip or another `--model` is ignored.
 
 A reviewer that outlives the deadline is killed and writes a receipt whose verdict is `reviewer_timeout`, carrying the
 partial stdout, the stderr and the exit code (when the killed process reported one), plus every chunk's state. A reviewer

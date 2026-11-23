@@ -76,9 +76,9 @@ export const clearProgress = (d: Deps, key: string, tip: string): void => {
 };
 
 /**
- * Writes the live receipt: `review_partial` with every planned chunk and its state. A tip that already has a CLEAR or
- * BLOCK receipt keeps it, and the progress goes to the sidecar instead, so a killed re-review cannot erase a valid
- * answer.
+ * Writes the live receipt: `review_partial` with every planned chunk and its state. The decision is made on the
+ * receipt on disk at write time, not a snapshot from job start: when a CLEAR or BLOCK is already there, the progress
+ * goes to the sidecar, so a concurrent or interrupted re-review cannot erase a valid answer.
  */
 export function savePartialReceipt(args: {
   readonly d: Deps;
@@ -87,7 +87,6 @@ export function savePartialReceipt(args: {
   readonly base: string;
   readonly brief: string;
   readonly reviewer: string;
-  readonly prior: LaneReceipt | undefined;
   readonly units: readonly ProgressUnit[];
 }): void {
   const rows = chunkRows(args.units);
@@ -102,7 +101,36 @@ export function savePartialReceipt(args: {
     summary: partialSummary(rows),
     chunks: rows,
   };
-  if (args.prior?.verdict === "CLEAR" || args.prior?.verdict === "BLOCK")
+  const current = args.d.store.laneReceipt(args.key, args.tip);
+  if (current?.verdict === "CLEAR" || current?.verdict === "BLOCK")
     writeJson(progressPath(args.d.store.root, args.key, args.tip), partial);
   else args.d.store.saveLaneReceipt(partial);
+}
+
+/** Where a finished review wrote its verdict: the canonical receipt, or the sidecar when it could not improve one. */
+export type FinalSave =
+  | { readonly where: "canonical" }
+  | { readonly where: "sidecar"; readonly kept: "CLEAR" | "BLOCK" };
+
+/**
+ * Saves the final verdict without downgrading a completed one. A job that produced CLEAR/BLOCK may replace the
+ * canonical receipt; a job that failed while the canonical already holds CLEAR/BLOCK records its failure in the
+ * sidecar (and keeps that verdict), so a transient failed re-review never strands a cleared lane.
+ */
+export function saveFinalReceipt(args: {
+  readonly d: Deps;
+  readonly key: string;
+  readonly tip: string;
+  readonly receipt: LaneReceipt;
+}): FinalSave {
+  const current = args.d.store.laneReceipt(args.key, args.tip);
+  const completed = current?.verdict === "CLEAR" || current?.verdict === "BLOCK";
+  const improved = args.receipt.verdict === "CLEAR" || args.receipt.verdict === "BLOCK";
+  if (completed && !improved) {
+    writeJson(progressPath(args.d.store.root, args.key, args.tip), args.receipt);
+    return { where: "sidecar", kept: current!.verdict as "CLEAR" | "BLOCK" };
+  }
+  args.d.store.saveLaneReceipt(args.receipt);
+  clearProgress(args.d, args.key, args.tip);
+  return { where: "canonical" };
 }

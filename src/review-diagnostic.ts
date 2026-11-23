@@ -29,10 +29,10 @@ export function reviewDiagnostic(
   chunk?: string,
 ): ReviewDiagnostic {
   return {
-    exitCode: outcome.kind === "exit" ? outcome.code : (outcome.code ?? null),
+    exitCode: outcome.kind === "exit" ? outcome.code : outcome.kind === "timeout" ? (outcome.code ?? null) : null,
     durationMs: outcome.durationMs,
-    stdoutTail: tail(outcome.stdout),
-    stderrTail: tail(outcome.stderr),
+    stdoutTail: tail(outcome.kind === "error" ? "" : outcome.stdout),
+    stderrTail: tail(outcome.kind === "error" ? outcome.message : outcome.stderr),
     argv: argv.map(elide),
     model,
     ...(chunk === undefined ? {} : { chunk }),

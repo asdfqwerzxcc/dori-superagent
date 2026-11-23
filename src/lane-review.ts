@@ -26,14 +26,9 @@ export type LaneReviewOptions = {
   readonly verdictGraceMs?: number;
 };
 
-/**
- * Reviews one lane's own commits: the merge-base of its recorded start commit and the current tip, diffed at that tip.
- * Writes `receipts/lane_<key>@<tip>.json`. The reviewer runs under a per-attempt deadline and a separate job budget,
- * its output streams to `state/reviews/<key>.log`, a diff over the size caps is split by path (the chunked half lives
- * in `reviewChunks`), a failed attempt is retried once with `reviewFallbackModel`, and a timeout or an empty answer
- * becomes a non-CLEAR receipt instead of a silent no-receipt. Every failure also writes a JSON diagnostic with argv,
- * model, exit code, duration and both output tails.
- */
+/** Reviews one lane's commits at the current tip, writing `receipts/lane_<key>@<tip>.json`. A large diff is split by
+ * path into `reviewChunks`; a timeout or an empty answer becomes a non-CLEAR receipt, and a failure writes a JSON
+ * diagnostic with argv, model, exit code, duration and both output tails. */
 export async function reviewLane(
   d: Deps,
   key: string,
@@ -163,7 +158,7 @@ export async function reviewLane(
       ...(opts.progressMs === undefined ? {} : { progressMs: opts.progressMs }),
       ...(opts.verdictGraceMs === undefined ? {} : { verdictGraceMs: opts.verdictGraceMs }),
     });
-    const verdict = reviewVerdict(outcome.stdout);
+    const verdict = outcome.kind === "error" ? undefined : reviewVerdict(outcome.stdout);
     return {
       run,
       argv,
@@ -212,6 +207,10 @@ export async function reviewLane(
     const { diagnostic, path: diagPath } = diagnose(result);
     const summary = failureSummary(results, diagPath);
     const outcome = result.outcome;
+    if (outcome.kind === "error")
+      throw new Refusal(
+        `reviewer for lane ${key} threw: ${outcome.message}; no receipt written; diagnostic ${diagnosticLine(diagnostic)}; output saved to ${logPath}; ${diagPath}`,
+      );
     if (outcome.kind === "timeout")
       fail("reviewer_timeout", summary, `reviewer for lane ${key} timed out`, diagnostic, diagPath);
     if (outcome.stdout.trim() === "")

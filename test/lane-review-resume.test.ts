@@ -186,4 +186,40 @@ describe("lane review resume", () => {
     expect(receipt.reviewer).toContain("model/two");
     expect(receipt.chunks?.some((c) => c.reused === true)).toBe(false);
   });
+
+  test("a re-split parent is re-attempted while its answered sub-chunks are reused", async () => {
+    const packed = ["src/a.ts", "src/b.ts", "src/c.ts"].map((path) => section(path, path[0]!.repeat(6_000))).join("");
+    const { w, d } = await lane("resplit-reuse", packed);
+    let bAnswers = false;
+    w.reviewer = (argv) => {
+      const text = argv.at(-1) ?? "";
+      const a = text.includes("src/a.ts");
+      const b = text.includes("src/b.ts");
+      if (a && b) return { code: 0, stdout: "" };
+      if (a) return { code: 0, stdout: "VERDICT: CLEAR" };
+      if (b) return { code: 0, stdout: bAnswers ? "VERDICT: CLEAR" : "" };
+      return { code: 0, stdout: "VERDICT: CLEAR" };
+    };
+
+    const first = await failed(() => reviewLane(d, "resplit-reuse"));
+    expect(first.message).toContain("reviewer_empty");
+    const callsAfterFirst = w.calls.filter((c) => c.cmd === "omo").length;
+    expect(callsAfterFirst).toBe(4);
+
+    bAnswers = true;
+    expect(await reviewLane(d, "resplit-reuse")).toEqual({ verdict: "CLEAR", base, tip });
+    const secondCalls = w.calls.filter((c) => c.cmd === "omo").slice(callsAfterFirst);
+    expect(secondCalls).toHaveLength(2);
+    const prompts = secondCalls.map((c) => c.argv.at(-1) ?? "");
+    expect(prompts.some((text) => text.includes("src/a.ts") && text.includes("src/b.ts"))).toBe(true);
+    expect(prompts.some((text) => text.includes("src/a.ts") && !text.includes("src/b.ts"))).toBe(false);
+
+    const receipt = receiptOf(d, "resplit-reuse");
+    expect(receipt.verdict).toBe("CLEAR");
+    expect(receipt.chunks?.map((c) => c.state)).toEqual(["empty", "CLEAR", "CLEAR", "CLEAR"]);
+    expect(receipt.chunks?.map((c) => c.reused === true)).toEqual([false, true, false, true]);
+    expect(receipt.summary).toContain("re-split");
+    expect(receipt.summary).toContain("(reused)");
+    expect(existsSync(checkpointPath(d.store.root, "resplit-reuse", tip))).toBe(false);
+  });
 });

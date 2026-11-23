@@ -42,6 +42,12 @@ export type ReviewOutcome =
       readonly durationMs: number;
       /** True when a complete `VERDICT:` line was printed before the kill; the caller may accept it. */
       readonly verdictSeen: boolean;
+    }
+  | {
+      /** The reviewer could not be started at all (the exec rejected): a failed chunk, never a pass. */
+      readonly kind: "error";
+      readonly message: string;
+      readonly durationMs: number;
     };
 
 export type ReviewerRun = {
