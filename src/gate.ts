@@ -32,7 +32,7 @@ export async function headSha(d: Deps, pr: PrRef): Promise<string> {
 export async function attest(
   d: Deps,
   prId: string,
-  opts: { verdict: "CLEAR" | "BLOCK"; reviewer: string; summary?: string; evidence: readonly string[] },
+  opts: { verdict: "CLEAR" | "BLOCK"; reviewer: string; summary?: string | undefined; evidence: readonly string[] },
 ): Promise<{ verdict: "CLEAR" | "BLOCK"; sha: string }> {
   const pr = parsePr(prId);
   const sha = await headSha(d, pr);
