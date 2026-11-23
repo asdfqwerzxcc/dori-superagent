@@ -44,7 +44,7 @@ export const failureKind = (r: LaneResult): string =>
   r.outcome.kind === "error"
     ? "threw"
     : r.outcome.kind === "timeout"
-      ? "timed out"
+      ? `timed out after ${r.outcome.durationMs} ms`
       : r.outcome.stdout.trim() === ""
         ? "empty output"
         : r.outcome.code !== 0

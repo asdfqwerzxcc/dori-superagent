@@ -9,6 +9,7 @@ import { type DiffChunk, planReview } from "./review-chunks.ts";
 import { diagnosticLine, type ReviewDiagnostic, reviewDiagnostic, writeReviewDiagnostic } from "./review-diagnostic.ts";
 import { failed, failureKind, failureSummary, type LaneResult, type LaneRun, successSummary } from "./review-report.ts";
 import {
+  REVIEW_ATTEMPT_MS,
   reviewBudgetFromEnv,
   reviewLogPath,
   reviewTimeoutFromEnv,
@@ -26,9 +27,7 @@ export type LaneReviewOptions = {
   readonly verdictGraceMs?: number;
 };
 
-/** Reviews one lane's commits at the current tip, writing `receipts/lane_<key>@<tip>.json`. A large diff is split by
- * path into `reviewChunks`; a timeout or an empty answer becomes a non-CLEAR receipt, and a failure writes a JSON
- * diagnostic with argv, model, exit code, duration and both output tails. */
+/** Reviews one lane's commits into `receipts/lane_<key>@<tip>.json`; a large diff is split into `reviewChunks`. */
 export async function reviewLane(
   d: Deps,
   key: string,
@@ -54,6 +53,8 @@ export async function reviewLane(
   const chosen = model ?? settings.model;
   const timeoutMs = opts.timeoutMs ?? reviewTimeoutFromEnv();
   const budgetMs = opts.budgetMs ?? reviewBudgetFromEnv();
+  // Each attempt is soft-capped at half the chunk window, so a stalled primary cannot eat the fallback's turn.
+  const attemptMs = Math.max(1, Math.min(REVIEW_ATTEMPT_MS, Math.floor(timeoutMs / 2)));
   const deadline = Date.now() + budgetMs;
   const budgetLeft = (): number => deadline - Date.now();
   const vars = { lane: key, key, base, tip, sha: tip, brief: lane.brief, diff: diffPath, repo };
@@ -178,6 +179,7 @@ export async function reviewLane(
       logPath,
       chosen,
       timeoutMs,
+      attemptMs,
       budgetMs,
       fallback,
       reviewer: reviewerFor(chosen),

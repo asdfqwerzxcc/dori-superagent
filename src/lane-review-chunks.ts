@@ -42,6 +42,7 @@ export type ChunkReviewContext = {
   readonly fallback: string | undefined;
   readonly reviewer: string;
   readonly timeoutMs: number;
+  readonly attemptMs: number;
   readonly budgetMs: number;
   readonly runs: readonly LaneRun[];
   readonly chunkRun: (
@@ -124,12 +125,11 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
       ...(ctx.chosen === undefined ? {} : { model: ctx.chosen }),
     });
     savePartial();
-    const attemptBudgetBound = left <= ctx.timeoutMs;
-    let result = await attemptSafely(
-      () => ctx.attempt(run, ctx.chosen, Math.min(ctx.timeoutMs, left)),
-      run,
-      ctx.chosen,
-    );
+    const window = Math.min(ctx.timeoutMs, left);
+    const windowBudgetBound = left <= ctx.timeoutMs;
+    const chunkDeadline = Date.now() + window;
+    const slice = (): number => Math.max(1, Math.min(ctx.attemptMs, chunkDeadline - Date.now()));
+    let result = await attemptSafely(() => ctx.attempt(run, ctx.chosen, slice()), run, ctx.chosen);
     const empty = result.outcome.kind === "exit" && result.outcome.stdout.trim() === "";
     if (empty && run.chunk !== undefined && run.resplit !== true && budgetLeft() > 0) {
       const subChunks = resplitChunk(run.chunk);
@@ -154,17 +154,11 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
         continue;
       }
     }
-    let retryBudgetBound = false;
-    if (failed(result) && ctx.fallback !== undefined && ctx.fallback !== ctx.chosen && budgetLeft() > 0) {
+    if (failed(result) && ctx.fallback !== undefined && ctx.fallback !== ctx.chosen && chunkDeadline > Date.now()) {
       const primary = result;
       const primaryDiag = ctx.diagnose(primary);
-      const remaining = budgetLeft();
-      retryBudgetBound = remaining <= ctx.timeoutMs;
-      result = await attemptSafely(
-        () => ctx.attempt(run, ctx.fallback, Math.min(ctx.timeoutMs, remaining)),
-        run,
-        ctx.fallback,
-      );
+      const remaining = Math.max(1, Math.min(ctx.attemptMs, chunkDeadline - Date.now()));
+      result = await attemptSafely(() => ctx.attempt(run, ctx.fallback, remaining), run, ctx.fallback);
       result.retried = `${primary.model ?? "default"} ${failureKind(primary)}`;
       result.retryDiagnostic = primaryDiag.path;
     }
@@ -189,7 +183,7 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
     const unit = unitOf(units, run);
     failureDiagnostics.push({ label: unit === undefined ? run.label : unitRow(unit).label, path: diagPath });
     if (firstFailure === undefined) firstFailure = { diagnostic, path: diagPath };
-    if (result.outcome.kind === "timeout" && (attemptBudgetBound || retryBudgetBound)) {
+    if (result.outcome.kind === "timeout" && windowBudgetBound && Date.now() >= chunkDeadline) {
       budgetHit = true;
       markNotRun(units, "job budget exhausted");
     }

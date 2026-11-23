@@ -176,6 +176,32 @@ describe("lane review receipt integrity", () => {
     expect(receipt.summary).toContain("reused fallback/m");
   });
 
+  test("a stalled primary leaves the fallback a turn inside the chunk window", async () => {
+    const { w, d } = await lane("soft-window");
+    writeFileSync(join(d.store.root, "config.json"), JSON.stringify({ reviewFallbackModel: "fallback/m" }));
+    w.reviewer = (argv, options) => {
+      const text = argv.at(-1) ?? "";
+      if (text.includes("src/a.ts") && !argv.includes("fallback/m")) {
+        options?.onSpawn?.({ kill: () => {} });
+        return new Promise(() => {});
+      }
+      return { code: 0, stdout: "VERDICT: CLEAR" };
+    };
+
+    expect(await reviewLane(d, "soft-window", "primary/m", { timeoutMs: 2_000, budgetMs: 10_000 })).toEqual({
+      verdict: "CLEAR",
+      base,
+      tip,
+    });
+    const receipt = canonical(d, "soft-window");
+    expect(receipt.chunks?.[0]?.state).toBe("CLEAR");
+    expect(receipt.chunks?.[0]?.model).toBe("fallback/m");
+    expect(receipt.reviewer).toContain("fallback/m");
+    const match = /timed out after (\d+) ms/.exec(receipt.summary);
+    expect(match).not.toBeNull();
+    expect(Number(match![1])).toBeLessThan(2_000);
+  });
+
   test("review_partial never passes the gate, and a live job still reports in flight", async () => {
     const { d } = await lane("gate");
     d.store.saveLaneReceipt({

@@ -33,12 +33,13 @@ The lane record also carries the current `tipSha`, refreshed at each review.
    reviewed in sequence; a chunk that returns an empty answer is split once more, by path (or by hunks when one file
    remains), and its sub-chunks are reviewed before the review is called empty;
 4. runs the reviewer non-interactively (`omo -p --no-session --model M`, or `hooks.reviewCommand` when configured) with a
-   30-minute deadline per attempt (`DORI_REVIEW_TIMEOUT_MS` overrides it) inside a 60-minute job budget
-   (`DORI_REVIEW_BUDGET_MS` overrides it). Each attempt gets the smaller of the deadline and the budget left, so a
-   26-chunk diff cannot hold the queue for hours: when the budget runs out, the chunks not attempted are recorded as
-   `not run` and a retry resumes them. Output streams to `state/reviews/<key>.log` with one "still running" line every
-   30 s; a failed attempt (timeout, non-zero exit, empty stdout or no verdict) is retried once with
-   `reviewFallbackModel` from `config.json` when that key is set and differs from the first model;
+   30-minute chunk window (`DORI_REVIEW_TIMEOUT_MS` overrides it) inside a 60-minute job budget
+   (`DORI_REVIEW_BUDGET_MS` overrides it). Each chunk gets the smaller of the window and the budget left; the primary
+   and the fallback each get at most half the window (15 minutes), so a stalled primary cannot consume the fallback's
+   turn before the window closes. When the budget runs out, the chunks not attempted are recorded as `not run` and a
+   retry resumes them. Output streams to `state/reviews/<key>.log` with one "still running" line every 30 s; a failed
+   attempt (timeout, non-zero exit, empty stdout or no verdict) is retried once with `reviewFallbackModel` from
+   `config.json` when that key is set and differs from the first model;
 5. reads exactly one final `VERDICT: CLEAR|BLOCK` line per chunk, continues with the remaining chunks after one fails,
    and writes `receipts/lane_<key>@<tip>.json` with the verdict, base, tip, brief path, reviewer command (including its
    `--model`, and the fallback when one ran), time and, for a chunked review, a `chunks` array naming every chunk's
@@ -110,11 +111,12 @@ non-chunked runs on 4.1-7.0 KiB diffs hit the same 600 s. The same 43,936 B/809-
 chunks; it was cutting off a slow provider mid-answer.
 
 The response is the per-attempt deadline *plus* the job budget, continuing after a failed chunk, a receipt from the
-moment the plan exists, and checkpointed reuse. Lowering the chunk cap would multiply calls and hang exposure without
-removing the failure; one read-only reviewer for the whole diff has a single deadline and no per-chunk progress, and
-the successful single-review runs observed here took 8-17 minutes, already past 600 s. Applied to the 56 KiB
-`ui-baseui` lane at `3e6b633`, the new path had a `review_partial` receipt 0.5 s after the run started (before any
-reviewer output) and recorded its first 5 KiB chunk CLEAR at 495 s, well inside the old 600 s horizon.
+moment the plan exists, and checkpointed reuse. A chunk's primary and fallback each get half the window, so a stalled
+primary leaves the fallback a turn instead of eating the whole 30 minutes. Lowering the chunk cap would multiply calls
+and hang exposure without removing the failure; one read-only reviewer for the whole diff has a single deadline and no
+per-chunk progress, and the successful single-review runs observed here took 8-17 minutes, already past 600 s. Applied
+to the 56 KiB `ui-baseui` lane at `3e6b633`, the new path had a `review_partial` receipt 0.5 s after the run started
+(before any reviewer output) and recorded its first 5 KiB chunk CLEAR at 495 s, well inside the old 600 s horizon.
 
 ### The queued path
 
@@ -124,6 +126,9 @@ resolves the lane's current tip and merge-base, writes one job record and prints
 ```
 QUEUED <key> <tip> <job>
 ```
+
+The caller returns at once, the receipt is written and readable while the duty worker reviews, and the job is bounded
+by `DORI_REVIEW_BUDGET_MS`; a caller that has a duty loop never waits for the reviewer's deadline.
 
 The record is `$DORI_HOME/state/review-queue/<key>@<tip>.json`, written atomically, holding `lane`, `tip`, `base`,
 `model` (when one was given), `requestedAt` and `state` (`queued`, then `running` while a worker has it). A second

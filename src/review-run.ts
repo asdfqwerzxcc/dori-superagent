@@ -5,8 +5,10 @@ import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Exec } from "./runtime/exec.ts";
 
-/** The default reviewer deadline per attempt: long enough for a real review of a large diff (the design lanes take 11-16 minutes), short enough that a hung provider still fails the lane. */
+/** The default chunk window: the most one chunk may take across its primary and fallback attempts. */
 export const REVIEW_TIMEOUT_MS = 1_800_000;
+/** One attempt's soft slice of the chunk window; half the default window leaves the fallback a turn. */
+export const REVIEW_ATTEMPT_MS = REVIEW_TIMEOUT_MS / 2;
 /**
  * The job-wide budget for one lane review: per-chunk deadlines add up, so a 26-chunk diff could otherwise hold the queue
  * for thirteen hours. When the budget runs out the remaining chunks are recorded as `not run` and a retry resumes them.
@@ -78,7 +80,7 @@ export function reviewVerdict(stdout: string): ReviewVerdict | undefined {
   return last?.[1] as ReviewVerdict | undefined;
 }
 
-/** `DORI_REVIEW_TIMEOUT_MS` when set to a positive number, else the 30-minute default. */
+/** `DORI_REVIEW_TIMEOUT_MS` when set to a positive number, else the 30-minute chunk window. */
 export function reviewTimeoutFromEnv(env: NodeJS.ProcessEnv = process.env): number {
   const ms = Number(env["DORI_REVIEW_TIMEOUT_MS"]);
   return Number.isFinite(ms) && ms >= 1 ? ms : REVIEW_TIMEOUT_MS;
