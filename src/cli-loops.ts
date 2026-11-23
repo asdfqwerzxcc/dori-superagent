@@ -1,9 +1,17 @@
-import { backlogAdd, backlogDecide, backlogDrop, backlogImport, IMPORT_LIMIT, reconcileRunningItems } from "./backlog.ts";
+import {
+  backlogAdd,
+  backlogDecide,
+  backlogDrop,
+  backlogImport,
+  IMPORT_LIMIT,
+  reconcileRunningItems,
+} from "./backlog.ts";
 import { need, one, textOf, USAGE, type Args } from "./cli-args.ts";
 import { dutyTick } from "./duty.ts";
 import type { Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
 import { HOUR, loopTick, msUntilNext, summary } from "./loop.ts";
+import { DEFAULT_MAX_LANES, DEFAULT_MAX_STARTS } from "./loop-caps.ts";
 import { acquire, release } from "./loop-lock.ts";
 
 export async function runDuty(d: Deps, a: Args, x: string | undefined): Promise<number> {
@@ -71,8 +79,8 @@ export async function runLoop(d: Deps, a: Args, x: string | undefined): Promise<
   const interval = Number(one(a, "interval") ?? String(HOUR / 1000)) * 1000;
   const opts = {
     interval,
-    maxLanes: Number(one(a, "max-lanes") ?? process.env["DORI_MAX_LANES"] ?? "3"),
-    maxStarts: Number(one(a, "max-starts") ?? process.env["DORI_MAX_STARTS"] ?? "2"),
+    maxLanes: Number(one(a, "max-lanes") ?? process.env["DORI_MAX_LANES"] ?? String(DEFAULT_MAX_LANES)),
+    maxStarts: Number(one(a, "max-starts") ?? process.env["DORI_MAX_STARTS"] ?? String(DEFAULT_MAX_STARTS)),
     force: one(a, "force") === "true",
     ...((one(a, "max-load") ?? process.env["DORI_MAX_LOAD"])
       ? { maxLoad: Number(one(a, "max-load") ?? process.env["DORI_MAX_LOAD"]) }

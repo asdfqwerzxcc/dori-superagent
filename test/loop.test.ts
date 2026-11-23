@@ -235,7 +235,7 @@ describe("hourly loop", () => {
       expect.stringContaining("start one failed: herdr tab create"),
       expect.stringContaining("start three failed: herdr tab create"),
     ]);
-    expect(run.held).toEqual(["1 item(s) waiting: 3 free of 3 lanes, max 2/run"]);
+    expect(run.held).toEqual(["1 item(s) waiting: 5 free of 5 lanes, max 2/run"]);
     expect(failing.d.store.item("one")).toMatchObject({ status: "open", attempts: 0, startFailures: 1 });
     expect(failing.d.store.lastRun()!.at).toBe(run.at);
     expect(readdirSync(join(failing.d.store.root, "loop"))).not.toContain("lock");

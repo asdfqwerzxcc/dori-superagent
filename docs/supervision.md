@@ -47,6 +47,14 @@ the shell.
 The repo owns each program under `src/supervisors/`; `~/.dori/bin/*.ts` is a two-line shim into the installed checkout, so a
 launcher or the watchdog keeps spawning the same path it always did.
 
+## Loop budget
+
+The hourly loop's caps come from `$DORI_HOME/config.json`: `maxLanes` (default 5) and `maxStarts` (default 2). When
+either key is present the supervisor starts the loop unit with `--max-lanes <n> --max-starts <m>` (the missing key is
+filled from the default); when neither is present the unit is started as plain `loop`, so its own defaults apply.
+`dori up` passes the same flags to the hourly pane when the loops are not supervised. The loop's host guard is unchanged:
+nothing starts while free memory is under 10% or the 1-minute load is above the core count, whatever the caps say.
+
 ## `dori status`
 
 ```

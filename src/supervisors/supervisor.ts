@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { ConfigError } from "../hooks.ts";
 import { PLUGINS } from "../plugins/registry.ts";
 import { pluginRunEntry } from "../plugins/plugin.ts";
 import { isPluginEnabled, removePluginRecord, writePluginRecord } from "../plugins/state.ts";
@@ -11,6 +12,7 @@ import { openUnitPanes } from "./ops-panes.ts";
 import type { PaneUnit } from "./panes.ts";
 import { runPluginUnit } from "./plugins.ts";
 import { paneCommand, runUnitInPane } from "./units.ts";
+import { DEFAULT_MAX_LANES, DEFAULT_MAX_STARTS, loopArgs, readLoopCaps, type LoopCaps } from "../loop-caps.ts";
 
 const RESTART_MS = 5_000;
 const BEAT_MS = 30_000;
@@ -90,6 +92,16 @@ export async function runSupervisor(): Promise<never> {
   beat();
   setInterval(beat, BEAT_MS).unref();
 
+  let loopCaps: LoopCaps = {};
+  try {
+    loopCaps = readLoopCaps(home);
+  } catch (e) {
+    if (!(e instanceof ConfigError)) throw e;
+    log(
+      `SUPERVISED loop_caps_invalid reason=${e.message.split("\n")[0] ?? ""} defaults=${DEFAULT_MAX_LANES}/${DEFAULT_MAX_STARTS}`,
+    );
+  }
+
   const panes = await openUnitPanes({ home, env: process.env, log, sleep });
   const paneUnit = (name: string, entry: string, args: readonly string[]): PaneUnit => ({
     name,
@@ -100,7 +112,7 @@ export async function runSupervisor(): Promise<never> {
   const specs: readonly Unit[] = [
     { name: "discord-gateway", entry: (h) => join(h, "bin", "discord-gateway.ts"), args: [], log: "gateway" },
     { name: "duty", entry: () => cli, args: ["duty", "--interval", "60"], log: "loops" },
-    { name: "loop", entry: () => cli, args: ["loop"], log: "loops" },
+    { name: "loop", entry: () => cli, args: loopArgs(loopCaps, ["loop"]), log: "loops" },
   ];
 
   const runHeadless = async (spec: Unit): Promise<never> => {

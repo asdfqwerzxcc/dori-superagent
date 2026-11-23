@@ -132,7 +132,7 @@ dori backlog add new-billing --brief briefs/billing.md --decision 'charge per se
 dori backlog import owner/repo --label dori     # label p1..p9 sets the priority, needs-decision marks a question
 ```
 
-A run that passes its gate (not stopped, not locked by another loop, at least an interval since the last run) first syncs items against lane and PR state. Then it audits missed work: a lane silent for 3 hours, a READY lane nobody closed for 2, a vanished pane. Then it pulls the next open items, within `--max-lanes` (default 3) open lanes and `--max-starts` (default 2) per run, while the host has load and memory to spare. Each open question reaches the lead once as `[DECIDE <id>]`, with one reminder after 6 hours, and the run ends with one `[LOOP ...]` report to the lead.
+A run that passes its gate (not stopped, not locked by another loop, at least an interval since the last run) first syncs items against lane and PR state. Then it audits missed work: a lane silent for 3 hours, a READY lane nobody closed for 2, a vanished pane. Then it pulls the next open items, within `--max-lanes` (default 5) open lanes and `--max-starts` (default 2) per run — both settable as `maxLanes`/`maxStarts` in `config.json` — while the host has load and memory to spare. Each open question reaches the lead once as `[DECIDE <id>]`, with one reminder after 6 hours, and the run ends with one `[LOOP ...]` report to the lead.
 
 The loop only opens lanes and sends messages; it never merges, pushes or closes a pane. The full design is in [`docs/hourly-loop.md`](docs/hourly-loop.md).
 
@@ -254,7 +254,7 @@ Harness environment:
 | `DORI_RUNTIME` | the runtime you are inside, else `hc` when it is on PATH, else `herdr` | which runtime new sessions open on: `herdr`, or `hc` (herdr-core, the headless session runtime from the same project); the `runtime` key in `$DORI_HOME/config.json` does the same, and with neither binary on PATH, nothing set and no pane or terminal of either around you, `dori` refuses with a one-line fix |
 | `DORI_CMD` | full path to `src/cli.ts` | how the agents are told to call dori |
 | `DORI_PROMPTS_DIR` | the repo's `prompts/` | your own prompt files |
-| `DORI_MAX_LANES`, `DORI_MAX_STARTS`, `DORI_MAX_LOAD` | 3, 2, core count | hourly loop budget |
+| `DORI_MAX_LANES`, `DORI_MAX_STARTS`, `DORI_MAX_LOAD` | 5, 2, core count | hourly loop budget; the supervisor passes `maxLanes`/`maxStarts` from `config.json`, which win over these |
 | `DORI_TELEMETRY`, `DORI_TELEMETRY_ENDPOINT` | on, `https://t.omo.dev` | `0` turns telemetry off |
 
 Dori mode reads `~/.dori/config.json` (or `DORI_CONFIG`); every field is optional and [`config.example.json`](skills/dori-mode/references/config.example.json) shows them all. The ones you will set first: `leadPane`, `laneWorkspace`, `defaultCwd`, `agentCommand` and `defaultModel`, `repoIdentities` (the Git name and email `verify-pr` expects per repo), `hooks.threadReply` and `hooks.threadDone` (your messenger CLI, as argv templates with `{thread}` and `{text}`), `hooks.transcribe`, and `guard` (load, free memory, free disk and pane count). Timing defaults: a nudge after 15 quiet minutes, the last report posted to the thread after 20, a done claim settled after 5.

@@ -132,7 +132,7 @@ dori backlog add new-billing --brief briefs/billing.md --decision 'charge per se
 dori backlog import owner/repo --label dori     # label p1..p9 sets the priority, needs-decision marks a question
 ```
 
-ゲート（停止されていない、別のループにロックされていない、前回の実行から少なくとも1インターバル経っている）を通過した実行は、まず項目をレーンとPRの状態に同期させます。次に、取りこぼした仕事を監査します。3時間黙っているレーン、2時間誰も閉じていないREADYのレーン、消えたペインです。それから、ホストの負荷とメモリに余裕がある間、開いているレーン数 `--max-lanes`（デフォルト3）と1回あたりの開始数 `--max-starts`（デフォルト2）の範囲で、次の未着手項目を取り出します。未解決の質問はそれぞれ `[DECIDE <id>]` として1回だけリードに届き、6時間後に1度だけリマインドされます。実行の最後には、リードへの `[LOOP ...]` 報告が1件送られます。
+ゲート（停止されていない、別のループにロックされていない、前回の実行から少なくとも1インターバル経っている）を通過した実行は、まず項目をレーンとPRの状態に同期させます。次に、取りこぼした仕事を監査します。3時間黙っているレーン、2時間誰も閉じていないREADYのレーン、消えたペインです。それから、ホストの負荷とメモリに余裕がある間、開いているレーン数 `--max-lanes`（デフォルト5）と1回あたりの開始数 `--max-starts`（デフォルト2）の範囲で、次の未着手項目を取り出します。未解決の質問はそれぞれ `[DECIDE <id>]` として1回だけリードに届き、6時間後に1度だけリマインドされます。実行の最後には、リードへの `[LOOP ...]` 報告が1件送られます。
 
 ループがするのはレーンを開くこととメッセージを送ることだけです。マージ、プッシュ、ペインのクローズは決してしません。設計の全体は [`docs/hourly-loop.md`](docs/hourly-loop.md) にあります。
 
@@ -254,7 +254,7 @@ omo自体もこの方法で作られています。2026-07-13から2026-11-08の
 | `DORI_RUNTIME` | いま自分がいるランタイム、なければPATHにある `hc`、それもなければ `herdr` | 新しいセッションをどのランタイムで開くか。`herdr` か、`hc`（herdr-core、同じプロジェクトの画面なしのセッションランタイム）です。`$DORI_HOME/config.json` の `runtime` キーも同じ働きをします。どちらもPATHになく、何も設定されておらず、どちらのペインやターミナルの中でもなければ、`dori` は1行の直し方を添えて拒否します |
 | `DORI_CMD` | `src/cli.ts` へのフルパス | エージェントにdoriをどう呼ばせるか |
 | `DORI_PROMPTS_DIR` | リポジトリの `prompts/` | 自分用のプロンプトファイル |
-| `DORI_MAX_LANES`, `DORI_MAX_STARTS`, `DORI_MAX_LOAD` | 3、2、コア数 | 毎時ループの予算 |
+| `DORI_MAX_LANES`, `DORI_MAX_STARTS`, `DORI_MAX_LOAD` | 5、2、コア数 | 毎時ループの予算 |
 | `DORI_TELEMETRY`, `DORI_TELEMETRY_ENDPOINT` | オン、`https://t.omo.dev` | `0` でテレメトリーをオフ |
 
 Dori modeは `~/.dori/config.json`（または `DORI_CONFIG`）を読みます。フィールドはすべて任意で、[`config.example.json`](skills/dori-mode/references/config.example.json) に全項目があります。最初に設定することになるのは次のものです。`leadPane`、`laneWorkspace`、`defaultCwd`、`agentCommand` と `defaultModel`、`repoIdentities`（`verify-pr` がリポジトリごとに期待するGitの名前とメールアドレス）、`hooks.threadReply` と `hooks.threadDone`（`{thread}` と `{text}` を含むargvテンプレートとして書く、使っているメッセンジャーのCLI）、`hooks.transcribe`、そして `guard`（負荷、空きメモリ、空きディスク、ペイン数）です。タイミングのデフォルトは、静かな状態が15分続いたら促し、20分で最後の報告をスレッドに投稿、完了申告は5分で決着です。

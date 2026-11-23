@@ -78,6 +78,20 @@ describe("dori up", () => {
     expect(w.superviseCalls).toEqual([{ supervisors: false }]);
   });
 
+  test("a configured loop budget rides on the hourly pane command", async () => {
+    const w = new World();
+    const d = w.deps();
+    writeFileSync(join(d.store.root, "config.json"), JSON.stringify({ maxLanes: 5 }));
+    await captureIo(async () => {
+      await up(d, "/w");
+      return 0;
+    });
+    const commands = w.calls
+      .filter((c) => c.cmd === "herdr" && c.argv[0] === "pane" && c.argv[1] === "run")
+      .map((c) => c.argv.at(-1));
+    expect(commands).toContain("dori loop --max-lanes 5 --max-starts 2");
+  });
+
   test("hc: four terminals in this home's group, prefixed roles, no herdr workspace variable", async () => {
     const w = new World();
     const d = w.deps({ runtime: "hc" });

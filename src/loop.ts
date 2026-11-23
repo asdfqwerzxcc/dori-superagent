@@ -6,6 +6,7 @@ import type { Deps } from "./harness.ts";
 import { tellLead } from "./inbox.ts";
 import { startLane } from "./lanes.ts";
 import { audit, HOUR } from "./loop-audit.ts";
+import { DEFAULT_MAX_LANES, DEFAULT_MAX_STARTS } from "./loop-caps.ts";
 import { acquire, holds, release } from "./loop-lock.ts";
 import { refText } from "./refs.ts";
 import type { LoopRun } from "./store-types.ts";
@@ -185,8 +186,8 @@ export function summary(run: LoopRun): string {
 /** One hourly pass. Skipped runs (stopped, locked, too soon) change nothing and write nothing. */
 export async function loopTick(d: Deps, opts: LoopOpts = {}): Promise<LoopRun> {
   const interval = opts.interval ?? HOUR;
-  const maxLanes = opts.maxLanes ?? 3;
-  const maxStarts = opts.maxStarts ?? 2;
+  const maxLanes = opts.maxLanes ?? DEFAULT_MAX_LANES;
+  const maxStarts = opts.maxStarts ?? DEFAULT_MAX_STARTS;
   const empty = { synced: [], findings: [], started: [], held: [], asked: [] };
   const stop = d.store.stop();
   if (stop) return { at: d.now(), skipped: `stopped: ${stop.reason}`, ...empty };
