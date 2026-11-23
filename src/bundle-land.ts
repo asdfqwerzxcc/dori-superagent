@@ -51,11 +51,11 @@ async function preflight(d: Deps, bundle: Bundle): Promise<Preflight> {
   const fork = await forkRemote(d, repoPath);
   if (fork === undefined)
     throw new Refusal(
-      `bundle ${bundle.id}: ${repoPath} has no github fork or origin remote; remote writes go to the fork only`,
+      `bundle ${bundle.id}: ${repoPath} has no github fork or origin remote; remote writes go to the selected remote (fork when present, else origin)`,
     );
   if (fork.repo.toLowerCase() !== bundle.repo.toLowerCase())
     throw new Refusal(
-      `bundle ${bundle.id} targets ${bundle.repo}, but ${repoPath}'s ${fork.name} remote is ${fork.repo}; remote writes go to the fork only`,
+      `bundle ${bundle.id} targets ${bundle.repo}, but ${repoPath}'s ${fork.name} remote is ${fork.repo}; remote writes go to the selected remote (fork when present, else origin)`,
     );
   for (const m of bundle.members) {
     const gate = await gateMember(d, m.lane);
