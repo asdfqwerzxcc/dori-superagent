@@ -189,9 +189,19 @@ async function workflowCount(
     };
   if (r.stderr.trim() !== "")
     return { refusal: ["checks_red", `gh api workflows wrote to stderr: ${r.stderr.trim()}`] };
-  const count = Number(r.stdout.trim());
-  if (!Number.isInteger(count) || count < 0)
-    return { refusal: ["checks_red", `workflow count for ${repo} is not a number: ${r.stdout.trim() || "(empty)"}`] };
+  const raw = r.stdout.trim();
+  if (!/^\d+$/.test(raw))
+    return {
+      refusal: [
+        "checks_red",
+        `workflow count for ${repo} is not a non-negative integer: ${
+          raw === "" ? "(empty or whitespace)" : JSON.stringify(raw)
+        }`,
+      ],
+    };
+  const count = Number(raw);
+  if (!Number.isSafeInteger(count))
+    return { refusal: ["checks_red", `workflow count for ${repo} is out of range: ${JSON.stringify(raw)}`] };
   return { count };
 }
 

@@ -74,6 +74,17 @@ describe("lane landing", () => {
     expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(false);
   });
 
+  test("refuses an unreadable workflow count without merging", async () => {
+    const { w, d } = laneFixture();
+    receiptAt(d, tipA);
+    laneGh(w, {
+      checks: { code: 1, stdout: "", stderr: "no checks reported" },
+      workflows: { code: 0, stdout: "" },
+    });
+    await expect(mergeLane(d, "alpha")).rejects.toThrow("(empty or whitespace)");
+    expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(false);
+  });
+
   test("refuses a gh pr checks failure with its message", async () => {
     const { w, d } = laneFixture();
     receiptAt(d, tipA);

@@ -96,6 +96,17 @@ describe("review + merge gate", () => {
     expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(false);
   });
 
+  test("an unreadable workflow count refuses instead of merging", async () => {
+    const { w, d } = setup();
+    gh(w, noChecks, { code: 0, stdout: "" });
+    w.reviewer = () => ({ code: 0, stdout: "ok\nVERDICT: CLEAR" });
+    await review(d, "o/r#7");
+    await expect(mergeGate(d, "o/r#7")).rejects.toThrow("(empty or whitespace)");
+    gh(w, noChecks, { code: 0, stdout: "  \n" });
+    await expect(mergeGate(d, "o/r#7")).rejects.toThrow("(empty or whitespace)");
+    expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(false);
+  });
+
   test("pending checks refuse", async () => {
     const { w, d } = setup();
     gh(w, [{ name: "test", bucket: "pending" }], 1);

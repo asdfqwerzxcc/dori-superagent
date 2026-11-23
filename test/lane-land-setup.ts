@@ -75,7 +75,7 @@ export function laneGh(
   opts: {
     readonly existing?: boolean;
     readonly checks?: CheckList | GhResult;
-    readonly workflows?: number;
+    readonly workflows?: number | GhResult;
     readonly stale?: "at-head" | "older";
     readonly base?: string;
     readonly headRepo?: string;
@@ -120,8 +120,10 @@ export function laneGh(
     }
     if (argv[0] === "pr" && argv[1] === "create") return { code: 0, stdout: `${url}\n` };
     if (argv[0] === "pr" && argv[1] === "edit") return { code: 0, stdout: "" };
-    if (argv[0] === "api" && argv[1]?.endsWith("/actions/workflows"))
-      return { code: 0, stdout: `${opts.workflows ?? 1}\n` };
+    if (argv[0] === "api" && argv[1]?.endsWith("/actions/workflows")) {
+      const workflows = opts.workflows ?? 1;
+      return typeof workflows === "number" ? { code: 0, stdout: `${workflows}\n` } : workflows;
+    }
     if (argv[0] === "pr" && argv[1] === "checks") {
       const checks = opts.checks ?? GREEN;
       if (isCheckList(checks)) return { code: 0, stdout: JSON.stringify(checks) };
