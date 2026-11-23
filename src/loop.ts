@@ -40,8 +40,8 @@ async function rememberQuiet(d: Deps, run: LoopRun): Promise<void> {
   } catch {}
 }
 export const MEM_FREE_MIN_PCT = 10;
-/** Absolute floor too: on a 7.7 GB host 10% is 770 MB, less than one agent's private memory. */
-export const MEM_FREE_MIN_MB = 1200;
+/** Absolute floor too: 10% of 7.7 GB is 770 MB, less than one agent's private memory; 700 MB is what this host can actually keep free beside a lead. */
+export const MEM_FREE_MIN_MB = 700;
 
 export type LoopOpts = { interval?: number; maxLanes?: number; maxStarts?: number; maxLoad?: number; force?: boolean };
 
