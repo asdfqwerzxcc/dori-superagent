@@ -11,7 +11,7 @@ export type ReviewDiagnostic = {
   readonly durationMs: number;
   readonly stdoutTail: string;
   readonly stderrTail: string;
-  readonly argv: readonly string[];
+  readonly argv: readonly string[] | null;
   readonly model: string | null;
   readonly chunk?: string;
 };
@@ -23,7 +23,7 @@ const elide = (arg: string): string => (arg.length > ELIDE ? `<${arg.length} cha
 const tail = (text: string): string => text.split(/\r?\n/).slice(-200).join("\n").slice(-MAX_TAIL);
 
 export function reviewDiagnostic(
-  argv: readonly string[],
+  argv: readonly string[] | null,
   outcome: ReviewOutcome,
   model: string | null,
   chunk?: string,
@@ -33,7 +33,7 @@ export function reviewDiagnostic(
     durationMs: outcome.durationMs,
     stdoutTail: tail(outcome.kind === "error" ? "" : outcome.stdout),
     stderrTail: tail(outcome.kind === "error" ? outcome.message : outcome.stderr),
-    argv: argv.map(elide),
+    argv: argv === null ? null : argv.map(elide),
     model,
     ...(chunk === undefined ? {} : { chunk }),
   };

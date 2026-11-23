@@ -52,6 +52,9 @@ export type ReviewOutcome =
       readonly durationMs: number;
     };
 
+/** The outcomes a spawned reviewer can produce; `error` is synthesized by the caller when the exec rejects. */
+export type ReviewProcessOutcome = Exclude<ReviewOutcome, { readonly kind: "error" }>;
+
 export type ReviewerRun = {
   readonly exec: Exec;
   readonly cmd: string;
@@ -104,7 +107,7 @@ const append = (log: string, text: string): void => {
  * Runs one reviewer and returns its exit or timeout. Output is appended to `log` as it arrives, and the same text is
  * kept in memory so a killed process still leaves a diagnosable tail.
  */
-export async function runReviewer(run: ReviewerRun): Promise<ReviewOutcome> {
+export async function runReviewer(run: ReviewerRun): Promise<ReviewProcessOutcome> {
   const startedAt = Date.now();
   const now = run.now ?? Date.now;
   const started = now();

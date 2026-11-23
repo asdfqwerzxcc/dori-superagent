@@ -58,17 +58,16 @@ export type ChunkReviewContext = {
 
 /**
  * Reviews every chunk under one job budget. A failed or thrown chunk does not end the job (the others still answer and
- * the receipt says what is missing); a retry reuses the chunks that answered. A job never downgrades a completed
- * verdict: a failure is kept in the progress sidecar while a canonical CLEAR/BLOCK stays. Saves the final receipt and
- * throws when the review is incomplete, so `reviewLane` only has to record a completed verdict.
+ * the receipt says what is missing); a retry reuses the chunks that answered. BLOCK wins over every failure and over a
+ * CLEAR at the same tip, and a failure is kept in the progress sidecar while a canonical CLEAR/BLOCK stays.
  */
 export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "BLOCK"> {
   const deadline = Date.now() + ctx.budgetMs;
   const budgetLeft = (): number => deadline - Date.now();
   const units: ProgressUnit[] = progressUnits(ctx.runs);
   const results: LaneResult[] = [];
-  const savePartial = (): void => {
-    savePartialReceipt({
+  const savePartial = async (): Promise<void> => {
+    await savePartialReceipt({
       d: ctx.d,
       key: ctx.key,
       tip: ctx.tip,
@@ -93,7 +92,7 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
   let firstFailure: { diagnostic: ReviewDiagnostic; path: string } | undefined;
   let budgetHit = false;
 
-  savePartial();
+  await savePartial();
   const queue = [...ctx.runs];
   for (let i = 0; i < queue.length; i++) {
     const run = queue[i]!;
@@ -101,7 +100,7 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
     if (left <= 0) {
       budgetHit = true;
       markNotRun(units, "job budget exhausted");
-      savePartial();
+      await savePartial();
       break;
     }
     const reused = resume.reuse(run);
@@ -116,7 +115,7 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
         reused: true,
         note: "from the previous attempt",
       });
-      savePartial();
+      await savePartial();
       continue;
     }
     updateUnit(units, run, {
@@ -124,7 +123,7 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
       note: undefined,
       ...(ctx.chosen === undefined ? {} : { model: ctx.chosen }),
     });
-    savePartial();
+    await savePartial();
     const window = Math.min(ctx.timeoutMs, left);
     const windowBudgetBound = left <= ctx.timeoutMs;
     const chunkDeadline = Date.now() + window;
@@ -150,7 +149,7 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
         const at = units.findIndex((unit) => unit.run === run);
         units.splice(at + 1, 0, ...subs.map((sub) => ({ run: sub, state: "pending" as const })));
         queue.splice(i + 1, 0, ...subs);
-        savePartial();
+        await savePartial();
         continue;
       }
     }
@@ -176,7 +175,7 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
     if (!failed(result)) {
       const unit = unitOf(units, run);
       resume.remember(run, result, unit === undefined ? run.label : unitRow(unit).label);
-      savePartial();
+      await savePartial();
       continue;
     }
     const { diagnostic, path: diagPath } = ctx.diagnose(result);
@@ -187,27 +186,28 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
       budgetHit = true;
       markNotRun(units, "job budget exhausted");
     }
-    savePartial();
+    await savePartial();
   }
 
   const rows = chunkRows(units);
   const failedResults = results.filter(failed);
   const timedOut = budgetHit || failedResults.some((r) => r.outcome.kind === "timeout");
   const emptyFailure = failedResults.some((r) => r.outcome.kind === "exit" && r.outcome.stdout.trim() === "");
-  const verdict: LaneVerdict = timedOut
-    ? "reviewer_timeout"
-    : emptyFailure
-      ? "reviewer_empty"
-      : failedResults.length > 0
-        ? "review_partial"
-        : results.some((r) => r.verdict === "BLOCK")
-          ? "BLOCK"
+  const anyBlock = results.some((r) => r.verdict === "BLOCK");
+  const verdict: LaneVerdict = anyBlock
+    ? "BLOCK"
+    : timedOut
+      ? "reviewer_timeout"
+      : emptyFailure
+        ? "reviewer_empty"
+        : failedResults.length > 0
+          ? "review_partial"
           : "CLEAR";
   const summary =
     failedResults.length === 0
       ? successSummary(results, notes, rows)
       : failureSummary(results, firstFailure?.path ?? "", notes, rows, failureDiagnostics);
-  const saved = saveFinalReceipt({
+  const saved = await saveFinalReceipt({
     d: ctx.d,
     key: ctx.key,
     tip: ctx.tip,
@@ -239,6 +239,6 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
       `${why}${where}${first === undefined ? "" : `; diagnostic ${diagnosticLine(first.diagnostic)}`}; output saved to ${ctx.logPath}${first === undefined ? "" : `; ${first.path}`}`,
     );
   }
-  clearCheckpoint(ctx.d.store.root, ctx.key, ctx.tip);
-  return verdict;
+  if (verdict === "CLEAR" || verdict === "BLOCK") clearCheckpoint(ctx.d.store.root, ctx.key, ctx.tip);
+  return saved.where === "sidecar" && saved.kept === "BLOCK" ? "BLOCK" : verdict;
 }

@@ -57,20 +57,26 @@ marked `pending`, then rewritten after each chunk (`running`, then `CLEAR`, `BLO
 `not run`). The receipt is therefore never missing while a large review is in flight, and a killed worker leaves its
 last progress behind. `dori done` refuses `review_partial` like every other non-CLEAR verdict.
 
-A job never downgrades a completed verdict. The decision is made against the canonical receipt on disk at write time,
-not a snapshot from job start: while a tip already has CLEAR or BLOCK, progress goes to
+A job never downgrades a completed verdict. The decision is made against the canonical receipt on disk at write time
+under a per-lane+tip lock, not a snapshot from job start: while a tip already has CLEAR or BLOCK, progress goes to
 `state/reviews/<key>@<tip>.progress.json` instead of the canonical receipt, and a job that ends in failure writes its
-failure to that sidecar (plus its diagnostic) rather than replacing the CLEAR/BLOCK. A job that itself produces
-CLEAR or BLOCK may replace the canonical verdict. This keeps an interrupted or failed re-review, and a job that
-started before another job's CLEAR, from erasing a valid answer.
+failure to that sidecar (plus its diagnostic) rather than replacing the CLEAR/BLOCK. BLOCK always wins at the same
+tip: a later CLEAR never replaces a BLOCK (it goes to the sidecar/history), and a lane clears a BLOCK only by moving
+the tip. A job that produces a stronger verdict may replace the canonical one. This keeps an interrupted or failed
+re-review, and a job that started before another job's CLEAR, from erasing a valid answer.
+
+The receipt read-modify-write is serialized per lane and tip by a directory lock at
+`state/reviews/<key>@<tip>.receipt.lock`: `mkdir` is the atomic acquire, a lock older than 10 s is taken over, and a
+writer waits up to 15 s before reporting the lock as stuck. `savePartialReceipt`, `saveFinalReceipt` and the sidecar
+clear all run under it.
 
 A failed chunk no longer ends the job: the remaining chunks are still reviewed, so one timed-out chunk cannot hide
 what the other chunks said. A reviewer whose process cannot be started at all (the exec throws, for example a missing
 agent binary) is that chunk's `failed` result with the error text; later chunks are still attempted and the final
-receipt names it. The final verdict is `reviewer_timeout` when a chunk timed out or the budget ran out,
-`reviewer_empty` when a chunk printed nothing, `review_partial` when a chunk failed without one of those verdicts,
-otherwise `BLOCK` when any chunk blocked, otherwise `CLEAR`. The summary and the `chunks` field carry every chunk's
-state and each failure's diagnostic.
+receipt names it. The final verdict is `BLOCK` when any chunk blocked, even if another chunk timed out or the budget
+ran out; otherwise `reviewer_timeout` when a chunk timed out or the budget ran out, `reviewer_empty` when a chunk
+printed nothing, `review_partial` when a chunk failed without one of those verdicts, otherwise `CLEAR`. The summary and
+the `chunks` field carry every chunk's state and each failure's diagnostic.
 
 Chunks that answered are checkpointed in `state/reviews/<key>@<tip>.chunks.json`, keyed by the rendered chunk prompt and
 by the reviewer command. A retry at the same tip reuses only the chunks that answered `CLEAR` or `BLOCK`; a chunk that
@@ -80,26 +86,29 @@ sub-chunks that already answered are read from the checkpoint. The checkpoint is
 `CLEAR` or `BLOCK`, and one written for another tip or another `--model` is ignored.
 
 A reviewer that outlives the deadline is killed and writes a receipt whose verdict is `reviewer_timeout`, carrying the
-partial stdout, the stderr and the exit code (when the killed process reported one), plus every chunk's state. A reviewer
+partial stdout, the stderr and the exit code (when the killed process reported one), plus every chunk's state. When the
+tip already has a CLEAR/BLOCK, that failure goes to the sidecar instead and the completed verdict stays. A reviewer
 that exits with an empty stdout on a chunk is first re-split; only a sub-chunk that is still empty (or a single chunk
 that cannot be split) writes a `reviewer_empty` receipt, also carrying stderr and the exit code. Both are failed reviews:
 `dori done` refuses them and never treats the lane as approved. The full output stays in
 `state/reviews/<key>.log`.
 
 A failed run also writes one JSON diagnostic, `receipts/lane_<key>@<tip>-<uuid>.diagnostic.json` (mode 0600), with
-`exitCode`, `durationMs`, `stdoutTail`, `stderrTail`, `argv` (the prompt elided) and `model`; a chunked review adds
-`chunk`. The same compact JSON is in the refusal line. That is what turns a zero-byte answer into a diagnosis: the exit
-code, the duration, the stderr and the argv (including the model) are all on disk.
+`exitCode`, `durationMs`, `stdoutTail`, `stderrTail`, `argv` (the prompt elided, or `null` when the reviewer could
+not be started at all) and `model`; a chunked review adds `chunk`. The same compact JSON is in the refusal line. That
+is what turns a zero-byte answer into a diagnosis: the exit code, the duration, the stderr and the argv (including the
+model) are all on disk.
 
 A reviewer that prints its `VERDICT:` line and then fails to exit is done answering: the CLI reads for a short grace
 (2 s), kills the process, accepts the verdict, and says `verdict printed; killed after ...` in the receipt. Only a process
 that reaches the deadline without a verdict writes `reviewer_timeout`.
 
 A reviewer that printed something but no `VERDICT` line writes no receipt on a single-diff review; the diagnostic
-above is its record and the command fails. A chunked review always leaves a receipt (the pending `review_partial`, then
-the final verdict) and its `chunks` array records the chunk that failed. A zero-byte answer is always `reviewer_empty`,
-never a pending review. A verdict printed only to stderr is not accepted: it is a `reviewer_empty` receipt whose
-diagnostic keeps that stderr.
+above is its record and the command fails. A reviewer whose process cannot be started at all writes a `review_partial`
+receipt on a single-diff review (and a `failed` chunk on a chunked one), with the thrown message in the summary and the
+diagnostic. A chunked review always leaves a receipt (the pending `review_partial`, then the final verdict) and its
+`chunks` array records the chunk that failed. A zero-byte answer is always `reviewer_empty`, never a pending review. A
+verdict printed only to stderr is not accepted: it is a `reviewer_empty` receipt whose diagnostic keeps that stderr.
 
 ### Why a chunk can take ten minutes
 
