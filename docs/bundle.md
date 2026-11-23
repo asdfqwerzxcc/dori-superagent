@@ -31,11 +31,11 @@ dori merge <owner/repo#N> --bundle <id> # 명시적 번들 게이트로 머지
 ## 레인 게이트(기본)와의 관계
 
 - **기본(레인 게이트)**: 레인마다 `dori review --lane <key>` → `dori merge <key>`. 이 문서의 번들 명령은 쓰지 않는다. PR은 `lane.repo`의 자기 리모트(`fork`가 있으면 `fork`, 없으면 `origin`)에 만들고 merge commit으로 머지한다.
-- **번들 게이트(명시적)**: 여러 레인을 한 PR/한 승인으로 묶을 때만 `dori bundle` → `dori merge --bundle <id>`. `add`는 CLEAR+sha를, `merge --bundle`은 구성원 영수증과 체크를 판정한다.
+- **번들 게이트(명시적)**: 여러 레인을 한 PR/한 승인으로 묶을 때만 `dori bundle` → `dori merge --bundle <id>`. `add`는 CLEAR+sha를, `merge --bundle`은 구성원 영수증과 체크를 판정한다. 단, PR head에 CLEAR 영수증이 있으면 `bundleGate`를 건너뛴다(규칙 3 ⑴).
+- **리모트 규칙**: `bundle land`도 `fork`가 있으면 `fork`, 없으면 `origin`으로 푸시하며, 그 리모트가 번들 레포와 같아야 하고 업스트림이면 거부한다.
 
 자세한 배경은 `docs/workflow.md` §3.5.
 
 ## 아직 없는 것
 
 - Gate inbox 화면 없음: 판단은 레인 PR(묶음 모드에서는 번들 MR) 리뷰 화면에서 하고 `dori sop gate show`/`sync`가 근거와 영수증을 잇는다.
-- `bundle land`도 레인 게이트와 같은 리모트 규칙을 따른다: `fork`가 있으면 `fork`, 없으면 `origin`으로 푸시한다(그 리모트가 번들 레포와 같아야 한다).

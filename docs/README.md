@@ -20,7 +20,7 @@
 |---|---|---|
 | [board.md](board.md) | 구현 | Vercel Board 모델의 로컬 이식: 태스크=스레드, 리스, `needs` DAG |
 | [sop.md](sop.md) | 구현 | SOP 정의/런, 한 번들=한 게이트, MR 근거 게시와 `sop sync` 영수증 |
-| [bundle.md](bundle.md) | 구현 | 레인 영수증 게이트, `bundle land`로 MR 1개, `merge --bundle` |
+| [bundle.md](bundle.md) | 구현 | 명시적 묶음 모드: 레인 영수증 게이트, `bundle land`로 MR 1개, `merge --bundle` |
 | [dori-link.md](dori-link.md) | 구현 | LAN 페어링(8자 코드+지문), `dori devices` |
 | [portable-install.md](portable-install.md) | 구현 | 새 머신/회사 PC 준비물, `dori doctor`, `DORI_HOME` 분리 |
 | [plugins.md](plugins.md) | 구현 | 플러그인 레지스트리 |

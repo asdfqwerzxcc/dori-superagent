@@ -7,10 +7,10 @@
 | 리모트 | 저장소 | 역할 |
 |---|---|---|
 | `origin` | `sisyphuslabs/dori-superagent` | **업스트림**. fetch/rebase만. push 금지 |
-| `fork` | `asdfqwerzxcc/dori-superagent` | 우리 작업 원격. **번들 MR 대상 = `fork:main`** |
+| `fork` | `asdfqwerzxcc/dori-superagent` | 우리 작업 원격. **레인 PR 대상 = `fork:main`** |
 | `local` | `~/.dori/remotes/dori.git` | 로컬 미러(백업) |
 
-- 업스트림 동기화: `git fetch origin` → 로컬 main에 merge → `git push fork main`(번들 흐름이 켜지면 MR 머지만).
+- 업스트림 동기화: `git fetch origin` → `git merge --ff-only origin/main`. 통합 브랜치 `fork/main` 동기화: `git fetch fork` → `git merge --ff-only fork/main`. `fork/main` 직접 push는 금지한다.
 - `fork:main` = 우리 통합 브랜치. 업스트림 미러가 아니다.
 
 ## CI
@@ -32,4 +32,4 @@
 ## 금지
 
 - `origin`(업스트림)으로의 push/PR — 어떤 경우에도.
-- `fork:main` 직접 push는 번들 흐름이 켜진 뒤에는 금지(MR 머지만).
+- `fork:main` 직접 push는 금지한다. 레인은 `dori merge <key>`로 PR을 만들어 머지하고, `dori doctor`의 merge guard가 PR 없는 main 이동을 경고한다.
