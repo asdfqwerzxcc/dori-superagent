@@ -76,8 +76,26 @@ export type ReviewReceipt = {
 };
 
 /** A reviewer's answer to one lane diff. `reviewer_timeout` and `reviewer_empty` are failed reviews: they are
- * receipts like any other, and a `done` gate refuses them rather than treating a missing answer as pending. */
-export type LaneVerdict = "CLEAR" | "BLOCK" | "reviewer_timeout" | "reviewer_empty";
+ * receipts like any other, and a `done` gate refuses them rather than treating a missing answer as pending.
+ * `review_partial` is a chunked review that has not answered every chunk yet (written at plan time and after each
+ * chunk, so a hung job still leaves progress); it is a refusal like the other non-CLEAR verdicts. */
+export type LaneVerdict = "CLEAR" | "BLOCK" | "reviewer_timeout" | "reviewer_empty" | "review_partial";
+
+/** Where one chunk of a chunked review stands; `not run` means the job budget ran out before it was attempted. */
+export type LaneChunkState = "pending" | "running" | "CLEAR" | "BLOCK" | "timed out" | "empty" | "failed" | "not run";
+
+/** One row of a chunked lane receipt: enough to tell what was reviewed, by which model, and how it ended. */
+export type LaneChunkReceipt = {
+  label: string;
+  paths: readonly string[];
+  bytes: number;
+  lines: number;
+  state: LaneChunkState;
+  model?: string;
+  durationMs?: number;
+  reused?: true;
+  note?: string;
+};
 
 /** The verdict a reviewer gave one lane diff: `receipts/lane_<key>@<tip>.json`. */
 export type LaneReceipt = {
@@ -89,6 +107,8 @@ export type LaneReceipt = {
   reviewer: string;
   at: number;
   summary: string;
+  /** Every chunk of a chunked review, including the ones not run; absent for a single-diff review. */
+  chunks?: readonly LaneChunkReceipt[];
 };
 
 /**

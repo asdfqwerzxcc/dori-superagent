@@ -5,8 +5,15 @@ import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Exec } from "./runtime/exec.ts";
 
-/** The default reviewer deadline: long enough for a real review of a large diff (the design lanes take 11-16 minutes), short enough that a hung provider still fails the lane. */
+/** The default reviewer deadline per attempt: long enough for a real review of a large diff (the design lanes take 11-16 minutes), short enough that a hung provider still fails the lane. */
 export const REVIEW_TIMEOUT_MS = 1_800_000;
+/**
+ * The job-wide budget for one lane review: per-chunk deadlines add up, so a 26-chunk diff could otherwise hold the queue
+ * for thirteen hours. When the budget runs out the remaining chunks are recorded as `not run` and a retry resumes them.
+ * The largest completed chunked run on this host was 6 chunks in 37 minutes; 60 minutes leaves room for one more slow
+ * chunk without turning one hung provider into a whole afternoon.
+ */
+export const REVIEW_JOB_BUDGET_MS = 3_600_000;
 /** How often a still-running reviewer says so, so a lead can tell "slow" from "dead". */
 export const REVIEW_PROGRESS_MS = 30_000;
 /** After the kill, how long to wait for the process to report an exit code; the timeout stands either way. */
@@ -65,10 +72,16 @@ export function reviewVerdict(stdout: string): ReviewVerdict | undefined {
   return last?.[1] as ReviewVerdict | undefined;
 }
 
-/** `DORI_REVIEW_TIMEOUT_MS` when set to a positive number, else the 10-minute default. */
+/** `DORI_REVIEW_TIMEOUT_MS` when set to a positive number, else the 30-minute default. */
 export function reviewTimeoutFromEnv(env: NodeJS.ProcessEnv = process.env): number {
   const ms = Number(env["DORI_REVIEW_TIMEOUT_MS"]);
   return Number.isFinite(ms) && ms >= 1 ? ms : REVIEW_TIMEOUT_MS;
+}
+
+/** `DORI_REVIEW_BUDGET_MS` when set to a positive number, else the 60-minute job budget. */
+export function reviewBudgetFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const ms = Number(env["DORI_REVIEW_BUDGET_MS"]);
+  return Number.isFinite(ms) && ms >= 1 ? ms : REVIEW_JOB_BUDGET_MS;
 }
 
 const append = (log: string, text: string): void => {

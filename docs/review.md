@@ -33,14 +33,16 @@ The lane record also carries the current `tipSha`, refreshed at each review.
    reviewed in sequence; a chunk that returns an empty answer is split once more, by path (or by hunks when one file
    remains), and its sub-chunks are reviewed before the review is called empty;
 4. runs the reviewer non-interactively (`omo -p --no-session --model M`, or `hooks.reviewCommand` when configured) with a
-   10-minute deadline per attempt (`DORI_REVIEW_TIMEOUT_MS` overrides it), streams its stdout/stderr to
-   `state/reviews/<key>.log`, and prints one "still running" line every 30 s; a failed attempt (timeout, non-zero exit,
-   empty stdout or no verdict) is retried once with `reviewFallbackModel` from `config.json` when that key is set and
-   differs from the first model;
-5. reads exactly one final `VERDICT: CLEAR|BLOCK` line per chunk (BLOCK wins when any chunk blocks) and writes
-   `receipts/lane_<key>@<tip>.json` with the verdict, base, tip, brief path, reviewer command (including its `--model`,
-   and the fallback when one ran), time and, for a chunked review, a summary naming every chunk, its model and its
-   result.
+   30-minute deadline per attempt (`DORI_REVIEW_TIMEOUT_MS` overrides it) inside a 60-minute job budget
+   (`DORI_REVIEW_BUDGET_MS` overrides it). Each attempt gets the smaller of the deadline and the budget left, so a
+   26-chunk diff cannot hold the queue for hours: when the budget runs out, the chunks not attempted are recorded as
+   `not run` and a retry resumes them. Output streams to `state/reviews/<key>.log` with one "still running" line every
+   30 s; a failed attempt (timeout, non-zero exit, empty stdout or no verdict) is retried once with
+   `reviewFallbackModel` from `config.json` when that key is set and differs from the first model;
+5. reads exactly one final `VERDICT: CLEAR|BLOCK` line per chunk, continues with the remaining chunks after one fails,
+   and writes `receipts/lane_<key>@<tip>.json` with the verdict, base, tip, brief path, reviewer command (including its
+   `--model`, and the fallback when one ran), time and, for a chunked review, a `chunks` array naming every chunk's
+   paths, bytes, changed lines, state, model, duration and whether it was reused from an earlier attempt.
 
 A `hooks.reviewCommand` reviewer still gets the deadline, the log, the diagnostic and the failure receipts, but it runs
 once on the full diff and is not retried with a fallback model: it owns its own command, so the path chunking and
@@ -49,11 +51,30 @@ once on the full diff and is not retried with a fallback model: it owns its own 
 The receipt names the exact tip, so it can never describe a different diff. A new commit after a review invalidates it:
 review again.
 
+A chunked review writes its receipt before the first reviewer starts: verdict `review_partial`, every planned chunk
+marked `pending`, then rewritten after each chunk (`running`, then `CLEAR`, `BLOCK`, `timed out`, `empty`, `failed` or
+`not run`). The receipt is therefore never missing while a large review is in flight, and a killed worker leaves its
+last progress behind. `dori done` refuses `review_partial` like every other non-CLEAR verdict. A re-review of a tip that
+already has a CLEAR or BLOCK receipt keeps that verdict in the canonical receipt and writes the progress to
+`state/reviews/<key>@<tip>.progress.json` instead, so an interrupted re-review can never erase a valid answer.
+
+A failed chunk no longer ends the job: the remaining chunks are still reviewed, so one timed-out chunk cannot hide
+what the other chunks said. The final verdict is `reviewer_timeout` when a chunk timed out or the budget ran out,
+`reviewer_empty` when a chunk printed nothing, `review_partial` when a chunk failed without one of those verdicts,
+otherwise `BLOCK` when any chunk blocked, otherwise `CLEAR`. The summary and the `chunks` field carry every chunk's
+state and each failure's diagnostic.
+
+Chunks that answered are checkpointed in `state/reviews/<key>@<tip>.chunks.json`, keyed by the rendered chunk prompt and
+by the reviewer command. A retry at the same tip reuses those answers instead of spawning the reviewer again; only the
+chunks that timed out, printed nothing or were never run are attempted. The checkpoint is deleted when the review
+finishes `CLEAR` or `BLOCK`, and one written for another tip or another `--model` is ignored.
+
 A reviewer that outlives the deadline is killed and writes a receipt whose verdict is `reviewer_timeout`, carrying the
-partial stdout, the stderr and the exit code (when the killed process reported one). A reviewer that exits with an empty
-stdout on a chunk is first re-split; only a sub-chunk that is still empty (or a single chunk that cannot be split) writes
-a `reviewer_empty` receipt, also carrying stderr and the exit code. Both are failed reviews: `dori done` refuses them and
-never treats the lane as approved. The full output stays in `state/reviews/<key>.log`.
+partial stdout, the stderr and the exit code (when the killed process reported one), plus every chunk's state. A reviewer
+that exits with an empty stdout on a chunk is first re-split; only a sub-chunk that is still empty (or a single chunk
+that cannot be split) writes a `reviewer_empty` receipt, also carrying stderr and the exit code. Both are failed reviews:
+`dori done` refuses them and never treats the lane as approved. The full output stays in
+`state/reviews/<key>.log`.
 
 A failed run also writes one JSON diagnostic, `receipts/lane_<key>@<tip>-<uuid>.diagnostic.json` (mode 0600), with
 `exitCode`, `durationMs`, `stdoutTail`, `stderrTail`, `argv` (the prompt elided) and `model`; a chunked review adds
@@ -64,9 +85,27 @@ A reviewer that prints its `VERDICT:` line and then fails to exit is done answer
 (2 s), kills the process, accepts the verdict, and says `verdict printed; killed after ...` in the receipt. Only a process
 that reaches the deadline without a verdict writes `reviewer_timeout`.
 
-A reviewer that printed something but no `VERDICT` line writes no receipt; the diagnostic above is its record and the
-command fails. A zero-byte answer is always `reviewer_empty`, never a pending review. A verdict printed only to stderr is
-not accepted: it is a `reviewer_empty` receipt whose diagnostic keeps that stderr.
+A reviewer that printed something but no `VERDICT` line writes no receipt on a single-diff review; the diagnostic
+above is its record and the command fails. A chunked review always leaves a receipt (the pending `review_partial`, then
+the final verdict) and its `chunks` array records the chunk that failed. A zero-byte answer is always `reviewer_empty`,
+never a pending review. A verdict printed only to stderr is not accepted: it is a `reviewer_empty` receipt whose
+diagnostic keeps that stderr.
+
+### Why a chunk can take ten minutes
+
+A measurement of the 24 reviewer diagnostics under `$DORI_HOME/receipts/` (2026-11-16..22) found 11 at the old 600 s
+deadline (+0.3 s kill). The timed-out chunks were 5,085 B/105 lines, 6,656 B/84, 11,650 B/120, 14,786 B/170,
+16,156 B/188, 16,330 B/199 and 39,605 B/706; three of the seven chunked timeouts were under 12 KiB, and four
+non-chunked runs on 4.1-7.0 KiB diffs hit the same 600 s. The same 43,936 B/809-line chunk cleared on a rerun, and a
+6-chunk 56 KiB lane finished with per-chunk answers between 78 s and 600 s. The deadline was not catching oversized
+chunks; it was cutting off a slow provider mid-answer.
+
+The response is the per-attempt deadline *plus* the job budget, continuing after a failed chunk, a receipt from the
+moment the plan exists, and checkpointed reuse. Lowering the chunk cap would multiply calls and hang exposure without
+removing the failure; one read-only reviewer for the whole diff has a single deadline and no per-chunk progress, and
+the successful single-review runs observed here took 8-17 minutes, already past 600 s. Applied to the 56 KiB
+`ui-baseui` lane at `3e6b633`, the new path had a `review_partial` receipt 0.5 s after the run started (before any
+reviewer output) and recorded its first 5 KiB chunk CLEAR at 495 s, well inside the old 600 s horizon.
 
 ### The queued path
 
@@ -132,9 +171,9 @@ A review still in the queue refuses without waiting and without sending the lead
 lane <key> at <sha>: a review is in flight (<state>, requested <time>); its verdict will arrive as an inbox message from duty. Run dori done <key> again once the receipt exists (or dori done --drop <key> --reason <text>)
 ```
 
-These verdicts (and `reviewer_empty`) are failures, not passes: the lane is never approved by a review that produced no
-answer. A lane that committed nothing (`base` equals `tip`) closes without a receipt: an investigation lane has no diff to
-review. A lane started before this gate has no recorded base; it closes with an explicit `(no review gate: ...)` note
+These verdicts (and `reviewer_empty` and `review_partial`) are failures, not passes: the lane is never approved by a
+review that produced no answer. A lane that committed nothing (`base` equals `tip`) closes without a receipt: an
+investigation lane has no diff to review. A lane started before this gate has no recorded base; it closes with an explicit `(no review gate: ...)` note
 instead of being reviewed against a guessed base. There is no force path: a BLOCK, a failed review or a missing receipt
 is resolved by reviewing again, or by `dori done --drop <key> --reason <text>`, which closes the lane, removes its
 worktree and branch without landing, records `dropped` with the reason, and never touches `main`. The escape hatch is

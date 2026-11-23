@@ -7,7 +7,8 @@ import { failureDetail } from "./delivery.ts";
 import type { Deps } from "./harness.ts";
 import { tellLead } from "./inbox.ts";
 import { readJson, writeJson } from "./json-file.ts";
-import { laneReviewTarget, reviewLane } from "./lane-review.ts";
+import { laneReviewTarget } from "./lane-review-target.ts";
+import { reviewLane } from "./lane-review.ts";
 import { lockLive } from "./loop-lock.ts";
 import { KEY_RE } from "./store-types.ts";
 
