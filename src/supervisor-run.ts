@@ -230,11 +230,18 @@ export async function restartSupervisors(home: string, timeoutMs = 120_000): Pro
   });
   const wanted = !ensureUpOff(home) && isPluginEnabled(home, "ensure-up");
   const ensureUp = await waitEnsureUp(home, wanted, ok ? 15_000 : 0);
-  const health = supervisorHealth(home);
-  const supervisor = health.find((h) => h.name === "supervisor");
-  const units = supervisor?.units ?? [];
   const expected = ["discord-gateway", "duty", "loop", ...enabledPluginNames(home)];
-  const unitsUp = expected.every((name) => units.some((u) => u.name === name && u.alive));
+  // Units started through panes register a moment after the supervisor's own heartbeat, so poll instead of reading once.
+  const deadline = started + timeoutMs;
+  let health = supervisorHealth(home);
+  let supervisor = health.find((h) => h.name === "supervisor");
+  let unitsUp = expected.every((name) => (supervisor?.units ?? []).some((u) => u.name === name && u.alive));
+  while (!unitsUp && Date.now() < deadline) {
+    await Bun.sleep(500);
+    health = supervisorHealth(home);
+    supervisor = health.find((h) => h.name === "supervisor");
+    unitsUp = expected.every((name) => (supervisor?.units ?? []).some((u) => u.name === name && u.alive));
+  }
   const all = ok && supervisor?.alive === true && unitsUp && (!wanted || ensureUp.alive);
   const wsAge = ageMs(join(stateDir(home), WS_HEARTBEAT));
   return {
