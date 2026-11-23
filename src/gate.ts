@@ -158,6 +158,14 @@ async function gateRefusal(
       return ["review_block", `review at ${sha.slice(0, 12)} is ${receipt.verdict}`];
     }
   }
+  return checksRefusal(d, pr);
+}
+
+/** The check dimension alone, shared by the PR gate and the lane gate: an empty list is never green. */
+export async function checksRefusal(
+  d: Deps,
+  pr: { readonly repo: string; readonly number: number },
+): Promise<[MergeOutcome, string] | undefined> {
   const checksRes = await d.exec("gh", ["pr", "checks", String(pr.number), "--repo", pr.repo, "--json", "name,bucket"]);
   const checks: Check[] = checksRes.stdout.trim().startsWith("[") ? JSON.parse(checksRes.stdout) : [];
   if (checks.length === 0) return ["no_checks", "no checks reported: an empty check list is never green"];

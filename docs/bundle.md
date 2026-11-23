@@ -38,4 +38,4 @@ dori merge <owner/repo#N> --bundle <id> # 명시적 번들 게이트로 머지
 ## 아직 없는 것
 
 - Gate inbox 화면 없음: 판단은 번들 MR 리뷰 화면에서 하고 `dori sop gate show`/`sync`가 근거와 영수증을 잇는다.
-- `bundle land`는 포크 리모트를 대상으로 한다(업스트림 금지). 레인 게이트는 `lane.repo`의 자기 리모트를 쓴다.
+- `bundle land`도 레인 게이트와 같은 리모트 규칙을 따른다: `fork`가 있으면 `fork`, 없으면 `origin`으로 푸시한다(그 리모트가 번들 레포와 같아야 한다).

@@ -228,6 +228,17 @@ test("merge guard: local main commits that did not land through a PR warn", asyn
   expect(result.detail).toContain("abc1234 merge lane alpha");
   expect(result.hint).toContain("dori merge");
 
+  const long = fakeDoctorEnv({
+    commands: {
+      ...refs,
+      "git rev-list --count refs/remotes/origin/main..refs/heads/main": ok("1\n"),
+      "git log --format=%h %s -n 5 refs/remotes/origin/main..refs/heads/main": ok(`abc1234 ${"x".repeat(400)}\n`),
+    },
+  });
+  const longResult = await machineChecks(long.env).mergeGuard();
+  expect(longResult.detail.length).toBeLessThan(320);
+  expect(longResult.detail).toContain("...");
+
   const clean = fakeDoctorEnv({
     commands: { ...refs, "git rev-list --count refs/remotes/origin/main..refs/heads/main": ok("0\n") },
   });

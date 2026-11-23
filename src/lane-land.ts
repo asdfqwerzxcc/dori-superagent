@@ -2,7 +2,10 @@
 // it has one, else origin), merges as a merge commit, and its remote branch is deleted. Bundles remain the explicit
 // mode for grouping several lanes into one PR.
 
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { short } from "./bundles.ts";
+import { checksRefusal } from "./gate.ts";
 import type { Deps } from "./harness.ts";
 import { asSha, laneHead, laneRepo } from "./lane-repo.ts";
 import { branchOf } from "./lane-worktree.ts";
@@ -10,10 +13,31 @@ import { findPr } from "./pr.ts";
 import { Refusal } from "./refusal.ts";
 import { repoFromRemote } from "./repo-policy.ts";
 import type { ExecResult } from "./runtime/exec.ts";
-import type { Lane, LaneReceipt } from "./store-types.ts";
+import { KEY_RE, type Lane, type LaneReceipt } from "./store-types.ts";
 
 const gitWhy = (r: ExecResult): string => (r.stderr || r.stdout).trim() || `git exited ${r.code}`;
 const ghWhy = (r: ExecResult): string => (r.stderr || r.stdout).trim() || `gh exited ${r.code}`;
+const TITLE_MAX = 256;
+
+const clipTitle = (text: string): string => {
+  const one = text.replace(/\s+/g, " ").trim();
+  return one.length <= TITLE_MAX ? one : `${one.slice(0, TITLE_MAX - 3).trimEnd()}...`;
+};
+
+function briefTitle(lane: Lane): string | undefined {
+  let text: string;
+  try {
+    text = readFileSync(lane.brief, "utf8");
+  } catch {
+    return undefined;
+  }
+  const heading = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("#"));
+  const title = heading?.replace(/^#+\s*/, "").trim();
+  return title === undefined || title === "" ? undefined : title;
+}
 
 export type LaneMergeOptions = { readonly dryRun?: boolean };
 
@@ -51,11 +75,15 @@ function clearReceipt(d: Deps, lane: Lane, head: string): LaneReceipt {
 }
 
 function prTitle(lane: Lane): string {
-  const first = (lane.final?.text ?? "")
+  const heading = briefTitle(lane);
+  if (heading !== undefined) return clipTitle(heading);
+  const answer = (lane.final?.text ?? "").replace(/^READY\s+[^\n]*(?:\n+|$)/i, "");
+  const firstLine = answer
     .split(/\r?\n/)
     .map((line) => line.trim())
     .find((line) => line !== "");
-  return first === undefined || first === "" ? branchOf(lane.key) : first;
+  const firstSentence = firstLine?.split(/(?<=[.!?。])\s+/)[0] ?? firstLine ?? "";
+  return clipTitle(firstSentence === "" ? branchOf(lane.key) : firstSentence);
 }
 
 function prBody(lane: Lane, head: string, receipt: LaneReceipt): string {
@@ -74,7 +102,7 @@ async function upsertPr(
   lane: Lane,
   repo: string,
   branch: string,
-  body: string,
+  bodyPath: string,
 ): Promise<{ readonly number: number; readonly url: string }> {
   const title = prTitle(lane);
   const existing = await findPr(d, repo, branch);
@@ -91,8 +119,8 @@ async function upsertPr(
       repo,
       "--title",
       title,
-      "--body",
-      body,
+      "--body-file",
+      bodyPath,
     ]);
     if (edit.code !== 0) throw new Refusal(`lane ${lane.key}: gh pr edit failed: ${ghWhy(edit)}`);
     return { number: existing.number, url: existing.url };
@@ -108,8 +136,8 @@ async function upsertPr(
     branch,
     "--title",
     title,
-    "--body",
-    body,
+    "--body-file",
+    bodyPath,
   ]);
   if (created.code !== 0) throw new Refusal(`lane ${lane.key}: gh pr create failed: ${ghWhy(created)}`);
   const url = created.stdout
@@ -129,6 +157,7 @@ async function upsertPr(
  * without touching the network.
  */
 export async function mergeLane(d: Deps, key: string, opts: LaneMergeOptions = {}): Promise<string[]> {
+  if (!KEY_RE.test(key)) throw new Refusal(`lane key must match ${KEY_RE}`);
   const lane = d.store.lane(key);
   if (lane === undefined) throw new Refusal(`no lane ${key}`);
   if (lane.status === "done" || lane.status === "dropped")
@@ -146,15 +175,27 @@ export async function mergeLane(d: Deps, key: string, opts: LaneMergeOptions = {
       `head=${short(head)} receipt=CLEAR`,
     `  push ${remote.name} ${branch}`,
     `  gh pr create|edit --repo ${repo} --base main --head ${branch}`,
+    `  gh pr checks <new PR> --repo ${repo} (all pass)`,
     `  gh pr merge --merge --match-head-commit ${head}`,
     `  git push ${remote.name} --delete ${branch}`,
   ];
   if (opts.dryRun === true) return [...plan, `LANE_MERGE_DRY_RUN ${key} (no push, no PR, no merge)`];
 
+  const bodyPath = join(d.store.root, "state", "lane-prs", `${lane.key}.md`);
+  mkdirSync(dirname(bodyPath), { recursive: true });
+  writeFileSync(bodyPath, prBody(lane, head, receipt));
   const push = await d.exec("git", ["-C", path, "push", remote.name, `${head}:refs/heads/${branch}`]);
   if (push.code !== 0)
     throw new Refusal(`lane ${key}: cannot push ${branch} to ${remote.name} (${repo}): ${gitWhy(push)}`);
-  const pr = await upsertPr(d, lane, repo, branch, prBody(lane, head, receipt));
+  const pr = await upsertPr(d, lane, repo, branch, bodyPath);
+  const checks = await checksRefusal(d, { repo, number: pr.number });
+  if (checks !== undefined) {
+    d.usage.record({ name: "dori.merge_decided", outcome: checks[0] });
+    throw new Refusal(
+      `MERGE_REFUSED lane ${key}: PR #${pr.number} (${pr.url}) is not green: ${checks[1]}; ` +
+        `rerun dori merge ${key} once checks pass`,
+    );
+  }
   const merged = await d.exec("gh", [
     "pr",
     "merge",
@@ -171,9 +212,15 @@ export async function mergeLane(d: Deps, key: string, opts: LaneMergeOptions = {
     );
   d.usage.record({ name: "dori.merge_decided", outcome: "merged" });
   const del = await d.exec("git", ["-C", path, "push", remote.name, "--delete", branch]);
-  const branchState = del.code === 0 ? "deleted" : `delete failed: ${gitWhy(del)}`;
+  const deleteWhy = (del.stderr || del.stdout).trim();
+  const deleted = del.code === 0 || /remote ref does not exist/i.test(deleteWhy);
   return [
     ...plan,
-    `MERGED ${branch} head=${short(head)} repo=${repo} pr=#${pr.number} ${pr.url} branch=${branchState}`,
+    `MERGED ${branch} head=${short(head)} repo=${repo} pr=#${pr.number} ${pr.url} branch=${deleted ? "deleted" : "kept"}`,
+    ...(deleted
+      ? []
+      : [
+          `WARN lane ${key}: merged, but the remote branch ${branch} was kept: ${deleteWhy || `git exited ${del.code}`}`,
+        ]),
   ];
 }

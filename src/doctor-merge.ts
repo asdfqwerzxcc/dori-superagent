@@ -47,7 +47,9 @@ export const mergeGuardCheck = async (e: DoctorEnv): Promise<ProbeResult> => {
       : [];
   return {
     status: "WARN",
-    detail: `main has ${count} commit(s) not landed through a PR${commits.length === 0 ? "" : `: ${commits.join("; ")}`}`,
+    detail: `main has ${count} commit(s) not landed through a PR${
+      commits.length === 0 ? "" : `: ${clip(commits.join("; "), 200)}`
+    }`,
     hint: "land lanes with dori merge <lane-key>; do not fast-forward main locally",
   };
 };
