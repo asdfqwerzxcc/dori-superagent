@@ -17,7 +17,8 @@
 - dori는 레인마다 `$DORI_HOME/worktrees/<key>` 워크트리와 `lane/<key>` 브랜치를 만든다. 사람이 직접 만들 때도
   같은 경계를 지킨다: 태스크마다 워크트리 하나, 그 워크트리에서 커밋한 범위가 곧 PR의 diff다.
 - 한 PR은 한 태스크의 변경만 담는다. 다른 태스크의 수정, 포맷 변경, 무관한 리팩터링을 섞지 않는다.
-- PR은 레인 레포의 자기 리모트(`fork`가 있으면 `fork`, 없으면 `origin`)에만 연다. `sisyphuslabs/*`에는 어떤 쓰기도 하지 않는다. 레인 PR은 brief가 시키면 레인이, 아니면 리드의 `dori merge <key>`가 열고 머지한다.
+- PR은 레인 레포의 자기 리모트(`fork`가 있으면 `fork`, 없으면 `origin`)에만 연다. 선택한 리모트가 업스트림(`upstream` 리모트가 같은 저장소를 가리키거나 `sisyphuslabs/*`)이면 `dori merge`가 그 리모트를 이름과 이유와 함께 거부한다. `sisyphuslabs/*`에는 어떤 쓰기도 하지 않는다.
+- brief가 시키면 레인이 `lane/<key>`를 push하고 PR을 연다. 레인은 머지하지 않는다; 리드는 영수증과 체크를 확인한 뒤 `dori merge <key>`로 머지한다.
 - 레인의 작업은 로컬 커밋과 리뷰 영수증으로 끝내고, 착지는 기본적으로 `dori merge <key>`가 담당한다(푸시 → PR → 체크 green → merge commit → 원격 브랜치 삭제). 번들은 여러 레인을 한 PR로 묶을 때만 명시적으로 쓴다.
 
 ### 이슈 묶음(bundle) 규칙

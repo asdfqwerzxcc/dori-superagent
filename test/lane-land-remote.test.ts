@@ -61,4 +61,27 @@ describe("lane landing remotes and cleanup", () => {
     expect(lines.find((line) => line.startsWith("MERGED"))).toContain("branch=kept");
     expect(lines.some((line) => line.startsWith("WARN lane alpha"))).toBe(true);
   });
+
+  test("refuses an origin that the upstream remote names", async () => {
+    const { w, d, repo } = laneFixture();
+    receiptAt(d, tipA);
+    repo.remotes = {
+      origin: "https://github.com/acme/upstream.git",
+      upstream: "https://github.com/acme/upstream.git",
+    };
+    await expect(mergeLane(d, "alpha")).rejects.toThrow(
+      "refusing to push lane/alpha to origin (acme/upstream): the upstream remote",
+    );
+    expect(w.calls.some((call) => call.cmd === "gh")).toBe(false);
+    expect(w.calls.some((call) => call.cmd === "git" && call.argv.includes("push"))).toBe(false);
+  });
+
+  test("refuses the known upstream owner even without an upstream remote", async () => {
+    const { w, d, repo } = laneFixture();
+    receiptAt(d, tipA);
+    repo.remotes = { origin: "https://github.com/sisyphuslabs/dori-superagent.git" };
+    await expect(mergeLane(d, "alpha")).rejects.toThrow("under the upstream owner sisyphuslabs");
+    expect(w.calls.some((call) => call.cmd === "gh")).toBe(false);
+    expect(w.calls.some((call) => call.cmd === "git" && call.argv.includes("push"))).toBe(false);
+  });
 });

@@ -41,16 +41,32 @@ function briefTitle(lane: Lane): string | undefined {
 
 export type LaneMergeOptions = { readonly dryRun?: boolean };
 
+async function remoteRepo(d: Deps, repoPath: string, name: string): Promise<string | undefined> {
+  const r = await d.exec("git", ["-C", repoPath, "remote", "get-url", name]);
+  return r.code === 0 ? repoFromRemote(r.stdout) : undefined;
+}
+
+const isUpstreamRepo = (repo: string): boolean => repo.toLowerCase().startsWith("sisyphuslabs/");
+
 /** The lane repository's own remote: `fork` when the checkout has one, else `origin`. A fork is never required
- * (the design repository has only origin), and a fork's upstream is never a target. */
+ * (the design repository has only origin), and a selected remote that is the upstream is refused, not written. */
 async function ownRemote(d: Deps, lane: Lane): Promise<{ readonly name: string; readonly repo: string }> {
   if (lane.repo === undefined)
     throw new Refusal(`lane ${lane.key} has no recorded repository (it started before the review gate)`);
   for (const name of ["fork", "origin"]) {
-    const r = await d.exec("git", ["-C", lane.repo, "remote", "get-url", name]);
-    if (r.code !== 0) continue;
-    const repo = repoFromRemote(r.stdout);
-    if (repo !== undefined) return { name, repo };
+    const repo = await remoteRepo(d, lane.repo, name);
+    if (repo === undefined) continue;
+    const upstream = await remoteRepo(d, lane.repo, "upstream");
+    const sameAsUpstream = upstream !== undefined && upstream.toLowerCase() === repo.toLowerCase();
+    if (sameAsUpstream || isUpstreamRepo(repo)) {
+      const why = sameAsUpstream
+        ? `the upstream remote (${upstream}) names the same repository`
+        : "it is under the upstream owner sisyphuslabs";
+      throw new Refusal(
+        `lane ${lane.key}: refusing to push ${branchOf(lane.key)} to ${name} (${repo}): ${why}; push to your own fork instead`,
+      );
+    }
+    return { name, repo };
   }
   throw new Refusal(
     `lane ${lane.key}: ${lane.repo} has no github origin or fork remote; add one, then retry: dori merge ${lane.key}`,

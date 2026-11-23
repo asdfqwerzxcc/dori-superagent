@@ -1,6 +1,6 @@
 // The class check for the lane-gate docs pass: no doc or prompt may present a bundle as the default landing path.
-// A line that explicitly names the bundle as the non-default mode is allowed, so a correct "bundle is explicit" note
-// can still contrast with the old framing.
+// The exemption is scoped to the sentence around the forbidden phrase, so an unrelated "explicit"/"선택" elsewhere on a
+// long line cannot hide a stale claim.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -16,12 +16,32 @@ const FORBIDDEN: readonly { readonly label: string; readonly pattern: RegExp }[]
   { label: "번들이 기본", pattern: /번들이\s*기본/ },
   { label: "번들을 기본", pattern: /번들을\s*기본/ },
   { label: "원격에 아무것도", pattern: /원격에\s*아무것도/ },
-  { label: "포크로 푸시", pattern: /(?:포크|`?fork`?)\s*(?:로|에)?\s*(?:푸시|push)/i },
-  { label: "우리 포크", pattern: /우리\s*포크/ },
+  { label: "번들 게이트 모드(현재 기본)", pattern: /번들\s*게이트\s*모드\s*\(\s*현재[^)]*기본/ },
+  { label: "원격은 번들 MR 하나뿐", pattern: /원격(?:은|이)\s*번들\s*MR\s*(?:하나)?뿐/ },
+  {
+    label: "finished lanes are collected into a bundle",
+    pattern: /finished\s+lanes\s+are\s+collected\s+into\s+a\s+bundle/i,
+  },
   { label: "lead collects the bundle", pattern: /lead\s+collects\s+the\s+bundle/i },
 ];
 
-const NON_DEFAULT = /명시적|선택|묶을 때만|only when|explicit|not the default|non-default|아니(?:라|다|고)|아닌/i;
+const MODE_PHRASE =
+  /명시적\s*(?:묶음\s*)?모드|묶을\s*때만|only\s+when|explicit\s+mode|not\s+the\s+default|non-default|아니(?:라|다|고)|아닌|아님/i;
+
+const BOUNDARIES = [".", "。", "!", "?"] as const;
+
+const sentenceAt = (text: string, at: number): string => {
+  const before = Math.max(
+    -1,
+    ...BOUNDARIES.map((boundary) => text.lastIndexOf(boundary, at - 1)),
+    text.lastIndexOf("\n", at - 1),
+  );
+  const after = Math.min(
+    ...BOUNDARIES.map((boundary) => text.indexOf(boundary, at)).filter((index) => index >= 0),
+    text.length,
+  );
+  return text.slice(before + 1, after === text.length ? text.length : after + 1);
+};
 
 const markdown = (root: string, dir: string): string[] => {
   const abs = join(root, dir);
@@ -40,9 +60,11 @@ export function checkDocsDefault(root: string): DocsFinding[] {
   for (const file of ["docs", "prompts"].flatMap((dir) => markdown(root, dir))) {
     const lines = readFileSync(join(root, file), "utf8").split(/\r?\n/);
     lines.forEach((text, index) => {
-      if (NON_DEFAULT.test(text)) return;
       for (const rule of FORBIDDEN) {
-        if (rule.pattern.test(text)) findings.push({ file, line: index + 1, phrase: rule.label, text: text.trim() });
+        const match = rule.pattern.exec(text);
+        if (match === null) continue;
+        if (MODE_PHRASE.test(sentenceAt(text, match.index))) continue;
+        findings.push({ file, line: index + 1, phrase: rule.label, text: text.trim() });
       }
     });
   }
