@@ -147,7 +147,7 @@ describe("lane review fallback on immediate failure", () => {
     w.reviewer = (argv) => ({
       code: 1,
       stdout: "",
-      stderr: argv.includes("fallback/m") ? "fallback key rejected\n" : AUTH,
+      stderr: argv.includes("fallback/m") ? "fallback key rejected\n" : `child reaper unavailable under Bun\n${AUTH}`,
     });
 
     const error = await failed(() => reviewLane(d, "both-fail", "primary/m", { timeoutMs: 5_000 }));
@@ -164,6 +164,8 @@ describe("lane review fallback on immediate failure", () => {
     expect(primary.retried).toBe(true);
     expect(primary.retryModel).toBe("fallback/m");
     expect(primary.cause).toContain("exit 1");
+    expect(primary.cause).toContain("No API key found for opencode.");
+    expect(primary.cause).not.toContain("child reaper");
     expect(primary.stderrTail).toContain("No API key found");
     expect(fallback.retried).toBe(true);
     expect(fallback.cause).toContain("exit 1");

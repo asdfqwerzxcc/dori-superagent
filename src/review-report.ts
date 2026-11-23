@@ -51,20 +51,26 @@ export const failureKind = (r: LaneResult): string =>
           ? `exit ${r.outcome.code}`
           : "no verdict";
 
+const AUTH_FAILURE = /no api key|api[_-]?key|not logged in|unauthori[sz]ed|authenticat|\b40[13]\b/i;
+
+/** The stderr line that explains a failure: the auth line when there is one, else the first non-empty line. */
+const stderrReason = (stderr: string): string => {
+  const lines = stderr
+    .trim()
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l !== "");
+  return lines.find((l) => AUTH_FAILURE.test(l)) ?? lines[0] ?? "";
+};
+
 /** One line naming why an attempt failed, quoted by a diagnostic's `cause` and by the retry note. */
 export const failureCause = (r: LaneResult): string => {
   if (r.outcome.kind === "error") return `threw: ${r.outcome.message}`;
   if (r.outcome.kind === "timeout") return `timed out after ${r.outcome.durationMs} ms`;
-  const line =
-    r.outcome.stderr
-      .trim()
-      .split(/\r?\n/)
-      .find((l) => l.trim() !== "") ?? "";
+  const line = stderrReason(r.outcome.stderr);
   if (r.outcome.code !== 0) return `exit ${r.outcome.code}${line === "" ? "" : `: ${line}`}`;
   return r.outcome.stdout.trim() === "" ? "empty output" : "no verdict";
 };
-
-const AUTH_FAILURE = /no api key|api[_-]?key|not logged in|unauthori[sz]ed|authenticat|\b40[13]\b/i;
 
 /**
  * A primary that could not be started or was refused by the provider (a missing key, a rejected one) fails the same way
