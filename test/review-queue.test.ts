@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
+import { status } from "../src/cli-up.ts";
 import { dutyTick } from "../src/duty.ts";
 import type { Deps } from "../src/harness.ts";
 import { done, ready, startLane } from "../src/lanes.ts";
-import { acquire, release } from "../src/loop-lock.ts";
 import { reviewJobFor } from "../src/review-queue.ts";
 import { fakeGit, type Repo } from "./fake-git.ts";
 import { setup } from "./harness-setup.ts";
@@ -28,138 +28,94 @@ async function world(keys: readonly string[] = ["fix-login"]) {
   return { ...s, repo };
 }
 
-/** Holds the duty lock, as a running duty loop does, for the duration of `run`. */
-async function withWorker<R>(d: Deps, run: () => Promise<R>): Promise<R> {
-  const held = acquire(d, d.store.lockPath("duty"));
-  if ("holder" in held) throw new Error(held.holder);
-  try {
-    return await run();
-  } finally {
-    release(d, held.nonce, d.store.lockPath("duty"));
-  }
-}
+const queue = (d: Deps, extra: readonly string[] = []) =>
+  captureIo(() => main(["review", "--lane", "fix-login", ...extra], d));
 
-const queue = (d: Deps) => captureIo(() => main(["review", "--lane", "fix-login"], d));
+const queued = (d: Deps) => reviewJobFor(d.store.root, "fix-login", tip);
+const queueDir = (d: Deps) => join(d.store.root, "state", "review-queue");
 
 describe("queued lane review", () => {
-  test("review --lane with a worker queues; the duty pass runs it and the lead gets one inbox message", async () => {
-    const { w, d, lead } = await world();
-    const request = await withWorker(d, () =>
-      captureIo(() => main(["review", "--lane", "fix-login", "--model", "some/model"], d)),
-    );
-    expect(request).toEqual({ code: 0, out: `QUEUED fix-login ${tip} fix-login@${tip}` });
+  test("review --lane records one request and spawns nothing, even with no duty loop", async () => {
+    const { w, d } = await world();
+    expect(await queue(d)).toEqual({ code: 0, out: `QUEUED fix-login ${tip} fix-login@${tip}` });
     expect(w.calls.filter((c) => c.cmd === "omo")).toEqual([]);
-    expect(reviewJobFor(d.store.root, "fix-login", tip)).toMatchObject({
-      lane: "fix-login",
-      tip,
-      base,
-      model: "some/model",
-      state: "queued",
-    });
-
-    const before = lead.received.length;
-    expect(await dutyTick(d)).toEqual([{ lane: "fix-login", action: "review-done", detail: `CLEAR at ${tip}` }]);
-    const reviewers = w.calls.filter((c) => c.cmd === "omo");
-    expect(reviewers).toHaveLength(1);
-    expect(reviewers[0]!.argv).toContain("some/model");
-    expect(d.store.laneReceipt("fix-login", tip)).toMatchObject({ verdict: "CLEAR", base, tip });
-    const receipt = join(d.store.root, "receipts", `lane_fix-login@${tip}.json`);
-    expect(lead.received.slice(before)).toEqual([`[REVIEW fix-login] CLEAR at ${tip}; receipt ${receipt}`]);
-    expect(reviewJobFor(d.store.root, "fix-login", tip)).toBeUndefined();
+    expect(queued(d)).toMatchObject({ lane: "fix-login", tip, base, state: "queued" });
+    expect(readFileSync(d.store.laneDiffPath("fix-login", tip), "utf8")).toBe(diff);
+    expect(d.store.lane("fix-login")!.tipSha).toBe(tip);
+    expect(d.store.laneReceipt("fix-login", tip)).toBeUndefined();
   });
 
-  test("a second request for the same lane and tip returns the existing job", async () => {
+  test("a second request returns the queued record; the drain reports it and creates no process", async () => {
     const { w, d } = await world();
-    const first = await withWorker(d, () => queue(d));
+    expect((await queue(d)).out).toBe(`QUEUED fix-login ${tip} fix-login@${tip}`);
     w.clock += 60_000;
-    const second = await withWorker(d, () => queue(d));
-    expect(first.out).toBe(`QUEUED fix-login ${tip} fix-login@${tip}`);
-    expect(second.out).toBe(`already queued fix-login@${tip} (queued)`);
-    expect(readdirSync(join(d.store.root, "state", "review-queue"))).toEqual([`fix-login@${tip}.json`]);
-    expect(reviewJobFor(d.store.root, "fix-login", tip)).toMatchObject({ requestedAt: w.clock - 60_000 });
-  });
+    expect((await queue(d)).out).toBe(`already queued fix-login@${tip} (queued)`);
+    expect(readdirSync(queueDir(d))).toEqual([`fix-login@${tip}.json`]);
+    expect(queued(d)).toMatchObject({ requestedAt: w.clock - 60_000, state: "queued" });
 
-  test("done refuses while the review is in flight and lands after the receipt appears", async () => {
-    const { d } = await world();
-    await withWorker(d, () => queue(d));
-    const refusal = await done(d, "fix-login").then(
-      () => undefined,
-      (e: unknown) => e,
-    );
-    expect((refusal as Error).message).toContain("review is in flight");
-    expect((refusal as Error).message).toContain("inbox message from duty");
-    expect(d.store.lane("fix-login")!.status).toBe("ready");
-
-    const pass = await captureIo(() => main(["duty", "--once"], d));
-    expect(pass).toEqual({ code: 0, out: `DUTY fix-login review-done: CLEAR at ${tip}` });
-    expect(await done(d, "fix-login")).toBeUndefined();
-    expect(d.store.lane("fix-login")!.status).toBe("done");
-  });
-
-  test("a failed review posts the failure to the lead and leaves nothing pending", async () => {
-    const { w, d, lead } = await world();
-    w.reviewer = () => ({ code: 0, stdout: "no verdict here", stderr: "provider warning" });
-    await withWorker(d, () => queue(d));
-    const before = lead.received.length;
+    const before = w.calls.length;
     expect(await dutyTick(d)).toEqual([
-      { lane: "fix-login", action: "review-failed", detail: expect.stringContaining("no VERDICT") },
+      { lane: "fix-login", action: "review-queued", detail: "waiting 1m for the lead's receipt" },
     ]);
-    const [message] = lead.received.slice(before);
-    expect(message).toStartWith(`[REVIEW fix-login] failed at ${tip}: `);
-    expect(message).toContain("no VERDICT");
-    expect(reviewJobFor(d.store.root, "fix-login", tip)).toBeUndefined();
-    await expect(done(d, "fix-login")).rejects.toThrow("no review receipt");
+    expect(w.calls.length).toBe(before);
+    expect(w.calls.filter((c) => c.cmd === "omo")).toEqual([]);
+    expect(queued(d)).toMatchObject({ state: "queued" });
+    expect(d.store.laneReceipt("fix-login", tip)).toBeUndefined();
   });
 
-  test("an unreadable or invalid job record refuses done, never stops the drain, and leaves the inline fallback working", async () => {
-    const { w, d, lead } = await world(["fix-login", "quiet"]);
-    await withWorker(d, () => captureIo(() => main(["review", "--lane", "quiet"], d)));
-    const dir = join(d.store.root, "state", "review-queue");
-    const corrupt = join(dir, `fix-login@${tip}.json`);
-    const invalid = join(dir, "not-a-job.json");
-    writeFileSync(corrupt, "{ not json");
-    writeFileSync(invalid, `{"lane":"Bad Key","tip":"${tip}","base":"","requestedAt":null,"state":"queued"}`);
-
-    const refusal = await done(d, "fix-login").then(
-      () => undefined,
-      (e: unknown) => e,
-    );
-    expect((refusal as Error).message).toContain("in flight");
-    expect((refusal as Error).message).toContain("unreadable");
-
-    const before = lead.received.length;
-    const events = await dutyTick(d);
-    expect(events).toContainEqual({ action: "review-record-dropped", detail: `fix-login@${tip}.json` });
-    expect(events).toContainEqual({ action: "review-record-dropped", detail: "not-a-job.json" });
-    expect(existsSync(corrupt)).toBe(false);
-    expect(existsSync(invalid)).toBe(false);
-    const receipt = join(d.store.root, "receipts", `lane_quiet@${tip}.json`);
-    expect(lead.received.slice(before)).toEqual([`[REVIEW quiet] CLEAR at ${tip}; receipt ${receipt}`]);
-
-    writeFileSync(corrupt, `{"lane":"fix-login","tip":"${tip}","base":"${base}","requestedAt":1e300,"state":"queued"}`);
-    const unrenderable = await done(d, "fix-login").then(
-      () => undefined,
-      (e: unknown) => e,
-    );
-    expect((unrenderable as Error).message).toContain("a review is in flight");
-    expect((unrenderable as Error).message).toContain("requested 1e+300");
-
-    writeFileSync(corrupt, "{ not json");
-    expect(await captureIo(() => main(["review", "--lane", "fix-login"], d))).toEqual({
-      code: 0,
-      out: `REVIEW_LANE fix-login tip=${tip} verdict=CLEAR`,
-    });
-    expect(w.calls.filter((c) => c.cmd === "omo")).toHaveLength(2);
-  });
-
-  test("with no duty worker, review --lane reviews inline and drops the stale job record", async () => {
+  test("the drain expires a request older than the TTL and adds no process", async () => {
     const { w, d } = await world();
-    await withWorker(d, () => queue(d));
-    expect(reviewJobFor(d.store.root, "fix-login", tip)).toBeDefined();
-    const inline = await captureIo(() => main(["review", "--lane", "fix-login", "--model", "fast/model"], d));
-    expect(inline).toEqual({ code: 0, out: `REVIEW_LANE fix-login tip=${tip} verdict=CLEAR` });
-    expect(w.calls.filter((c) => c.cmd === "omo")).toHaveLength(1);
-    expect(d.store.laneReceipt("fix-login", tip)!.reviewer).toContain("--model fast/model");
-    expect(reviewJobFor(d.store.root, "fix-login", tip)).toBeUndefined();
+    await queue(d);
+    w.clock += 25 * 60 * 60 * 1000;
+    const before = w.calls.length;
+    expect(await dutyTick(d)).toEqual([
+      {
+        lane: "fix-login",
+        action: "review-expired",
+        detail: "requested 1500m ago with no receipt; record removed",
+      },
+    ]);
+    expect(w.calls.length).toBe(before);
+    expect(queued(d)).toBeUndefined();
+    expect(existsSync(join(queueDir(d), `fix-login@${tip}.json`))).toBe(false);
+    expect(d.store.laneReceipt("fix-login", tip)).toBeUndefined();
+  });
+
+  test("the drain drops an unreadable record without touching a process", async () => {
+    const { w, d } = await world();
+    mkdirSync(queueDir(d), { recursive: true });
+    writeFileSync(join(queueDir(d), "not-a-job.json"), "{ not json");
+    const before = w.calls.length;
+    expect(await dutyTick(d)).toContainEqual({ action: "review-record-dropped", detail: "not-a-job.json" });
+    expect(w.calls.length).toBe(before);
+    expect(existsSync(join(queueDir(d), "not-a-job.json"))).toBe(false);
+  });
+
+  test("done refuses the queued tip and names the attestation command", async () => {
+    const { d } = await world();
+    await queue(d);
+    const refusal: unknown = await done(d, "fix-login").then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(refusal).toBeInstanceOf(Error);
+    expect((refusal as Error).message).toContain("a review request is queued");
+    expect((refusal as Error).message).toContain("--attest");
+    expect(d.store.lane("fix-login")!.status).toBe("ready");
+  });
+
+  test("status prints review=queued while the request waits", async () => {
+    const { d } = await world();
+    await queue(d);
+    const { out } = await captureIo(async () => {
+      await status(d);
+      return 0;
+    });
+    expect(out.split("\n").find((line) => line.startsWith("fix-login"))).toContain("review=queued");
+  });
+
+  test("a PR and --lane together are still refused", async () => {
+    const { d } = await world();
+    await expect(main(["review", "o/r#1", "--lane", "fix-login"], d)).rejects.toThrow("not both");
   });
 });

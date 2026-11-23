@@ -70,12 +70,16 @@ function clearReceipt(d: Deps, lane: Lane, head: string): LaneReceipt {
     const older = d.store.receipts.laneReceipts(key)[0];
     if (older !== undefined)
       throw new Refusal(
-        `lane ${key} has a stale sha: reviewed ${short(older.tip)}, head ${short(head)} (run: dori review --lane ${key})`,
+        `lane ${key} has a stale sha: reviewed ${short(older.tip)}, head ${short(head)} (queue it with dori review --lane ${key}, then attest the reviewer verdict)`,
       );
-    throw new Refusal(`lane ${key} has no review receipt at ${short(head)} (run: dori review --lane ${key})`);
+    throw new Refusal(
+      `lane ${key} has no review receipt at ${short(head)} (queue it with dori review --lane ${key}, then attest the reviewer verdict)`,
+    );
   }
   if (receipt.verdict !== "CLEAR")
-    throw new Refusal(`lane ${key} at ${short(head)} is ${receipt.verdict} (run: dori review --lane ${key})`);
+    throw new Refusal(
+      `lane ${key} at ${short(head)} is ${receipt.verdict} (queue it with dori review --lane ${key}, then attest the reviewer verdict)`,
+    );
   return receipt;
 }
 

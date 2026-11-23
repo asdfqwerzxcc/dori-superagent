@@ -126,24 +126,21 @@
 
 **원인** 리뷰가 리드 팬에서 동기 실행되고, 큰 diff는 청크 여러 개 × 최대 600초가 걸린다.
 
-**해결** 리뷰를 큐로 돌린다: `dori review --lane <key>`가 `QUEUED`만 찍고 즉시 반환하고, duty 워커가 실행해
-결과를 inbox 이벤트로 보낸다. `dori done`은 진행 중이면 즉시 “대기 중”으로 거절하고 블로킹하지 않는다.
-리뷰 기본 모델도 설정으로 고정한다(`reviewModel`).
+**해결** 리뷰를 리드의 in-process 서브에이전트로 돌린다: `dori review --lane <key>`가 요청과 diff만 기록하고 `QUEUED`를 찍으며, 리드가 `omo-native-gate-reviewer` 서브에이전트 하나로 판정한 뒤 `dori review <key> --attest --verdict ... --reviewer ... --evidence ...`로 영수증을 쓴다. duty는 리뷰어를 띄우지 않고 요청 상태·만료만 보고한다. `dori done`은 진행 중이면 즉시 “요청 대기 중”으로 거절하고 블로킹하지 않는다.
 
-**확인** `dori review --lane x`가 즉시 `QUEUED …`로 끝나는지, verdict가 inbox 메시지로 오는지.
+**확인** `dori review --lane x`가 즉시 `QUEUED …`로 끝나는지, attest 후 `receipts/lane_<key>@<tip>.json`이 생기는지 확인한다.
 
 ---
 
 ## 9. 기본 리뷰어가 403 `Model access is disabled`
 
-**증상** 리뷰가 매번 `reviewer_empty`로 실패하고 진단에 403이 찍힌다.
+**증상** 리뷰어 서브에이전트가 매번 403으로 끝나고, 그 verdict를 attest한 영수증이 `reviewer_empty`로 남는다.
 
 **원인** 그 모델의 **접근 권한이 꺼져 있다**(레이트리밋 아님). 재시도해도 같은 결과다.
 
-**해결** 접근 가능한 모델을 리뷰어로 지정한다(현재 glm 계열로 고정해 사용 중). 진단 JSON의 `model`,
-`argv`, `exitCode`로 확인 가능.
+**해결** 접근 가능한 모델을 리뷰어 서브에이전트에 지정한다(현재 glm 계열로 고정해 사용 중). 서브에이전트의 모델과 오류로 확인 가능.
 
-**확인** `dori review --lane <key>` 출력의 verdict와 receipt의 `reviewer` 필드.
+**확인** 서브에이전트의 리포트와 `receipts/lane_<key>@<tip>.json`의 `reviewer`·`verdict` 필드.
 
 ---
 

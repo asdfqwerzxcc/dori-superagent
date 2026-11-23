@@ -77,10 +77,9 @@ export type ReviewReceipt = {
   summary: string;
 };
 
-/** A reviewer's answer to one lane diff. `reviewer_timeout` and `reviewer_empty` are failed reviews: they are
- * receipts like any other, and a `done` gate refuses them rather than treating a missing answer as pending.
- * `review_partial` is a chunked review that has not answered every chunk yet (written at plan time and after each
- * chunk, so a hung job still leaves progress); it is a refusal like the other non-CLEAR verdicts. */
+/** A reviewer's answer to one lane diff. New receipts write `CLEAR` or `BLOCK`; `reviewer_timeout`, `reviewer_empty`
+ * and `review_partial` are legacy failures an older built-in reviewer wrote, and the `done` gate still refuses them
+ * rather than treating a missing answer as pending. */
 export type LaneVerdict = "CLEAR" | "BLOCK" | "reviewer_timeout" | "reviewer_empty" | "review_partial";
 
 /** Where one chunk of a chunked review stands; `not run` means the job budget ran out before it was attempted. */
@@ -111,9 +110,11 @@ export type LaneReceipt = {
   reviewer: string;
   at: number;
   summary: string;
-  /** Every chunk of a chunked review, including the ones not run; absent for a single-diff review. */
+  /** The report, task id or path the reviewer's verdict rested on. */
+  evidence?: readonly string[];
+  /** Every chunk of a legacy chunked review; new receipts never carry it. */
   chunks?: readonly LaneChunkReceipt[];
-  /** The lock epoch (acquisition time) that wrote this receipt; an older epoch must not replace a newer one. */
+  /** The lock epoch (acquisition time) an older chunked review stamped on this receipt. */
   writerAt?: number;
 };
 

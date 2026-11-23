@@ -7,8 +7,8 @@ import { KEY_RE, type Lane } from "./store-types.ts";
 export type LaneReviewTarget = { lane: Lane; repo: string; tip: string; base: string };
 
 /**
- * Resolves what `dori review --lane` would review, refusing exactly like `reviewLane` does. The queued path needs the
- * tip and base for its job record without running the reviewer, so both paths read them here.
+ * Resolves what `dori review --lane` hands the lead's reviewer: the lane, its checkout, its current tip and the
+ * merge-base a review of it covers. The request and the attestation both read it here, so both pin the same range.
  */
 export async function laneReviewTarget(d: Deps, key: string): Promise<LaneReviewTarget> {
   if (!KEY_RE.test(key)) throw new Refusal(`lane key must match ${KEY_RE}`);

@@ -121,7 +121,7 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
     }
   }
   const count = (pred: (a: string) => boolean) => events.filter((e) => pred(e.action)).length;
-  // Reviews last: one can run for minutes, and a nudge or a LOST notice must never wait behind a reviewer.
+  // Review requests last: the drain only reports and expires them, so it can never hold a nudge or a LOST notice.
   try {
     events.push(...(await drainReviewQueue(d)));
   } catch (e) {

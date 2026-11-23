@@ -1,13 +1,19 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { main } from "../src/cli.ts";
 import { status } from "../src/cli-up.ts";
+import type { Deps } from "../src/harness.ts";
 import { laneRepo } from "../src/lane-repo.ts";
-import { reviewLane } from "../src/lane-review.ts";
+import { attestLane } from "../src/review-lane-cli.ts";
 import { done, ready, startLane } from "../src/lanes.ts";
-import { base, diff, gitCalls, laneWorld, tip, wtPath } from "./lane-worktree-setup.ts";
+import { diff, gitCalls, laneWorld, tip, wtPath } from "./lane-worktree-setup.ts";
 import { captureIo } from "./inbox-setup.ts";
 
 describe("lane worktrees", () => {
-  test("start records the worktree, review reads it, and done lands then removes it", async () => {
+  const attest = (d: Deps, key: string, verdict: "CLEAR" | "BLOCK" = "CLEAR") =>
+    attestLane(d, key, { verdict, reviewer: "omo-native-gate-reviewer", evidence: ["file:///report"] });
+
+  test("start records the worktree, the queued diff reads it, and done lands then removes it", async () => {
     const { w, d, brief, repo } = laneWorld();
     const lane = await startLane(d, "own-tree", brief, { group: "w1" });
     const wt = wtPath(d, "own-tree");
@@ -16,8 +22,9 @@ describe("lane worktrees", () => {
 
     repo.worktreeHead = tip;
     await ready(d, "own-tree", "landed", ["file:///x"]);
-    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
-    expect(await reviewLane(d, "own-tree")).toEqual({ verdict: "CLEAR", base, tip });
+    expect(await captureIo(() => main(["review", "--lane", "own-tree"], d))).toMatchObject({ code: 0 });
+    expect(readFileSync(d.store.laneDiffPath("own-tree", tip), "utf8")).toBe(diff);
+    await attest(d, "own-tree");
 
     expect(await done(d, "own-tree")).toBeUndefined();
     const gits = gitCalls(w);
@@ -34,8 +41,7 @@ describe("lane worktrees", () => {
     const { w, d, brief } = laneWorld({ worktreeHead: tip, dirty: " M src/x.ts\n" });
     const lane = await startLane(d, "dirty", brief, { group: "w1" });
     await ready(d, "dirty", "done", ["file:///x"]);
-    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
-    await reviewLane(d, "dirty");
+    await attest(d, "dirty");
 
     await expect(done(d, "dirty")).rejects.toThrow("M src/x.ts");
     expect(d.store.lane("dirty")!.status).toBe("ready");
@@ -49,8 +55,7 @@ describe("lane worktrees", () => {
     const { w, d, brief, repo } = laneWorld({ worktreeHead: tip });
     const lane = await startLane(d, "moved", brief, { group: "w1" });
     await ready(d, "moved", "done", ["file:///x"]);
-    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
-    await reviewLane(d, "moved");
+    await attest(d, "moved");
 
     repo.head = "c".repeat(40);
     repo.ancestor = false;
@@ -67,8 +72,7 @@ describe("lane worktrees", () => {
     const { w, d, brief, repo } = laneWorld({ worktreeHead: tip });
     const lane = await startLane(d, "squashed", brief, { group: "w1" });
     await ready(d, "squashed", "done", ["file:///x"]);
-    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
-    await reviewLane(d, "squashed");
+    await attest(d, "squashed");
 
     // The squash merge rewrote the lane's commit on main: same tree, new sha, so ancestry alone fails.
     repo.head = "c".repeat(40);
@@ -90,8 +94,7 @@ describe("lane worktrees", () => {
     const { w, d, brief, repo } = laneWorld({ worktreeHead: tip });
     await startLane(d, "not-squashed", brief, { group: "w1" });
     await ready(d, "not-squashed", "done", ["file:///x"]);
-    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
-    await reviewLane(d, "not-squashed");
+    await attest(d, "not-squashed");
 
     repo.head = "c".repeat(40);
     repo.ancestor = false;
@@ -109,8 +112,7 @@ describe("lane worktrees", () => {
     const { w, d, brief, repo } = laneWorld({ worktreeHead: tip });
     await startLane(d, "diff-error", brief, { group: "w1" });
     await ready(d, "diff-error", "done", ["file:///x"]);
-    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
-    await reviewLane(d, "diff-error");
+    await attest(d, "diff-error");
 
     repo.head = "c".repeat(40);
     repo.ancestor = false;
@@ -128,8 +130,7 @@ describe("lane worktrees", () => {
     const { w, d, brief, repo } = laneWorld({ worktreeHead: tip });
     await startLane(d, "ancestor", brief, { group: "w1" });
     await ready(d, "ancestor", "done", ["file:///x"]);
-    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
-    await reviewLane(d, "ancestor");
+    await attest(d, "ancestor");
 
     repo.head = "c".repeat(40);
     repo.ancestor = true;
@@ -145,8 +146,7 @@ describe("lane worktrees", () => {
     const { w, d, brief } = laneWorld({ worktreeHead: tip });
     const lane = await startLane(d, "elsewhere", brief, { group: "w1" });
     await ready(d, "elsewhere", "done", ["file:///x"]);
-    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
-    await reviewLane(d, "elsewhere");
+    await attest(d, "elsewhere");
 
     const pane = w.panes.get(lane.paneId)!;
     w.panes.set(lane.paneId, { ...pane, cwd: "/repo" });
@@ -159,8 +159,7 @@ describe("lane worktrees", () => {
     const { w, d, brief, repo } = laneWorld({ worktreeHead: tip });
     await startLane(d, "rebound", brief, { group: "w1" });
     await ready(d, "rebound", "done", ["file:///x"]);
-    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
-    await reviewLane(d, "rebound");
+    await attest(d, "rebound");
 
     const moved = "c".repeat(40);
     repo.head = moved;
@@ -182,8 +181,7 @@ describe("lane worktrees", () => {
     const { w, d, brief, repo } = laneWorld({ worktreeHead: tip });
     await startLane(d, "retry", brief, { group: "w1" });
     await ready(d, "retry", "done", ["file:///x"]);
-    w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
-    await reviewLane(d, "retry");
+    await attest(d, "retry");
 
     repo.head = "c".repeat(40);
     repo.ancestor = true;
@@ -222,8 +220,7 @@ describe("lane worktrees", () => {
     const { w, d, brief } = laneWorld({ worktreeHead: tip });
     await startLane(d, "blocked", brief, { group: "w1" });
     await ready(d, "blocked", "done", ["file:///x"]);
-    w.reviewer = () => ({ code: 0, stdout: "HIGH src/x.ts:1 bug\nVERDICT: BLOCK" });
-    await reviewLane(d, "blocked");
+    await attest(d, "blocked", "BLOCK");
 
     await expect(done(d, "blocked")).rejects.toThrow("is BLOCK");
     expect(d.store.lane("blocked")!.status).toBe("ready");

@@ -1,16 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { dutyTick } from "../src/duty.ts";
+import { main } from "../src/cli.ts";
 import type { Deps } from "../src/harness.ts";
 import { readJson, writeJson } from "../src/json-file.ts";
 import { ready, startLane } from "../src/lanes.ts";
-import { acquire, release } from "../src/loop-lock.ts";
 import { HOSTNAME, processStartTime } from "../src/process-identity.ts";
-import { clearRun, finishJob, jobPath, liveRun, reviewerIdentity, runPath, writeRun } from "../src/review-job.ts";
-import { queueLaneReview } from "../src/review-queue.ts";
+import { finishJob, jobPath, reviewJobFor, runPath } from "../src/review-job.ts";
 import { fakeGit, type Repo } from "./fake-git.ts";
 import { setup } from "./harness-setup.ts";
+import { captureIo } from "./inbox-setup.ts";
 
 const base = "a".repeat(40);
 const tip = "b".repeat(40);
@@ -26,15 +25,8 @@ async function world() {
   return s;
 }
 
-async function withWorker<R>(d: Deps, run: () => Promise<R>): Promise<R> {
-  const held = acquire(d, d.store.lockPath("duty"));
-  if ("holder" in held) throw new Error(held.holder);
-  try {
-    return await run();
-  } finally {
-    release(d, held.nonce, d.store.lockPath("duty"));
-  }
-}
+const queue = (d: Deps, extra: readonly string[] = []) =>
+  captureIo(() => main(["review", "--lane", "fix-login", ...extra], d));
 
 async function sleeperProcess(d: Deps) {
   const file = join(d.store.root, "sleeper.ts");
@@ -42,41 +34,36 @@ async function sleeperProcess(d: Deps) {
   return Bun.spawn([process.execPath, file], { detached: true, stdout: "ignore", stderr: "ignore" });
 }
 
-describe("recorded reviewer identity", () => {
-  test("a stale marker naming a live unrelated pid is dropped without killing it", async () => {
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+function marker(d: Deps, requestedAt: number, pid: number, startTime: number | null): void {
+  writeFileSync(
+    runPath(d.store.root, "fix-login", tip),
+    JSON.stringify({ requestedAt, pid, host: HOSTNAME, startTime }),
+  );
+}
+
+describe("legacy reviewer cleanup", () => {
+  test("the default --restart replaces the request and leaves a recorded reviewer alone", async () => {
     const { w, d } = await world();
     const sleeper = await sleeperProcess(d);
-    const marker = runPath(d.store.root, "fix-login", tip);
-    const stillAlive = (): boolean => {
-      try {
-        process.kill(sleeper.pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    };
     try {
-      await withWorker(d, () => queueLaneReview(d, "fix-login", undefined));
-      writeFileSync(marker, JSON.stringify({ requestedAt: w.clock, pid: sleeper.pid }));
-      w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
-      expect(await dutyTick(d)).toEqual([{ lane: "fix-login", action: "review-done", detail: `CLEAR at ${tip}` }]);
-      expect(stillAlive()).toBe(true);
-      expect(existsSync(marker)).toBe(false);
-
-      await withWorker(d, () => queueLaneReview(d, "fix-login", undefined));
-      const start = processStartTime(sleeper.pid);
-      writeFileSync(
-        marker,
-        JSON.stringify({
-          requestedAt: w.clock,
-          pid: sleeper.pid,
-          host: HOSTNAME,
-          startTime: start === null ? null : start + 1,
-        }),
-      );
-      expect(await dutyTick(d)).toEqual([{ lane: "fix-login", action: "review-done", detail: `CLEAR at ${tip}` }]);
-      expect(stillAlive()).toBe(true);
-      expect(existsSync(marker)).toBe(false);
+      await queue(d);
+      const job = reviewJobFor(d.store.root, "fix-login", tip);
+      if (job === undefined || job === "corrupt") throw new Error("the request was not queued");
+      marker(d, job.requestedAt, sleeper.pid, processStartTime(sleeper.pid));
+      w.clock += 1_000;
+      expect((await queue(d, ["--restart"])).out).toBe(`QUEUED fix-login ${tip} fix-login@${tip} (restarted)`);
+      expect(alive(sleeper.pid)).toBe(true);
+      expect(existsSync(runPath(d.store.root, "fix-login", tip))).toBe(true);
+      expect(reviewJobFor(d.store.root, "fix-login", tip)).toMatchObject({ requestedAt: w.clock });
     } finally {
       try {
         sleeper.kill();
@@ -84,22 +71,19 @@ describe("recorded reviewer identity", () => {
     }
   });
 
-  test("a marker still naming a verified live reviewer survives clearRun until that process is gone", async () => {
+  test("--legacy-kill kills the verified reviewer a marker records", async () => {
     const { d } = await world();
     const sleeper = await sleeperProcess(d);
     try {
-      writeRun(d.store.root, "fix-login", tip, {
-        requestedAt: 42,
-        pid: sleeper.pid,
-        ...reviewerIdentity(sleeper.pid),
-      });
-      expect(clearRun(d.store.root, "fix-login", tip, 42)).toBe(false);
-      expect(liveRun(d.store.root, "fix-login", tip, 42)).toBe(true);
-      expect(existsSync(runPath(d.store.root, "fix-login", tip))).toBe(true);
-      sleeper.kill();
+      await queue(d);
+      const job = reviewJobFor(d.store.root, "fix-login", tip);
+      if (job === undefined || job === "corrupt") throw new Error("the request was not queued");
+      const startTime = processStartTime(sleeper.pid);
+      expect(startTime).not.toBeNull();
+      marker(d, job.requestedAt, sleeper.pid, startTime);
+      expect((await queue(d, ["--restart", "--legacy-kill"])).out).toContain("(restarted)");
       await sleeper.exited;
-      expect(liveRun(d.store.root, "fix-login", tip, 42)).toBe(false);
-      expect(clearRun(d.store.root, "fix-login", tip, 42)).toBe(true);
+      expect(() => process.kill(sleeper.pid, 0)).toThrow();
       expect(existsSync(runPath(d.store.root, "fix-login", tip))).toBe(false);
     } finally {
       try {
@@ -108,7 +92,25 @@ describe("recorded reviewer identity", () => {
     }
   });
 
-  test("a finished drain cannot delete a job a restart wrote at the same path", () => {
+  test("a marker whose start time does not match is dropped without killing that pid", async () => {
+    const { d } = await world();
+    const sleeper = await sleeperProcess(d);
+    try {
+      await queue(d);
+      const job = reviewJobFor(d.store.root, "fix-login", tip);
+      if (job === undefined || job === "corrupt") throw new Error("the request was not queued");
+      marker(d, job.requestedAt, sleeper.pid, (processStartTime(sleeper.pid) ?? 0) + 1);
+      expect((await queue(d, ["--restart", "--legacy-kill"])).out).toContain("(restarted)");
+      expect(alive(sleeper.pid)).toBe(true);
+      expect(existsSync(runPath(d.store.root, "fix-login", tip))).toBe(false);
+    } finally {
+      try {
+        sleeper.kill();
+      } catch {}
+    }
+  });
+
+  test("a finished attestation cannot delete a request a restart wrote at the same path", () => {
     const { d } = setup();
     const path = jobPath(d.store.root, "fix-login", tip);
     mkdirSync(join(d.store.root, "state", "review-queue"), { recursive: true });

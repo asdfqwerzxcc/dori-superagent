@@ -76,12 +76,6 @@ export const holds = (d: Deps, nonce: string): boolean => {
   return typeof l !== "string" && l.nonce === nonce;
 };
 
-/** True when `path` is held by a process alive on this host: the duty lock says a worker can drain reviews. */
-export function lockLive(path: string): boolean {
-  const lock = readLock(path);
-  return typeof lock !== "string" && alive(lock.pid);
-}
-
 export function release(d: Deps, nonce: string, path: string = d.store.lockPath("loop")): void {
   const aside = `${path}.release.${nonce}`;
   try {

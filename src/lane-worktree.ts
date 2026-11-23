@@ -4,7 +4,7 @@ import type { Deps } from "./harness.ts";
 import { repoHead } from "./lane-repo.ts";
 import { Refusal } from "./refusal.ts";
 import type { ExecResult } from "./runtime/exec.ts";
-import { cancelLaneReviews } from "./review-job.ts";
+import { cancelLaneReviews, legacyKillEnabled } from "./review-job.ts";
 import type { Lane } from "./store-types.ts";
 
 export const branchOf = (key: string): string => `lane/${key}`;
@@ -203,7 +203,7 @@ export async function landWorktree(d: Deps, lane: Lane): Promise<string> {
 export async function dropLane(d: Deps, lane: Lane, reason: string): Promise<string> {
   if (lane.status === "done") throw new Refusal(`lane ${lane.key} is already done`);
   if (!reason.trim()) throw new Refusal("done --drop needs a non-empty --reason");
-  const failures = cancelLaneReviews(d.store.root, lane.key);
+  const failures = cancelLaneReviews(d.store.root, lane.key, { legacyKill: legacyKillEnabled() });
   if (failures.length > 0)
     process.stderr.write(`dori: lane ${lane.key}: could not kill reviewer tree(s): ${failures.join("; ")}\n`);
   const rt = d.runtimes.for(lane.sessionRef);

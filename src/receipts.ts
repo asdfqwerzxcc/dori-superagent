@@ -83,10 +83,4 @@ export class Receipts {
   laneDiffPath(key: string, tip: string): string {
     return this.path("lane-reviews", `lane_${key}`, tip, "diff");
   }
-
-  /** The diff for one path-grouped chunk of a large lane review, reviewed in place of the whole diff. */
-  laneChunkDiffPath(key: string, tip: string, index: number): string {
-    if (!Number.isInteger(index) || index < 1) throw new Error(`invalid chunk index ${index}`);
-    return join(this.root, "lane-reviews", `${this.checked(`lane_${key}`, tip)}.chunk-${index}.diff`);
-  }
 }
