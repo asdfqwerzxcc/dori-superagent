@@ -4,7 +4,7 @@
 import type { Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
 import { attemptSafely } from "./review-attempt.ts";
-import { diagnosticLine, type ReviewDiagnostic } from "./review-diagnostic.ts";
+import { diagnosticLine, type RetryFacts, type ReviewDiagnostic } from "./review-diagnostic.ts";
 import { failed, failureKind, failureSummary, type LaneResult, type LaneRun, successSummary } from "./review-report.ts";
 import { saveFinalReceipt, progressPath } from "./review-progress.ts";
 import type { LaneVerdict } from "./store-types.ts";
@@ -32,7 +32,7 @@ export type SingleReviewContext = {
   readonly budgetMs: number;
   readonly run: LaneRun;
   readonly attempt: (run: LaneRun, model: string | undefined, limitMs: number) => Promise<LaneResult>;
-  readonly diagnose: (result: LaneResult) => { diagnostic: ReviewDiagnostic; path: string };
+  readonly diagnose: (result: LaneResult, retry?: RetryFacts) => { diagnostic: ReviewDiagnostic; path: string };
   readonly reviewerField: (results: readonly LaneResult[]) => string;
   readonly fail: SingleFail;
 };
@@ -49,11 +49,12 @@ export async function reviewSingle(ctx: SingleReviewContext): Promise<"CLEAR" | 
   );
   if (failed(result) && ctx.fallback !== undefined && ctx.fallback !== ctx.chosen && deadline > Date.now()) {
     const primary = result;
-    const primaryDiag = ctx.diagnose(primary);
+    const fallback = ctx.fallback;
+    const primaryDiag = ctx.diagnose(primary, { retried: true, retryModel: fallback });
     result = await attemptSafely(
-      () => ctx.attempt(ctx.run, ctx.fallback, Math.min(ctx.timeoutMs, budgetLeft())),
+      () => ctx.attempt(ctx.run, fallback, Math.min(ctx.timeoutMs, budgetLeft())),
       ctx.run,
-      ctx.fallback,
+      fallback,
     );
     result.retried = `${primary.model ?? "default"} ${failureKind(primary)}`;
     result.retryDiagnostic = primaryDiag.path;

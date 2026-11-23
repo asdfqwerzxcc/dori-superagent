@@ -8,9 +8,15 @@ import { laneGit } from "./lane-repo.ts";
 import { Refusal } from "./refusal.ts";
 import { messageOf } from "./review-attempt.ts";
 import { type DiffChunk, planReview } from "./review-chunks.ts";
-import { diagnosticLine, type ReviewDiagnostic, reviewDiagnostic, writeReviewDiagnostic } from "./review-diagnostic.ts";
+import {
+  diagnosticLine,
+  type RetryFacts,
+  type ReviewDiagnostic,
+  reviewDiagnostic,
+  writeReviewDiagnostic,
+} from "./review-diagnostic.ts";
 import { progressPath, saveFinalReceipt } from "./review-progress.ts";
-import type { LaneResult, LaneRun } from "./review-report.ts";
+import { failureCause, type LaneResult, type LaneRun } from "./review-report.ts";
 import {
   REVIEW_ATTEMPT_MS,
   reviewBudgetFromEnv,
@@ -115,7 +121,7 @@ export async function reviewLane(
     const retried = rs.some((r) => r.retried !== undefined);
     return `${reviewerFor(chosen)}${retried && fallback !== undefined ? `; retried with --model ${fallback}` : ""}`;
   };
-  const diagnose = (r: LaneResult): { diagnostic: ReviewDiagnostic; path: string } => {
+  const diagnose = (r: LaneResult, retry?: RetryFacts): { diagnostic: ReviewDiagnostic; path: string } => {
     const diagnostic = reviewDiagnostic(
       r.argv.length === 0 ? null : r.argv,
       r.outcome,
@@ -123,6 +129,7 @@ export async function reviewLane(
       r.run.chunk === undefined || r.run.chunkTotal === undefined
         ? undefined
         : `${r.run.parent?.index ?? r.run.chunk.index}/${r.run.parent?.total ?? r.run.chunkTotal}`,
+      { cause: failureCause(r), ...retry, ...(r.retried === undefined ? {} : { retried: true as const }) },
     );
     return { diagnostic, path: writeReviewDiagnostic(d.store.root, key, tip, diagnostic) };
   };

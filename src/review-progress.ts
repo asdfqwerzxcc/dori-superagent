@@ -17,6 +17,7 @@ export type ProgressUnit = {
   model?: string;
   durationMs?: number;
   reused?: true;
+  primaryDown?: true;
   note?: string;
 };
 
@@ -26,6 +27,7 @@ export type ProgressPatch = {
   model?: string | undefined;
   durationMs?: number;
   reused?: true;
+  primaryDown?: true;
   note?: string | undefined;
 };
 
@@ -56,6 +58,7 @@ export const unitRow = (unit: ProgressUnit): LaneChunkReceipt => {
     ...(unit.model === undefined ? {} : { model: unit.model }),
     ...(unit.durationMs === undefined ? {} : { durationMs: unit.durationMs }),
     ...(unit.reused === true ? { reused: true as const } : {}),
+    ...(unit.primaryDown === true ? { primaryDown: true as const } : {}),
     ...(unit.note === undefined ? {} : { note: unit.note }),
   };
 };

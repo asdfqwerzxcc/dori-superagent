@@ -39,11 +39,15 @@ The lane record also carries the current `tipSha`, refreshed at each review.
    turn before the window closes. When the budget runs out, the chunks not attempted are recorded as `not run` and a
    retry resumes them. Output streams to `state/reviews/<key>.log` with one "still running" line every 30 s; a failed
    attempt (timeout, non-zero exit, empty stdout or no verdict) is retried once with `reviewFallbackModel` from
-   `config.json` when that key is set and differs from the first model;
+   `config.json` when that key is set and differs from the first model. A failure before any output (a missing or
+   rejected key, a process that cannot be started) is retried on the fallback immediately, without re-splitting the
+   chunk, and marks the primary down for the rest of the job: later chunks go straight to the fallback instead of
+   repeating the same failure;
 5. reads exactly one final `VERDICT: CLEAR|BLOCK` line per chunk, continues with the remaining chunks after one fails,
    and writes `receipts/lane_<key>@<tip>.json` with the verdict, base, tip, brief path, reviewer command (including its
    `--model`, and the fallback when one ran), time and, for a chunked review, a `chunks` array naming every chunk's
-   paths, bytes, changed lines, state, model, duration and whether it was reused from an earlier attempt.
+   paths, bytes, changed lines, state, model, duration, whether it was reused from an earlier attempt and whether the
+   primary was down (`primaryDown: true`).
 
 A `hooks.reviewCommand` reviewer still gets the deadline, the log, the diagnostic and the failure receipts, but it runs
 once on the full diff and is not retried with a fallback model: it owns its own command, so the path chunking and
@@ -97,14 +101,17 @@ sub-chunks that already answered are read from the checkpoint. The checkpoint is
 A reviewer that outlives the deadline is killed and writes a receipt whose verdict is `reviewer_timeout`, carrying the
 partial stdout, the stderr and the exit code (when the killed process reported one), plus every chunk's state. When the
 tip already has a CLEAR/BLOCK, that failure goes to the sidecar instead and the completed verdict stays. A reviewer
-that exits with an empty stdout on a chunk is first re-split; only a sub-chunk that is still empty (or a single chunk
+that exits zero with an empty stdout on a chunk is first re-split; a non-zero exit or a thrown run is an immediate
+failure and goes to the fallback first, without a re-split. Only a sub-chunk that is still empty (or a single chunk
 that cannot be split) writes a `reviewer_empty` receipt, also carrying stderr and the exit code. Both are failed reviews:
 `dori done` refuses them and never treats the lane as approved. The full output stays in
 `state/reviews/<key>.log`.
 
 A failed run also writes one JSON diagnostic, `receipts/lane_<key>@<tip>-<uuid>.diagnostic.json` (mode 0600), with
 `exitCode`, `durationMs`, `stdoutTail`, `stderrTail`, `argv` (the prompt elided, or `null` when the reviewer could
-not be started at all) and `model`; a chunked review adds `chunk`. The same compact JSON is in the refusal line. That
+not be started at all), `model` and `cause` (one line, e.g. `exit 1: No API key found for opencode.`); a chunked review
+adds `chunk`. A failure that started a fallback retry also carries `retried: true` and `retryModel`, so the diagnostic
+pair names both attempts. The same compact JSON is in the refusal line. That
 is what turns a zero-byte answer into a diagnosis: the exit code, the duration, the stderr and the argv (including the
 model) are all on disk.
 

@@ -51,6 +51,31 @@ export const failureKind = (r: LaneResult): string =>
           ? `exit ${r.outcome.code}`
           : "no verdict";
 
+/** One line naming why an attempt failed, quoted by a diagnostic's `cause` and by the retry note. */
+export const failureCause = (r: LaneResult): string => {
+  if (r.outcome.kind === "error") return `threw: ${r.outcome.message}`;
+  if (r.outcome.kind === "timeout") return `timed out after ${r.outcome.durationMs} ms`;
+  const line =
+    r.outcome.stderr
+      .trim()
+      .split(/\r?\n/)
+      .find((l) => l.trim() !== "") ?? "";
+  if (r.outcome.code !== 0) return `exit ${r.outcome.code}${line === "" ? "" : `: ${line}`}`;
+  return r.outcome.stdout.trim() === "" ? "empty output" : "no verdict";
+};
+
+const AUTH_FAILURE = /no api key|api[_-]?key|not logged in|unauthori[sz]ed|authenticat|\b40[13]\b/i;
+
+/**
+ * A primary that could not be started or was refused by the provider (a missing key, a rejected one) fails the same way
+ * on every chunk, so the rest of the job goes straight to the fallback instead of paying for the same failure again.
+ */
+export const primaryUnusable = (r: LaneResult): boolean =>
+  r.outcome.kind === "error" ||
+  (r.outcome.kind === "exit" &&
+    r.outcome.code !== 0 &&
+    (AUTH_FAILURE.test(r.outcome.stderr) || AUTH_FAILURE.test(r.outcome.stdout)));
+
 const detail = (r: LaneResult): string => {
   const stderr = r.outcome.kind === "error" ? r.outcome.message : r.outcome.stderr;
   const stdout = r.outcome.kind === "error" ? "" : r.outcome.stdout;

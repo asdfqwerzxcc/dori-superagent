@@ -14,7 +14,15 @@ export type ReviewDiagnostic = {
   readonly argv: readonly string[] | null;
   readonly model: string | null;
   readonly chunk?: string;
+  /** One line naming why the attempt failed, e.g. `exit 1: No API key found for opencode.` */
+  readonly cause?: string;
+  /** True for either attempt of a retry pair; `retryModel` names the fallback the retry used. */
+  readonly retried?: true;
+  readonly retryModel?: string;
 };
+
+/** What a diagnostic records about a retry: the failed attempt that started it, or the retry itself. */
+export type RetryFacts = { readonly retried?: true; readonly retryModel?: string };
 
 const ELIDE = 512;
 const MAX_TAIL = 4000;
@@ -27,6 +35,7 @@ export function reviewDiagnostic(
   outcome: ReviewOutcome,
   model: string | null,
   chunk?: string,
+  retry?: RetryFacts & { readonly cause?: string },
 ): ReviewDiagnostic {
   return {
     exitCode: outcome.kind === "exit" ? outcome.code : outcome.kind === "timeout" ? (outcome.code ?? null) : null,
@@ -36,6 +45,9 @@ export function reviewDiagnostic(
     argv: argv === null ? null : argv.map(elide),
     model,
     ...(chunk === undefined ? {} : { chunk }),
+    ...(retry?.cause === undefined ? {} : { cause: retry.cause }),
+    ...(retry?.retried === true ? { retried: true as const } : {}),
+    ...(retry?.retryModel === undefined ? {} : { retryModel: retry.retryModel }),
   };
 }
 
