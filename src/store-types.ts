@@ -109,6 +109,8 @@ export type LaneReceipt = {
   summary: string;
   /** Every chunk of a chunked review, including the ones not run; absent for a single-diff review. */
   chunks?: readonly LaneChunkReceipt[];
+  /** The lock epoch (acquisition time) that wrote this receipt; an older epoch must not replace a newer one. */
+  writerAt?: number;
 };
 
 /**

@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { progressPath, RECEIPT_LOCK_TTL_MS, receiptLockPath, saveFinalReceipt } from "../src/review-progress.ts";
+import { RECEIPT_LOCK_TTL_MS, receiptLockPath, saveFinalReceipt } from "../src/review-progress.ts";
 import type { LaneReceipt } from "../src/store-types.ts";
 import { setup } from "./harness-setup.ts";
 
@@ -29,10 +29,22 @@ const receipt = (key: string, verdict: LaneReceipt["verdict"]): LaneReceipt => (
   chunks: [],
 });
 
-const sidecar = (root: string, key: string): LaneReceipt | undefined => {
-  const path = progressPath(root, key, tip);
+const canonical = (d: ReturnType<typeof setup>["d"], key: string): LaneReceipt | undefined =>
+  d.store.laneReceipt(key, tip);
+
+const sidecar = (d: ReturnType<typeof setup>["d"], key: string): LaneReceipt | undefined => {
+  const path = join(d.store.root, "state", "reviews", `${key}@${tip}.progress.json`);
   if (!existsSync(path)) return undefined;
   return JSON.parse(readFileSync(path, "utf8")) as LaneReceipt;
+};
+
+const ownerFile = (d: ReturnType<typeof setup>["d"], key: string): string =>
+  join(receiptLockPath(d.store.root, key, tip), "owner.json");
+
+const markStale = (d: ReturnType<typeof setup>["d"], key: string): void => {
+  const path = ownerFile(d, key);
+  const owner = JSON.parse(readFileSync(path, "utf8")) as { token: string; pid: number; acquiredAt: number };
+  writeFileSync(path, JSON.stringify({ ...owner, acquiredAt: Date.now() - RECEIPT_LOCK_TTL_MS - 1_000 }));
 };
 
 describe("lane review receipt lock", () => {
@@ -43,7 +55,7 @@ describe("lane review receipt lock", () => {
     const clear = saveFinalReceipt(
       { d, key: "lock", tip, receipt: receipt("lock", "CLEAR") },
       {
-        afterRead: async () => {
+        beforeWrite: async () => {
           await hold.promise;
         },
         onLockWait: () => waited.resolve(),
@@ -59,21 +71,88 @@ describe("lane review receipt lock", () => {
     hold.resolve();
     await Promise.all([clear, failure]);
 
-    expect(d.store.laneReceipt("lock", tip)?.verdict).toBe("CLEAR");
-    expect(sidecar(d.store.root, "lock")?.verdict).toBe("reviewer_empty");
+    expect(canonical(d, "lock")?.verdict).toBe("CLEAR");
+    expect(sidecar(d, "lock")?.verdict).toBe("reviewer_empty");
     expect(existsSync(receiptLockPath(d.store.root, "lock", tip))).toBe(false);
   });
 
-  test("a stale lock is taken over", async () => {
+  test("a stale owner record is taken over", async () => {
     const { d } = setup();
     const lock = receiptLockPath(d.store.root, "stale", tip);
     mkdirSync(lock, { recursive: true });
-    const old = new Date(Date.now() - RECEIPT_LOCK_TTL_MS - 1_000);
-    utimesSync(lock, old, old);
+    writeFileSync(
+      join(lock, "owner.json"),
+      JSON.stringify({ token: "old", pid: 1, acquiredAt: Date.now() - RECEIPT_LOCK_TTL_MS - 1_000 }),
+    );
 
     await saveFinalReceipt({ d, key: "stale", tip, receipt: receipt("stale", "CLEAR") });
-    expect(d.store.laneReceipt("stale", tip)?.verdict).toBe("CLEAR");
+    expect(canonical(d, "stale")?.verdict).toBe("CLEAR");
     expect(existsSync(lock)).toBe(false);
+  });
+
+  test("a stale holder that resumes cannot overwrite a newer CLEAR and leaves the new owner's lock alone", async () => {
+    const { d } = setup();
+    const aPaused = deferred();
+    const aResume = deferred();
+    const bWritten = deferred();
+    const bResume = deferred();
+    const a = saveFinalReceipt(
+      { d, key: "preempt", tip, receipt: receipt("preempt", "reviewer_empty") },
+      {
+        beforeWrite: async () => {
+          aPaused.resolve();
+          await aResume.promise;
+        },
+      },
+    );
+    await aPaused.promise;
+    markStale(d, "preempt");
+
+    const b = saveFinalReceipt(
+      { d, key: "preempt", tip, receipt: receipt("preempt", "CLEAR") },
+      {
+        beforeRelease: async () => {
+          bWritten.resolve();
+          await bResume.promise;
+        },
+      },
+    );
+    await bWritten.promise;
+    aResume.resolve();
+    const aSaved = await a;
+    expect(aSaved).toEqual({ where: "sidecar", kept: "CLEAR" });
+    expect(canonical(d, "preempt")?.verdict).toBe("CLEAR");
+    expect(sidecar(d, "preempt")?.verdict).toBe("reviewer_empty");
+    expect(existsSync(receiptLockPath(d.store.root, "preempt", tip))).toBe(true);
+
+    bResume.resolve();
+    await b;
+    expect(existsSync(receiptLockPath(d.store.root, "preempt", tip))).toBe(false);
+  });
+
+  test("two sequential writers: the older epoch is refused at write time", async () => {
+    const { d } = setup();
+    const aPaused = deferred();
+    const aResume = deferred();
+    const a = saveFinalReceipt(
+      { d, key: "seq", tip, receipt: receipt("seq", "reviewer_empty") },
+      {
+        beforeWrite: async () => {
+          aPaused.resolve();
+          await aResume.promise;
+        },
+      },
+    );
+    await aPaused.promise;
+    markStale(d, "seq");
+
+    expect(await saveFinalReceipt({ d, key: "seq", tip, receipt: receipt("seq", "CLEAR") })).toEqual({
+      where: "canonical",
+    });
+    aResume.resolve();
+    expect(await a).toEqual({ where: "sidecar", kept: "CLEAR" });
+    expect(canonical(d, "seq")?.verdict).toBe("CLEAR");
+    expect(sidecar(d, "seq")?.verdict).toBe("reviewer_empty");
   });
 
   test("two spawned writers converge on CLEAR, never on the failure", async () => {
@@ -90,7 +169,7 @@ const d = { store: new Store(root), now: Date.now };
 await saveFinalReceipt({
   d, key, tip,
   receipt: { lane: key, verdict, base: "a".repeat(40), tip, brief: "brief.md", reviewer: verdict, at: Date.now(), summary: verdict, chunks: [] },
-}, { afterRead: async () => { await new Promise((r) => setTimeout(r, 50)); } });
+}, { beforeWrite: async () => { await new Promise((r) => setTimeout(r, 50)); } });
 `,
     );
     const bun = Bun.which("bun") ?? process.execPath;
@@ -110,7 +189,7 @@ await saveFinalReceipt({
     expect({ code: clearCode, stderr: clearErr }).toEqual({ code: 0, stderr: "" });
     expect({ code: failureCode, stderr: failureErr }).toEqual({ code: 0, stderr: "" });
 
-    expect(d.store.laneReceipt("spawned", tip)?.verdict).toBe("CLEAR");
+    expect(canonical(d, "spawned")?.verdict).toBe("CLEAR");
     expect(existsSync(receiptLockPath(d.store.root, "spawned", tip))).toBe(false);
   });
 });

@@ -6,7 +6,7 @@ import { Refusal } from "./refusal.ts";
 import { attemptSafely } from "./review-attempt.ts";
 import { diagnosticLine, type ReviewDiagnostic } from "./review-diagnostic.ts";
 import { failed, failureKind, failureSummary, type LaneResult, type LaneRun, successSummary } from "./review-report.ts";
-import { saveFinalReceipt } from "./review-progress.ts";
+import { saveFinalReceipt, progressPath } from "./review-progress.ts";
 import type { LaneVerdict } from "./store-types.ts";
 
 export type SingleFail = (
@@ -109,5 +109,11 @@ export async function reviewSingle(ctx: SingleReviewContext): Promise<"CLEAR" | 
       summary,
     },
   });
-  return saved.where === "sidecar" && saved.kept === "BLOCK" ? "BLOCK" : verdict;
+  if (saved.where === "sidecar") {
+    if (saved.kept === "CLEAR" || saved.kept === "BLOCK") return saved.kept;
+    throw new Refusal(
+      `review of lane ${ctx.key} at ${ctx.tip} was preempted by a newer writer; the canonical receipt is ${saved.kept}; this job's ${verdict} is in ${progressPath(ctx.d.store.root, ctx.key, ctx.tip)}`,
+    );
+  }
+  return verdict;
 }

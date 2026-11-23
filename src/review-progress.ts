@@ -1,12 +1,15 @@
-// Progress rows and the receipt lock for a chunked lane review: every planned chunk with its state, kept current in
-// the receipt so a hung job still says what it managed to review, and one writer at a time per lane and tip.
+// Progress rows and the fenced receipt writes for a chunked lane review: every planned chunk with its state, and a
+// canonical verdict that an older lock epoch can never overwrite.
 
-import { mkdirSync, rmSync, statSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Deps } from "./harness.ts";
-import { writeJson } from "./json-file.ts";
+import { readJson, writeJson } from "./json-file.ts";
+import { withReceiptLock, type ReceiptWriteHooks } from "./receipt-lock.ts";
 import { partialSummary, type LaneRun } from "./review-report.ts";
-import type { LaneChunkReceipt, LaneChunkState, LaneReceipt } from "./store-types.ts";
+import type { LaneChunkReceipt, LaneChunkState, LaneReceipt, LaneVerdict } from "./store-types.ts";
+
+export { RECEIPT_LOCK_TTL_MS, receiptLockPath, type ReceiptWriteHooks } from "./receipt-lock.ts";
 
 export type ProgressUnit = {
   run: LaneRun;
@@ -71,69 +74,30 @@ export const markNotRun = (units: readonly ProgressUnit[], note: string): void =
 export const progressPath = (root: string, key: string, tip: string): string =>
   join(root, "state", "reviews", `${key}@${tip}.progress.json`);
 
-/** The per-lane+tip receipt lock: an atomically created directory a dead writer cannot hold past the TTL. */
-export const receiptLockPath = (root: string, key: string, tip: string): string =>
-  join(root, "state", "reviews", `${key}@${tip}.receipt.lock`);
-
-/** A lock older than this is taken over; the critical section under it is a small file read and write. */
-export const RECEIPT_LOCK_TTL_MS = 10_000;
-const LOCK_WAIT_MS = 15_000;
-const LOCK_RETRY_MS = 10;
-
-/** Test seam: `afterRead` widens the read-modify-write window, `onLockWait` observes a contending writer. */
-export type ReceiptWriteHooks = {
-  readonly afterRead?: () => void | Promise<void>;
-  readonly onLockWait?: () => void;
+const readSidecar = (path: string): LaneReceipt | undefined => {
+  try {
+    return readJson<LaneReceipt>(path);
+  } catch {
+    return undefined;
+  }
 };
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function withReceiptLock<T>(
-  root: string,
-  key: string,
-  tip: string,
-  fn: () => T | Promise<T>,
-  hooks?: ReceiptWriteHooks,
-): Promise<T> {
-  const lock = receiptLockPath(root, key, tip);
-  const deadline = Date.now() + LOCK_WAIT_MS;
-  for (;;) {
-    try {
-      mkdirSync(lock);
-      break;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      hooks?.onLockWait?.();
-      try {
-        if (Date.now() - statSync(lock).mtimeMs > RECEIPT_LOCK_TTL_MS) {
-          rmSync(lock, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        continue;
-      }
-      if (Date.now() >= deadline) throw new Error(`receipt lock for ${key}@${tip} held longer than ${LOCK_WAIT_MS} ms`);
-      await sleep(LOCK_RETRY_MS);
-    }
-  }
-  try {
-    return await fn();
-  } finally {
-    rmSync(lock, { recursive: true, force: true });
-  }
-}
-
-/** Removes the sidecar under the receipt lock, so a clear and a concurrent progress write cannot interleave. */
+/** Removes the sidecar only when no newer epoch wrote it; the canonical receipt must not carry a newer writerAt. */
 export async function clearProgress(d: Deps, key: string, tip: string): Promise<void> {
-  await withReceiptLock(d.store.root, key, tip, () => {
-    rmSync(progressPath(d.store.root, key, tip), { force: true });
+  await withReceiptLock(d.store.root, key, tip, (lock) => {
+    const path = progressPath(d.store.root, key, tip);
+    const sidecar = readSidecar(path);
+    if (sidecar?.writerAt !== undefined && sidecar.writerAt > lock.acquiredAt) return;
+    const current = d.store.laneReceipt(key, tip);
+    if (current?.writerAt !== undefined && current.writerAt > lock.acquiredAt) return;
+    rmSync(path, { force: true });
   });
 }
 
 /**
- * Writes the live receipt: `review_partial` with every planned chunk and its state. The decision is made on the
- * receipt on disk at write time under the receipt lock: when a CLEAR or BLOCK is already there, the progress goes to
- * the sidecar, so a concurrent or interrupted re-review cannot erase a valid answer.
+ * Writes the live receipt under the lock: `review_partial` with every planned chunk. A newer canonical epoch or a
+ * completed CLEAR/BLOCK sends the partial to the sidecar; otherwise it is the canonical receipt, stamped with this
+ * writer's `writerAt`.
  */
 export async function savePartialReceipt(args: {
   readonly d: Deps;
@@ -156,23 +120,24 @@ export async function savePartialReceipt(args: {
     summary: partialSummary(rows),
     chunks: rows,
   };
-  await withReceiptLock(args.d.store.root, args.key, args.tip, () => {
+  await withReceiptLock(args.d.store.root, args.key, args.tip, (lock) => {
+    const receipt: LaneReceipt = { ...partial, writerAt: lock.acquiredAt };
     const current = args.d.store.laneReceipt(args.key, args.tip);
-    if (current?.verdict === "CLEAR" || current?.verdict === "BLOCK")
-      writeJson(progressPath(args.d.store.root, args.key, args.tip), partial);
-    else args.d.store.saveLaneReceipt(partial);
+    const preempted = current?.writerAt !== undefined && current.writerAt > lock.acquiredAt;
+    if (preempted || current?.verdict === "CLEAR" || current?.verdict === "BLOCK")
+      writeJson(progressPath(args.d.store.root, args.key, args.tip), receipt);
+    else args.d.store.saveLaneReceipt(receipt);
   });
 }
 
 /** Where a finished review wrote its verdict: the canonical receipt, or the sidecar when it could not improve one. */
-export type FinalSave =
-  | { readonly where: "canonical" }
-  | { readonly where: "sidecar"; readonly kept: "CLEAR" | "BLOCK" };
+export type FinalSave = { readonly where: "canonical" } | { readonly where: "sidecar"; readonly kept: LaneVerdict };
 
 /**
- * Saves the final verdict under the lock without downgrading a completed one. BLOCK wins over CLEAR at the same tip;
- * a CLEAR never replaces a BLOCK, and a failure never replaces either (both go to the sidecar), so a lane clears a
- * BLOCK only by moving the tip. A job that produces a stronger verdict may replace the canonical one.
+ * Saves the final verdict under the lock without downgrading a completed one. The writer re-reads the canonical after
+ * any injected pause and compares epochs: a canonical `writerAt` newer than its own means it was preempted, so it
+ * writes the sidecar only. Otherwise BLOCK wins over CLEAR at the same tip, a CLEAR never replaces a BLOCK, and a
+ * failure never replaces a completed verdict.
  */
 export async function saveFinalReceipt(
   args: {
@@ -187,21 +152,25 @@ export async function saveFinalReceipt(
     args.d.store.root,
     args.key,
     args.tip,
-    async () => {
+    async (lock) => {
+      await hooks?.beforeWrite?.();
       const current = args.d.store.laneReceipt(args.key, args.tip);
-      await hooks?.afterRead?.();
+      const receipt: LaneReceipt = { ...args.receipt, writerAt: lock.acquiredAt };
+      const preempted = current?.writerAt !== undefined && current.writerAt > lock.acquiredAt;
       const completed = current?.verdict === "CLEAR" || current?.verdict === "BLOCK";
-      const newCompleted = args.receipt.verdict === "CLEAR" || args.receipt.verdict === "BLOCK";
-      const blockWins = current?.verdict === "BLOCK" && args.receipt.verdict === "CLEAR";
-      if ((completed && !newCompleted) || blockWins) {
-        writeJson(progressPath(args.d.store.root, args.key, args.tip), args.receipt);
-        return { where: "sidecar", kept: current!.verdict as "CLEAR" | "BLOCK" } as const;
+      const newCompleted = receipt.verdict === "CLEAR" || receipt.verdict === "BLOCK";
+      const blockWins = current?.verdict === "BLOCK" && receipt.verdict === "CLEAR";
+      if (preempted || (completed && !newCompleted) || blockWins) {
+        writeJson(progressPath(args.d.store.root, args.key, args.tip), receipt);
+        await hooks?.beforeRelease?.();
+        return { where: "sidecar", kept: current?.verdict ?? "review_partial" } as const;
       }
-      args.d.store.saveLaneReceipt(args.receipt);
+      args.d.store.saveLaneReceipt(receipt);
+      rmSync(progressPath(args.d.store.root, args.key, args.tip), { force: true });
+      await hooks?.beforeRelease?.();
       return { where: "canonical" } as const;
     },
     hooks,
   );
-  if (saved.where === "canonical") await clearProgress(args.d, args.key, args.tip);
   return saved;
 }

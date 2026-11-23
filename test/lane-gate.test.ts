@@ -37,6 +37,7 @@ describe("lane review gate", () => {
       reviewer: "omo -p --no-session --model some/model",
       at: d.now(),
       summary: "LOW src/x.ts:1 nit\nVERDICT: CLEAR",
+      writerAt: expect.any(Number),
     });
     expect(readFileSync(d.store.laneDiffPath("fix-login", tip), "utf8")).toBe(diff);
     const reviewer = w.calls.find((c) => c.cmd === "omo")!;

@@ -56,11 +56,7 @@ export type ChunkReviewContext = {
   readonly reviewerField: (results: readonly LaneResult[]) => string;
 };
 
-/**
- * Reviews every chunk under one job budget. A failed or thrown chunk does not end the job (the others still answer and
- * the receipt says what is missing); a retry reuses the chunks that answered. BLOCK wins over every failure and over a
- * CLEAR at the same tip, and a failure is kept in the progress sidecar while a canonical CLEAR/BLOCK stays.
- */
+/** Reviews every chunk under one job budget; a failed chunk does not end the job, and a completed verdict is fenced. */
 export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "BLOCK"> {
   const deadline = Date.now() + ctx.budgetMs;
   const budgetLeft = (): number => deadline - Date.now();
@@ -239,6 +235,15 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
       `${why}${where}${first === undefined ? "" : `; diagnostic ${diagnosticLine(first.diagnostic)}`}; output saved to ${ctx.logPath}${first === undefined ? "" : `; ${first.path}`}`,
     );
   }
-  if (verdict === "CLEAR" || verdict === "BLOCK") clearCheckpoint(ctx.d.store.root, ctx.key, ctx.tip);
-  return saved.where === "sidecar" && saved.kept === "BLOCK" ? "BLOCK" : verdict;
+  if (saved.where === "sidecar") {
+    if (saved.kept === "CLEAR" || saved.kept === "BLOCK") {
+      clearCheckpoint(ctx.d.store.root, ctx.key, ctx.tip);
+      return saved.kept;
+    }
+    throw new Refusal(
+      `review of lane ${ctx.key} at ${ctx.tip} was preempted by a newer writer; the canonical receipt is ${saved.kept}; this job's ${verdict} is in ${progressPath(ctx.d.store.root, ctx.key, ctx.tip)}`,
+    );
+  }
+  clearCheckpoint(ctx.d.store.root, ctx.key, ctx.tip);
+  return verdict;
 }
