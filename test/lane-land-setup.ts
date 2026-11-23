@@ -14,6 +14,10 @@ export const repoName = "asdfqwerzxcc/dori-design-system";
 export const url = `https://github.com/${repoName}/pull/7`;
 
 const GREEN = [{ name: "test", bucket: "pass" }] as const;
+type GhResult = { readonly code: number; readonly stdout: string; readonly stderr?: string };
+type CheckList = readonly { readonly name: string; readonly bucket: string }[];
+
+const isCheckList = (value: CheckList | GhResult): value is CheckList => Array.isArray(value);
 
 export function laneFixture(tip = tipA) {
   const { w, d } = setup();
@@ -70,11 +74,13 @@ export function laneGh(
   w: World,
   opts: {
     readonly existing?: boolean;
-    readonly checks?: readonly { readonly name: string; readonly bucket: string }[];
+    readonly checks?: CheckList | GhResult;
+    readonly workflows?: number;
     readonly stale?: "at-head" | "older";
     readonly base?: string;
     readonly headRepo?: string;
     readonly cross?: boolean;
+    readonly prHead?: string;
   } = {},
 ): void {
   w.gh = (argv) => {
@@ -89,7 +95,7 @@ export function laneGh(
               number: 7,
               url,
               state: "OPEN",
-              headRefOid: tipA,
+              headRefOid: opts.prHead ?? tipA,
               baseRefName: opts.base ?? "main",
               headRepository: { nameWithOwner: headRepo },
               headRepositoryOwner: { login: headRepo.split("/")[0] ?? "" },
@@ -114,7 +120,13 @@ export function laneGh(
     }
     if (argv[0] === "pr" && argv[1] === "create") return { code: 0, stdout: `${url}\n` };
     if (argv[0] === "pr" && argv[1] === "edit") return { code: 0, stdout: "" };
-    if (argv[0] === "pr" && argv[1] === "checks") return { code: 0, stdout: JSON.stringify(opts.checks ?? GREEN) };
+    if (argv[0] === "api" && argv[1]?.endsWith("/actions/workflows"))
+      return { code: 0, stdout: `${opts.workflows ?? 1}\n` };
+    if (argv[0] === "pr" && argv[1] === "checks") {
+      const checks = opts.checks ?? GREEN;
+      if (isCheckList(checks)) return { code: 0, stdout: JSON.stringify(checks) };
+      return checks;
+    }
     if (argv[0] === "pr" && argv[1] === "merge") return { code: 0, stdout: "" };
     return { code: 1, stdout: `unhandled gh ${argv.join(" ")}` };
   };

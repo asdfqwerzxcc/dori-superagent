@@ -57,10 +57,37 @@ describe("lane landing", () => {
   test("merges a repo with no CI configured and records checks=none", async () => {
     const { w, d } = laneFixture();
     receiptAt(d, tipA);
-    laneGh(w, { checks: [] });
+    laneGh(w, {
+      checks: { code: 1, stdout: "", stderr: "no checks reported on the 'main' branch" },
+      workflows: 0,
+    });
     const lines = await mergeLane(d, "alpha");
     expect(lines.at(-1)).toContain("checks=none");
     expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(true);
+  });
+
+  test("refuses when the repo has workflows but no checks registered", async () => {
+    const { w, d } = laneFixture();
+    receiptAt(d, tipA);
+    laneGh(w, { checks: { code: 1, stdout: "", stderr: "no checks reported" }, workflows: 1 });
+    await expect(mergeLane(d, "alpha")).rejects.toThrow("1 workflow");
+    expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(false);
+  });
+
+  test("refuses a gh pr checks failure with its message", async () => {
+    const { w, d } = laneFixture();
+    receiptAt(d, tipA);
+    laneGh(w, { checks: { code: 1, stdout: "", stderr: "HTTP 502: bad gateway" }, workflows: 1 });
+    await expect(mergeLane(d, "alpha")).rejects.toThrow("HTTP 502");
+    expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(false);
+  });
+
+  test("refuses all-skipped checks when the repo has workflows", async () => {
+    const { w, d } = laneFixture();
+    receiptAt(d, tipA);
+    laneGh(w, { checks: [{ name: "test", bucket: "skipping" }], workflows: 1 });
+    await expect(mergeLane(d, "alpha")).rejects.toThrow("skipped");
+    expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(false);
   });
 
   test("updates an existing open PR before merging it", async () => {
@@ -81,6 +108,16 @@ describe("lane landing", () => {
     receiptAt(d, tipA);
     laneGh(w, { existing: true, base: "develop" });
     await expect(mergeLane(d, "alpha")).rejects.toThrow("base is develop, not main");
+    expect(w.calls.some((call) => call.cmd === "gh" && (call.argv[1] === "edit" || call.argv[1] === "merge"))).toBe(
+      false,
+    );
+  });
+
+  test("refuses an open PR whose head sha is not the lane head", async () => {
+    const { w, d } = laneFixture();
+    receiptAt(d, tipA);
+    laneGh(w, { existing: true, prHead: tipB });
+    await expect(mergeLane(d, "alpha")).rejects.toThrow(`not ${tipA.slice(0, 12)}`);
     expect(w.calls.some((call) => call.cmd === "gh" && (call.argv[1] === "edit" || call.argv[1] === "merge"))).toBe(
       false,
     );

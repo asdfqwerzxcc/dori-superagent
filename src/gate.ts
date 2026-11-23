@@ -121,7 +121,8 @@ type Check = { name: string; bucket: string };
 /**
  * Merge only when the review dimension is satisfied and every configured check passed. The review dimension is a CLEAR
  * receipt at the exact current head, or with `--bundle` every recorded member still CLEAR at the sha it was admitted on.
- * An empty check list means no CI is configured and is not a refusal; pending or failed checks refuse.
+ * `checks=none` requires gh's no-checks answer and a repository with no workflows; pending, failed, skipped-only,
+ * unreadable or failed gh calls refuse.
  */
 export async function mergeGate(
   d: Deps,
@@ -161,24 +162,74 @@ async function gateRefusal(
   return checksRefusal(d, pr);
 }
 
-/** The check dimension alone, shared by the PR gate and the lane gate: an empty list means no CI is configured and is
- * not a refusal; pending or failed checks refuse. */
+/** The check dimension alone, shared by the PR gate, the bundle gate and the lane gate. `none` is true only when no
+ * check ran (`gh` reported no checks, or every check was skipped) and the repository has no workflows; any other
+ * uncertain answer is a refusal. */
 export type CheckGate = { readonly none: boolean; readonly refusal?: [MergeOutcome, string] };
 
-export async function checkGate(d: Deps, pr: { readonly repo: string; readonly number: number }): Promise<CheckGate> {
-  const checksRes = await d.exec("gh", ["pr", "checks", String(pr.number), "--repo", pr.repo, "--json", "name,bucket"]);
-  const checks: Check[] = checksRes.stdout.trim().startsWith("[") ? JSON.parse(checksRes.stdout) : [];
-  if (checks.length === 0) return { none: true };
-  const bad = checks.filter((c) => c.bucket !== "pass" && c.bucket !== "skipping");
-  if (bad.length > 0)
+const checkRefusal = (why: string): CheckGate => ({ none: false, refusal: ["checks_red", why] });
+
+const NO_CHECKS_RE = /no checks reported/i;
+
+const isCheck = (value: unknown): value is Check =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as Check).name === "string" &&
+  typeof (value as Check).bucket === "string";
+
+async function workflowCount(
+  d: Deps,
+  repo: string,
+): Promise<{ readonly count?: number; readonly refusal?: [MergeOutcome, string] }> {
+  const r = await d.exec("gh", ["api", `repos/${repo}/actions/workflows`, "--jq", ".total_count"]);
+  const why = (r.stderr || r.stdout).trim();
+  if (r.code !== 0)
     return {
-      none: false,
-      refusal: ["checks_red", `checks not green: ${bad.map((c) => `${c.name}=${c.bucket}`).join(", ")}`],
+      refusal: ["checks_red", `cannot read workflow count for ${repo} (exit ${r.code}): ${why || "no output"}`],
     };
+  if (r.stderr.trim() !== "")
+    return { refusal: ["checks_red", `gh api workflows wrote to stderr: ${r.stderr.trim()}`] };
+  const count = Number(r.stdout.trim());
+  if (!Number.isInteger(count) || count < 0)
+    return { refusal: ["checks_red", `workflow count for ${repo} is not a number: ${r.stdout.trim() || "(empty)"}`] };
+  return { count };
+}
+
+export async function checkGate(d: Deps, pr: { readonly repo: string; readonly number: number }): Promise<CheckGate> {
+  const r = await d.exec("gh", ["pr", "checks", String(pr.number), "--repo", pr.repo, "--json", "name,bucket"]);
+  const stdout = r.stdout.trim();
+  const stderr = r.stderr.trim();
+  if (r.code === 1 && stdout === "" && NO_CHECKS_RE.test(stderr)) {
+    const wf = await workflowCount(d, pr.repo);
+    if (wf.refusal !== undefined) return checkRefusal(wf.refusal[1]);
+    if (wf.count === 0) return { none: true };
+    return checkRefusal(
+      `no checks reported but ${pr.repo} has ${wf.count} workflow(s); checks may not have registered`,
+    );
+  }
+  if (r.code !== 0) return checkRefusal(`gh pr checks failed (exit ${r.code}): ${stderr || stdout || "no output"}`);
+  if (stderr !== "") return checkRefusal(`gh pr checks wrote to stderr: ${stderr}`);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(stdout);
+  } catch {
+    return checkRefusal(`gh pr checks printed unreadable output: ${stdout || "(empty)"}`);
+  }
+  if (!Array.isArray(raw) || !raw.every(isCheck)) return checkRefusal("gh pr checks printed an unreadable check list");
+  const checks = raw as Check[];
+  if (checks.length === 0) return checkRefusal("gh pr checks returned an empty list without the no-checks reason");
+  if (checks.every((c) => c.bucket === "skipping")) {
+    const wf = await workflowCount(d, pr.repo);
+    if (wf.refusal !== undefined) return checkRefusal(wf.refusal[1]);
+    if (wf.count === 0) return { none: true };
+    return checkRefusal(`all ${checks.length} checks are skipped; no check ran`);
+  }
+  const bad = checks.filter((c) => c.bucket !== "pass" && c.bucket !== "skipping");
+  if (bad.length > 0) return checkRefusal(`checks not green: ${bad.map((c) => `${c.name}=${c.bucket}`).join(", ")}`);
   return { none: false };
 }
 
-/** The refusal form used by the PR gate. */
+/** The refusal form shared by the PR and bundle gates. */
 export async function checksRefusal(
   d: Deps,
   pr: { readonly repo: string; readonly number: number },
