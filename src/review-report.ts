@@ -52,16 +52,23 @@ export const failureKind = (r: LaneResult): string =>
           : "no verdict";
 
 const AUTH_FAILURE = /no api key|api[_-]?key|not logged in|unauthori[sz]ed|authenticat|\b40[13]\b/i;
+/** A stack frame or module-resolution line that merely mentions an auth word is not a provider refusal. */
+const NOT_PROVIDER_AUTH = /^\s*at\s|require stack|cannot find module|node:internal/i;
+const MAX_CAUSE_LINE = 300;
 
-/** The stderr line that explains a failure: the auth line when there is one, else the first non-empty line. */
-const stderrReason = (stderr: string): string => {
-  const lines = stderr
+const stderrLines = (stderr: string): string[] =>
+  stderr
     .trim()
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l !== "");
-  return lines.find((l) => AUTH_FAILURE.test(l)) ?? lines[0] ?? "";
-};
+
+const authLine = (stderr: string): string | undefined =>
+  stderrLines(stderr).find((l) => AUTH_FAILURE.test(l) && !NOT_PROVIDER_AUTH.test(l));
+
+/** The stderr line that explains a failure: the auth line when there is one, else the first non-empty line. */
+const stderrReason = (stderr: string): string =>
+  (authLine(stderr) ?? stderrLines(stderr)[0] ?? "").slice(0, MAX_CAUSE_LINE);
 
 /** One line naming why an attempt failed, quoted by a diagnostic's `cause` and by the retry note. */
 export const failureCause = (r: LaneResult): string => {
@@ -82,7 +89,7 @@ export const primaryUnusable = (r: LaneResult): boolean =>
   (r.outcome.kind === "exit" &&
     r.outcome.code !== 0 &&
     r.outcome.stdout.trim() === "" &&
-    AUTH_FAILURE.test(r.outcome.stderr));
+    authLine(r.outcome.stderr) !== undefined);
 
 const detail = (r: LaneResult): string => {
   const stderr = r.outcome.kind === "error" ? r.outcome.message : r.outcome.stderr;

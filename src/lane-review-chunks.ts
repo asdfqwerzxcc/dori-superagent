@@ -148,7 +148,7 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
         parentUnit.note = `re-split into ${subChunks.length} sub-chunks`;
       }
       notes.push(
-        `--- re-split ${run.label} [${chunk.label ?? chunk.paths.join(", ")}] after empty output; ${subChunks.length} sub-chunks; diagnostic ${parent.path}`,
+        `--- re-split ${run.label} [${chunk.label ?? chunk.paths.join(", ")}] after empty output; ${subChunks.length} sub-chunks; diagnostic ${parent.path}${result.retryDiagnostic === undefined ? "" : `; primary diagnostic ${result.retryDiagnostic}`}`,
       );
       const parentRef = run.parent ?? { index: chunk.index, total: run.chunkTotal ?? ctx.runs.length };
       const subs = subChunks.map((sub) => ctx.chunkRun(sub, subChunks.length, true, parentRef));

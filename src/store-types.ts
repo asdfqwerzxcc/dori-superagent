@@ -96,7 +96,7 @@ export type LaneChunkReceipt = {
   model?: string;
   durationMs?: number;
   reused?: true;
-  /** True when the primary was known to be unusable and this chunk went to the fallback directly. */
+  /** True when the primary was known to be unusable while this chunk used the fallback (skipped, or retried after its failure). */
   primaryDown?: true;
   note?: string;
 };

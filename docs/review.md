@@ -30,8 +30,8 @@ The lane record also carries the current `tipSha`, refreshed at each review.
 3. saves the full diff to `lane-reviews/lane_<key>@<tip>.diff` and renders `prompts/review-lane.md` with the brief path, the
    base, the tip, that diff and the worktree as `repo`; a diff over 16 KB or 200 changed lines is split by path into
    chunks (`lane-reviews/lane_<key>@<tip>.chunk-<n>.diff`), each rendered with `prompts/review-lane-chunk.md` and
-   reviewed in sequence; a chunk that returns an empty answer is split once more, by path (or by hunks when one file
-   remains), and its sub-chunks are reviewed before the review is called empty;
+   reviewed in sequence; a chunk that exits zero with an empty answer is split once more, by path (or by hunks when
+   one file remains), and its sub-chunks are reviewed before the review is called empty;
 4. runs the reviewer non-interactively (`omo -p --no-session --model M`, or `hooks.reviewCommand` when configured) with a
    30-minute chunk window (`DORI_REVIEW_TIMEOUT_MS` overrides it) inside a 60-minute job budget
    (`DORI_REVIEW_BUDGET_MS` overrides it). Each chunk gets the smaller of the window and the budget left; the primary
@@ -39,10 +39,10 @@ The lane record also carries the current `tipSha`, refreshed at each review.
    turn before the window closes. When the budget runs out, the chunks not attempted are recorded as `not run` and a
    retry resumes them. Output streams to `state/reviews/<key>.log` with one "still running" line every 30 s; a failed
    attempt (timeout, non-zero exit, empty stdout or no verdict) is retried once with `reviewFallbackModel` from
-   `config.json` when that key is set and differs from the first model. A failure before any output (a missing or
-   rejected key, a process that cannot be started) is retried on the fallback immediately, without re-splitting the
-   chunk, and marks the primary down for the rest of the job: later chunks go straight to the fallback instead of
-   repeating the same failure;
+   `config.json` when that key is set and differs from the first model. An attempt that fails without a verdict is
+   retried on the fallback at once; only a clean exit-zero empty answer is re-split first. A missing or rejected key on
+   stderr, or a process that cannot be started, marks the primary down for the rest of the job: later chunks go straight
+   to the fallback instead of repeating the same failure;
 5. reads exactly one final `VERDICT: CLEAR|BLOCK` line per chunk, continues with the remaining chunks after one fails,
    and writes `receipts/lane_<key>@<tip>.json` with the verdict, base, tip, brief path, reviewer command (including its
    `--model`, and the fallback when one ran), time and, for a chunked review, a `chunks` array naming every chunk's
