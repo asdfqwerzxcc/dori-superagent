@@ -1,6 +1,4 @@
 import { join } from "node:path";
-import { one, type Args } from "./cli-args.ts";
-import type { Deps } from "./harness.ts";
 import { readJson } from "./json-file.ts";
 import { Refusal } from "./refusal.ts";
 
@@ -46,18 +44,40 @@ export function assertWritable(policy: RepoPolicy, repo: string, apply: boolean)
   );
 }
 
-/** `git@github.com:owner/repo.git` and `https://github.com/owner/repo` name the same repository. */
-export function repoFromRemote(url: string): string | undefined {
-  const m = /github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/i.exec(url.trim());
-  return m ? `${m[1]}/${m[2]}` : undefined;
+export type Remote = { readonly host: string; readonly path: string };
+
+/** `git@host:group/project.git`, `https://host/group/project`, and `ssh://git@host:2222/group/project` name a host and path. */
+export function remoteOf(url: string): Remote | undefined {
+  const text = url.trim();
+  if (text === "") return undefined;
+  let host: string;
+  let raw: string;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) {
+    let parsed: URL;
+    try {
+      parsed = new URL(text);
+    } catch {
+      return undefined;
+    }
+    host = parsed.protocol === "ssh:" ? parsed.hostname : parsed.host;
+    raw = parsed.pathname;
+  } else {
+    const scp = /^(?:[^@/]+@)?([^:/]+):(.+)$/.exec(text);
+    if (scp === null) return undefined;
+    host = scp[1]!;
+    raw = scp[2]!;
+  }
+  const path = raw
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "")
+    .replace(/\.git$/i, "");
+  const parts = path.split("/").filter(Boolean);
+  if (host === "" || parts.length < 2) return undefined;
+  return { host: host.toLowerCase(), path: parts.join("/") };
 }
 
-/** `--repo`, or the GitHub origin of the current checkout; no default is guessed from an unrelated remote. */
-export async function repoArg(d: Deps, a: Args): Promise<string> {
-  const given = one(a, "repo");
-  if (given !== undefined) return checkRepo(given);
-  const r = await d.exec("git", ["-C", process.cwd(), "remote", "get-url", "origin"]);
-  const repo = r.code === 0 ? repoFromRemote(r.stdout) : undefined;
-  if (repo === undefined) throw new Refusal("give --repo owner/name (this checkout has no github origin)");
-  return checkRepo(repo);
+/** `git@github.com:owner/repo.git` and `https://github.com/owner/repo` name the same repository. */
+export function repoFromRemote(url: string): string | undefined {
+  const remote = remoteOf(url);
+  return remote?.host === "github.com" ? remote.path : undefined;
 }

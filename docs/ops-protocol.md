@@ -64,17 +64,25 @@
 { "allow": ["asdfqwerzxcc/dori-superagent"], "readOnly": [] }
 ```
 
+GitLab 저장소는 `host/group/project` 형식으로 적는다(예: `gitlab.company.local/team/app`). 키는 명령에 쓴
+저장소 문자열과 같고, 대소문자는 구분하지 않는다.
+
 - `allow`에 있는 저장소만 `--apply`로 쓸 수 있다. 대소문자는 구분하지 않는다.
 - `readOnly`에 있는 저장소는 `allow`에도 있어도 쓰지 못한다. 목록에 없는 저장소는 전부 읽기 전용이다.
 - 읽기 전용 저장소에서도 드라이런(dry-run)은 허용된다. 무엇을 바꿀지 출력할 뿐 아무것도 쓰지 않는다.
-- `--repo`를 생략하면 현재 체크아웃의 `origin`이 GitHub 저장소일 때 그 이름을 쓴다. `origin`이 없거나
-  GitHub가 아니면 `--repo owner/name`을 요구한다.
-- 토큰은 저장소 단위 Project Access Token(또는 fine-grained PAT)을 쓴다. 최소 권한:
+- `--repo`는 GitHub이면 `owner/name`, GitLab이면 `host/group/project`(하위 그룹 허용)다. `--host HOST`와
+  `--repo group/project`를 함께 주거나, `--scm gh|glab`으로 자동 판별을 고정할 수 있다.
+- `--repo`를 생략하면 현재 체크아웃의 `origin`을 읽는다. GitHub 호스트면 `owner/name`으로 gh를, 그 밖의
+  호스트면 `host/group/project`로 glab을 쓴다. `origin`이 없으면 `--repo`를 요구한다. `--repo`가 두 단계
+  (`owner/name`)면 `--scm glab`/`--host`가 없는 한 GitHub으로 본다.
+- GitHub 토큰은 저장소 단위 Project Access Token(또는 fine-grained PAT)을 쓴다. 최소 권한:
   Metadata read, Contents read/write, Issues read/write, Pull requests read/write. Projects v2 상태를 쓰는
   저장소만 Projects read/write를 더한다. 조직 전체 토큰, `admin` 권한, 다른 저장소로의 재사용은 금지한다.
+- GitLab 인증은 `glab`에 맡긴다. `glab auth login --hostname gitlab.company.local`로 로그인하고, dori는
+  토큰을 저장하지 않으며 `glab api --hostname`만 호출한다. self-managed 호스트도 같은 경로다.
 - `sisyphuslabs/*`는 allowlist에 절대 넣지 않는다. 이 명령들은 PR을 열지 않고, 브랜치를 푸시하지 않고,
   이슈를 닫지 않는다.
-- 이슈 트래커가 꺼진 저장소에서는 PR만 검사하고 `NOTE issues are disabled` 한 줄을 남긴다. 실패가 아니다.
+- 이슈 트래커가 꺼진 저장소에서는 PR/MR만 검사하고 `NOTE issues are disabled` 한 줄을 남긴다. 실패가 아니다.
 
 ## 5. 라벨 상태 머신: `dori labels`
 
@@ -88,26 +96,28 @@
 | `status:blocked` | 사람이나 다른 변경을 기다림 |
 | `status:done` | 랜딩되었거나 닫힘 |
 
-`dori labels [--repo R] [--apply]`는 상태 라벨이 **0개이거나 2개 이상인 항목만** 고친다.
+`dori labels [--repo R] [--scm gh|glab] [--host H] [--apply]`는 상태 라벨이 **0개이거나 2개 이상인 항목만** 고친다.
 
 - 0개: 열린 항목은 `status:triage`, 닫힌 항목(머지된 PR 포함)은 `status:done`.
 - 2개 이상: 닫힌 항목은 `status:done`. 열린 항목은 `blocked` > `in-progress` > `ready` > `triage` > `done`
   순서로 가장 강한 상태를 남기고 나머지를 뗀다. 작업을 숨기는 쪽보다 보이게 두는 쪽을 택한다.
 - 이미 정확히 1개면 건드리지 않는다. 그래서 같은 명령을 다시 실행해도 바뀌는 것이 없다(멱등).
 - 라벨 이름은 대소문자와 콜론 앞뒤 공백을 무시하고 비교한다(`Status: Ready` = `status:ready`).
-- 기본은 드라이런이다. `--apply`가 있을 때만 누락된 상태 라벨을 만들고(`gh label create`) 항목을 고친다.
+- 기본은 드라이런이다. `--apply`가 있을 때만 누락된 상태 라벨을 만들고(`gh label create` / GitLab Labels API)
+  항목을 고친다.
+- GitLab에서는 MR을 PR로 취급하고 번호는 프로젝트 안의 `iid`다. 상태 라벨 이름과 0개/2개 규칙은 같다.
 - 출력 예: `LABEL issue#12 add status:triage (Broken login)`, `LABEL pr#12 remove status:ready (Fix login)`,
   `LABELS asdfqwerzxcc/dori-superagent items=37 changes=1 dry-run`.
 - 남길 상태가 이미 붙어 있으면 다시 붙이지 않고 나머지 라벨만 뗀다.
 
 ## 6. 오래된 항목 청소: `dori stale`
 
-`dori stale [--repo R] [--days-pr 14] [--days-comment 7] [--apply]`는 움직임이 멈춘 열린 항목을 처리한다.
+`dori stale [--repo R] [--scm gh|glab] [--host H] [--days-pr 14] [--days-comment 7] [--apply]`는 움직임이 멈춘 열린 항목을 처리한다.
 
 | 대상 | 조건 | 동작 |
 | --- | --- | --- |
-| PR | `--days-comment`(기본 7일) 동안 움직임 없음 | 한 줄 사유를 묻는 코멘트 1회 |
-| PR | `--days-pr`(기본 14일) 동안 움직임 없음 | 사유를 남기고 닫음 |
+| PR/MR | `--days-comment`(기본 7일) 동안 움직임 없음 | 한 줄 사유를 묻는 코멘트 1회 |
+| PR/MR | `--days-pr`(기본 14일) 동안 움직임 없음 | 사유를 남기고 닫음 |
 | 이슈 | 14일 동안 움직임 없음 | `needs-info` 라벨 추가(닫지 않음) |
 
 - "움직임"은 생성, 항목의 갱신(푸시·리뷰·설명 수정), 그리고 우리가 남긴 표시가 없는 코멘트 중 가장 최근 시각이다.
@@ -117,10 +127,12 @@
 - 이슈는 절대 닫지 않는다. `needs-info`가 이미 있으면 다시 붙이지 않는다. 라벨이 떼진 뒤에도 여전히
   오래되었으면 다시 붙인다.
 - 모든 실제 동작은 `$DORI_HOME/state/stale-audit.jsonl`에 한 줄씩 JSON으로 남는다:
-  `{"at","repo","kind","number","action","ageDays","ok","error"?}`. 실패도 `ok:false`로 남는다.
+  `{"at","repo","kind","number","action","ageDays","ok","error"?}`. `repo`는 `owner/repo` 또는
+  `host/group/project`다. 실패도 `ok:false`로 남는다.
   드라이런은 아무것도 쓰지 않으므로 감사 로그도 남기지 않는다.
 - 기본은 드라이런이다. `--apply`가 있을 때만 `gh pr comment`, `gh pr close --comment`,
-  `gh issue edit --add-label needs-info`를 호출한다.
+  `gh issue edit --add-label needs-info`를 호출한다. GitLab은 MR note 생성, MR `state_event=close`,
+  issue `add_labels`를 호출한다. GitLab의 system note는 움직임으로 세지 않는다.
 - 출력 예: `STALE nudge pr#8 age=9d (Fix login)`, `STALE needs-info issue#4 age=20d (Docs)`,
   `STALE asdfqwerzxcc/dori-superagent prs=6 issues=9 actions=2 dry-run`.
 

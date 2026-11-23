@@ -46,14 +46,14 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori sop sync <run> [--provider gh|glab] [--by NAME]
                                               read the MR reviews: approval or change request -> the same receipt as approve|reject
   dori sop rerun <run> <node>                 reset that node and everything after it
-  dori labels [--repo owner/name] [--apply]   one status: label per issue/PR; fixes 0 or 2+; dry-run unless --apply
-  dori stale [--repo owner/name] [--days-pr 14] [--days-comment 7] [--apply]
-                                              stale PRs get a nudge then a close; stale issues get needs-info (never closed)
-                                              no --repo = this checkout's github origin; writes need config/repos.json allow
+  dori labels [--repo R] [--scm gh|glab] [--host H] [--apply]
+                                              one status: label per issue/PR; fixes 0 or 2+; dry-run unless --apply
+  dori stale [--repo R] [--scm gh|glab] [--host H] [--days-pr 14] [--days-comment 7] [--apply]
+                                              stale PRs/MRs get a nudge then a close; stale issues get needs-info (never closed)
+                                              no --repo = the checkout's origin; writes need config/repos.json allow
   dori review <owner/repo#N> [--model M]      fresh omo reviewer at the exact head -> receipt
   dori review <owner/repo#N> --attest --verdict CLEAR|BLOCK --reviewer R --evidence E
                                              record a review done elsewhere as the receipt (no child process)
-<<<<<<< HEAD
   dori review --lane <key> [--model M]        queue the lane's own diff for dori duty -> QUEUED <key> <tip> <job>;
                                               with no duty loop running, review it inline now -> lane receipt
   dori review --lane <key> [--model M] [--restart]

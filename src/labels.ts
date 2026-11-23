@@ -1,9 +1,10 @@
 import { one, type Args } from "./cli-args.ts";
-import { ghList, ghText, SWEEP_LIMIT } from "./gh-sweep.ts";
 import type { Deps } from "./harness.ts";
-import { assertWritable, loadRepoPolicy, repoArg } from "./repo-policy.ts";
+import { assertWritable, loadRepoPolicy, type RepoPolicy } from "./repo-policy.ts";
+import { normaliseLabel, type Label, type LabelSpec, type Scm, type SweepItem } from "./scm.ts";
+import { resolveScm } from "./scm-target.ts";
 
-/** The five exclusive states an issue or PR can be in; every item carries exactly one of them. */
+/** The five exclusive states an issue or pull request can be in; every item carries exactly one of them. */
 export const STATUS_LABELS = [
   "status:triage",
   "status:ready",
@@ -22,13 +23,7 @@ export const STATUS_PRECEDENCE: readonly StatusLabel[] = [
   "status:done",
 ];
 
-type Label = { readonly name: string };
-export type LabelledItem = {
-  readonly number: number;
-  readonly title: string;
-  readonly state: string;
-  readonly labels: readonly Label[];
-};
+export type LabelledItem = SweepItem;
 export type LabelKind = "issue" | "pr";
 export type LabelPlan = {
   readonly kind: LabelKind;
@@ -38,12 +33,7 @@ export type LabelPlan = {
   readonly remove: readonly string[];
 };
 
-/** GitHub label names are case-insensitive and ignore spaces around the colon. */
-export const normaliseLabel = (name: string): string =>
-  name
-    .trim()
-    .toLowerCase()
-    .replace(/\s*:\s*/g, ":");
+export { normaliseLabel };
 
 const statusOf = (name: string): StatusLabel | undefined => STATUS_LABELS.find((s) => s === normaliseLabel(name));
 
@@ -82,82 +72,28 @@ const LABEL_META: Record<StatusLabel, { readonly color: string; readonly descrip
   "status:done": { color: "6f42c1", description: "landed or closed" },
 };
 
-const ITEM_FIELDS = "number,title,state,labels";
+const STATUS_SPECS: readonly LabelSpec[] = STATUS_LABELS.map((name) => ({ name, ...LABEL_META[name] }));
 
-async function fetchItems(
-  d: Deps,
-  repo: string,
-): Promise<{ readonly issues: LabelledItem[]; readonly prs: LabelledItem[] }> {
-  const [issues, prs] = await Promise.all([
-    ghList<LabelledItem>(d, [
-      "issue",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "all",
-      "--limit",
-      SWEEP_LIMIT,
-      "--json",
-      ITEM_FIELDS,
-    ]),
-    ghList<LabelledItem>(d, [
-      "pr",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "all",
-      "--limit",
-      SWEEP_LIMIT,
-      "--json",
-      ITEM_FIELDS,
-    ]),
-  ]);
+async function fetchItems(scm: Scm): Promise<{ readonly issues: SweepItem[]; readonly prs: SweepItem[] }> {
+  const [issues, prs] = await Promise.all([scm.listIssues("all"), scm.listPrs("all")]);
   return { issues, prs };
 }
 
-async function ensureStatusLabels(d: Deps, repo: string): Promise<void> {
-  for (const label of STATUS_LABELS) {
-    const meta = LABEL_META[label];
-    const r = await d.exec("gh", [
-      "label",
-      "create",
-      label,
-      "--repo",
-      repo,
-      "--color",
-      meta.color,
-      "--description",
-      meta.description,
-    ]);
-    if (r.code !== 0 && !/already exists/i.test(`${r.stderr}${r.stdout}`))
-      throw new Error(`gh label create ${label} failed: ${(r.stderr || r.stdout).trim()}`);
-  }
-}
-
-async function applyLabelPlan(d: Deps, repo: string, plan: LabelPlan): Promise<void> {
-  const argv = [plan.kind, "edit", String(plan.number), "--repo", repo];
-  if (plan.add !== undefined) argv.push("--add-label", plan.add);
-  for (const name of plan.remove) argv.push("--remove-label", name);
-  await ghText(d, argv);
-}
-
-export async function runLabels(d: Deps, a: Args): Promise<number> {
-  const repo = await repoArg(d, a);
+export async function runLabels(d: Deps, a: Args, policy: RepoPolicy = loadRepoPolicy()): Promise<number> {
+  const scm = await resolveScm(d, a);
   const apply = one(a, "apply") === "true";
-  assertWritable(loadRepoPolicy(), repo, apply);
-  const { issues, prs } = await fetchItems(d, repo);
+  assertWritable(policy, scm.repo, apply);
+  const { issues, prs } = await fetchItems(scm);
   const plans = [...issues.map((i) => planLabel("issue", i)), ...prs.map((p) => planLabel("pr", p))].filter(
     (p): p is LabelPlan => p !== undefined,
   );
   for (const plan of plans) console.log(formatLabelPlan(plan));
   if (apply && plans.length > 0) {
-    await ensureStatusLabels(d, repo);
-    for (const plan of plans) await applyLabelPlan(d, repo, plan);
+    await scm.ensureLabels(STATUS_SPECS);
+    for (const plan of plans) await scm.editLabels(plan.kind, plan.number, plan.add, plan.remove);
   }
   console.log(
-    `LABELS ${repo} items=${issues.length + prs.length} changes=${plans.length} ${apply ? "applied" : "dry-run"}`,
+    `LABELS ${scm.repo} items=${issues.length + prs.length} changes=${plans.length} ${apply ? "applied" : "dry-run"}`,
   );
   return 0;
 }

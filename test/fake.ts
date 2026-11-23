@@ -51,6 +51,7 @@ export class World {
   /** number of upcoming `pane send-keys` calls that fail (exit 1) */
   keyFails = 0;
   gh: (argv: readonly string[]) => { code: number; stdout: string; stderr?: string } = () => ({ code: 1, stdout: "" });
+  glab: ((argv: readonly string[]) => { code: number; stdout: string; stderr?: string }) | undefined = undefined;
   /** answers for `git`; the default is "not a repository", as a lane started outside a checkout sees it. */
   git: (argv: readonly string[]) => { code: number; stdout: string; stderr?: string } = () => ({
     code: 128,
@@ -109,6 +110,10 @@ export class World {
     }
     if (cmd === "gh") {
       const r = this.gh(argv);
+      return { code: r.code, stdout: r.stdout, stderr: r.stderr ?? "" };
+    }
+    if (cmd === "glab" && this.glab !== undefined) {
+      const r = this.glab(argv);
       return { code: r.code, stdout: r.stdout, stderr: r.stderr ?? "" };
     }
     if (cmd === "git") return { stderr: "", ...this.git(argv) };
