@@ -13,8 +13,7 @@ export type DocsFinding = {
 };
 
 const FORBIDDEN: readonly { readonly label: string; readonly pattern: RegExp }[] = [
-  { label: "번들이 기본", pattern: /번들이\s*기본/ },
-  { label: "번들을 기본", pattern: /번들을\s*기본/ },
+  { label: "번들은 기본", pattern: /번들(?:은|는|이|가|을|를)\s*기본/ },
   { label: "원격에 아무것도", pattern: /원격에\s*아무것도/ },
   { label: "번들 게이트 모드(현재 기본)", pattern: /번들\s*게이트\s*모드\s*\(\s*현재[^)]*기본/ },
   { label: "원격은 번들 MR 하나뿐", pattern: /원격(?:은|이)\s*번들\s*MR\s*(?:하나)?뿐/ },
@@ -22,6 +21,7 @@ const FORBIDDEN: readonly { readonly label: string; readonly pattern: RegExp }[]
     label: "finished lanes are collected into a bundle",
     pattern: /finished\s+lanes\s+are\s+collected\s+into\s+a\s+bundle/i,
   },
+  { label: "the bundle is the default", pattern: /bundle(?:s)?\s+(?:is|are)\s+the\s+default/i },
   { label: "lead collects the bundle", pattern: /lead\s+collects\s+the\s+bundle/i },
 ];
 
@@ -61,10 +61,15 @@ export function checkDocsDefault(root: string): DocsFinding[] {
     const lines = readFileSync(join(root, file), "utf8").split(/\r?\n/);
     lines.forEach((text, index) => {
       for (const rule of FORBIDDEN) {
-        const match = rule.pattern.exec(text);
-        if (match === null) continue;
-        if (MODE_PHRASE.test(sentenceAt(text, match.index))) continue;
-        findings.push({ file, line: index + 1, phrase: rule.label, text: text.trim() });
+        const pattern = new RegExp(
+          rule.pattern.source,
+          rule.pattern.flags.includes("g") ? rule.pattern.flags : `${rule.pattern.flags}g`,
+        );
+        for (const match of text.matchAll(pattern)) {
+          if (match.index === undefined) continue;
+          if (MODE_PHRASE.test(sentenceAt(text, match.index))) continue;
+          findings.push({ file, line: index + 1, phrase: rule.label, text: text.trim() });
+        }
       }
     });
   }

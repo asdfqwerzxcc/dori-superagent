@@ -9,9 +9,9 @@ import { checksRefusal } from "./gate.ts";
 import type { Deps } from "./harness.ts";
 import { asSha, laneHead, laneRepo } from "./lane-repo.ts";
 import { branchOf } from "./lane-worktree.ts";
-import { findPr } from "./pr.ts";
+import { type OwnRemote, remoteRepo, upstreamRefusal } from "./own-remote.ts";
+import { findOpenPr, findPrAtHead } from "./pr.ts";
 import { Refusal } from "./refusal.ts";
-import { repoFromRemote } from "./repo-policy.ts";
 import type { ExecResult } from "./runtime/exec.ts";
 import { KEY_RE, type Lane, type LaneReceipt } from "./store-types.ts";
 
@@ -41,32 +41,21 @@ function briefTitle(lane: Lane): string | undefined {
 
 export type LaneMergeOptions = { readonly dryRun?: boolean };
 
-async function remoteRepo(d: Deps, repoPath: string, name: string): Promise<string | undefined> {
-  const r = await d.exec("git", ["-C", repoPath, "remote", "get-url", name]);
-  return r.code === 0 ? repoFromRemote(r.stdout) : undefined;
-}
-
-const isUpstreamRepo = (repo: string): boolean => repo.toLowerCase().startsWith("sisyphuslabs/");
-
 /** The lane repository's own remote: `fork` when the checkout has one, else `origin`. A fork is never required
  * (the design repository has only origin), and a selected remote that is the upstream is refused, not written. */
-async function ownRemote(d: Deps, lane: Lane): Promise<{ readonly name: string; readonly repo: string }> {
+async function ownRemote(d: Deps, lane: Lane): Promise<OwnRemote> {
   if (lane.repo === undefined)
     throw new Refusal(`lane ${lane.key} has no recorded repository (it started before the review gate)`);
   for (const name of ["fork", "origin"]) {
     const repo = await remoteRepo(d, lane.repo, name);
     if (repo === undefined) continue;
-    const upstream = await remoteRepo(d, lane.repo, "upstream");
-    const sameAsUpstream = upstream !== undefined && upstream.toLowerCase() === repo.toLowerCase();
-    if (sameAsUpstream || isUpstreamRepo(repo)) {
-      const why = sameAsUpstream
-        ? `the upstream remote (${upstream}) names the same repository`
-        : "it is under the upstream owner sisyphuslabs";
+    const remote = { name, repo };
+    const why = await upstreamRefusal(d, lane.repo, remote);
+    if (why !== undefined)
       throw new Refusal(
         `lane ${lane.key}: refusing to push ${branchOf(lane.key)} to ${name} (${repo}): ${why}; push to your own fork instead`,
       );
-    }
-    return { name, repo };
+    return remote;
   }
   throw new Refusal(
     `lane ${lane.key}: ${lane.repo} has no github origin or fork remote; add one, then retry: dori merge ${lane.key}`,
@@ -112,20 +101,17 @@ function prBody(lane: Lane, head: string, receipt: LaneReceipt): string {
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
-/** Creates the PR, or rewrites the title and body of the open one; a merged or closed PR is never reopened. */
+/** Creates the PR, or rewrites the title and body of the open one; a merged PR at an older head never blocks a reused key. */
 async function upsertPr(
   d: Deps,
   lane: Lane,
   repo: string,
   branch: string,
+  head: string,
   bodyPath: string,
 ): Promise<{ readonly number: number; readonly url: string }> {
   const title = prTitle(lane);
-  const existing = await findPr(d, repo, branch);
-  if (existing !== undefined && existing.state !== "OPEN")
-    throw new Refusal(
-      `lane ${lane.key}: PR #${existing.number} is ${existing.state}; merge only creates or updates an open PR`,
-    );
+  const existing = await findOpenPr(d, repo, branch);
   if (existing !== undefined) {
     const edit = await d.exec("gh", [
       "pr",
@@ -141,6 +127,11 @@ async function upsertPr(
     if (edit.code !== 0) throw new Refusal(`lane ${lane.key}: gh pr edit failed: ${ghWhy(edit)}`);
     return { number: existing.number, url: existing.url };
   }
+  const landed = await findPrAtHead(d, repo, branch, head);
+  if (landed !== undefined)
+    throw new Refusal(
+      `lane ${lane.key}: PR #${landed.number} is ${landed.state} at this exact head ${short(head)}; nothing new to land`,
+    );
   const created = await d.exec("gh", [
     "pr",
     "create",
@@ -203,7 +194,7 @@ export async function mergeLane(d: Deps, key: string, opts: LaneMergeOptions = {
   const push = await d.exec("git", ["-C", path, "push", remote.name, `${head}:refs/heads/${branch}`]);
   if (push.code !== 0)
     throw new Refusal(`lane ${key}: cannot push ${branch} to ${remote.name} (${repo}): ${gitWhy(push)}`);
-  const pr = await upsertPr(d, lane, repo, branch, bodyPath);
+  const pr = await upsertPr(d, lane, repo, branch, head, bodyPath);
   const checks = await checksRefusal(d, { repo, number: pr.number });
   if (checks !== undefined) {
     d.usage.record({ name: "dori.merge_decided", outcome: checks[0] });

@@ -87,4 +87,23 @@ describe("bundle land", () => {
     receipt(d, "beta", tipA);
     await expect(landBundle(d, "b1", { dryRun: true })).rejects.toThrow("moved since it was added");
   });
+
+  test("refuses to push a bundle to an upstream remote", async () => {
+    const { d, repo } = await seededBundle();
+    const bundle = d.store.bundle("b1");
+    if (bundle === undefined) throw new Error("missing bundle");
+    d.store.saveBundle({ ...bundle, repo: "sisyphuslabs/dori-superagent" });
+    repo.remotes = {
+      origin: "https://github.com/sisyphuslabs/dori-superagent.git",
+      upstream: "https://github.com/sisyphuslabs/dori-superagent.git",
+    };
+    const failure: unknown = await landBundle(d, "b1", { dryRun: true }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("refusing to write to origin");
+    expect((failure as Error).message).toContain("upstream");
+    expect((failure as Error).message).toContain("sisyphuslabs/dori-superagent");
+  });
 });

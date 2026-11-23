@@ -67,6 +67,25 @@ describe("lane landing", () => {
     expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "create")).toBe(false);
   });
 
+  test("a reused lane key creates a new PR when the old PR merged another head (done -> start -> merge)", async () => {
+    const { w, d } = laneFixture();
+    receiptAt(d, tipA);
+    laneGh(w, { stale: "older" });
+    const lines = await mergeLane(d, "alpha");
+    expect(lines.at(-1)).toContain("pr=#7");
+    expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "create")).toBe(true);
+    expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(true);
+  });
+
+  test("refuses when a merged PR already landed this exact head", async () => {
+    const { w, d } = laneFixture();
+    receiptAt(d, tipA);
+    laneGh(w, { stale: "at-head" });
+    await expect(mergeLane(d, "alpha")).rejects.toThrow("at this exact head");
+    expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "create")).toBe(false);
+    expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(false);
+  });
+
   test("refuses to merge when PR checks are not green", async () => {
     const { w, d } = laneFixture();
     receiptAt(d, tipA);

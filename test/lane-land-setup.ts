@@ -71,13 +71,28 @@ export function laneGh(
   opts: {
     readonly existing?: boolean;
     readonly checks?: readonly { readonly name: string; readonly bucket: string }[];
+    readonly stale?: "at-head" | "older";
   } = {},
 ): void {
   w.gh = (argv) => {
-    if (argv[0] === "pr" && argv[1] === "view")
-      return opts.existing === true
-        ? { code: 0, stdout: JSON.stringify({ number: 7, url, state: "OPEN" }) }
-        : { code: 1, stdout: "no pull requests found for branch lane/alpha" };
+    if (argv[0] === "pr" && argv[1] === "list") {
+      const state = argv[argv.indexOf("--state") + 1];
+      if (state === "open" && opts.existing === true)
+        return { code: 0, stdout: JSON.stringify([{ number: 7, url, state: "OPEN", headRefOid: tipA }]) };
+      if (state === "all" && opts.stale !== undefined)
+        return {
+          code: 0,
+          stdout: JSON.stringify([
+            {
+              number: 3,
+              url: "https://github.com/asdfqwerzxcc/dori-design-system/pull/3",
+              state: "MERGED",
+              headRefOid: opts.stale === "at-head" ? tipA : base,
+            },
+          ]),
+        };
+      return { code: 0, stdout: "[]" };
+    }
     if (argv[0] === "pr" && argv[1] === "create") return { code: 0, stdout: `${url}\n` };
     if (argv[0] === "pr" && argv[1] === "edit") return { code: 0, stdout: "" };
     if (argv[0] === "pr" && argv[1] === "checks") return { code: 0, stdout: JSON.stringify(opts.checks ?? GREEN) };
