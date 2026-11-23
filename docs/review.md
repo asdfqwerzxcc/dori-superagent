@@ -158,12 +158,33 @@ QUEUED <key> <tip> <job>
 The caller returns at once, the receipt is written and readable while the duty worker reviews, and the job is bounded
 by `DORI_REVIEW_BUDGET_MS`; a caller that has a duty loop never waits for the reviewer's deadline.
 
+A request for the same lane and tip while that job is still in flight prints `already queued <job> (<state>)` and
+returns without starting a second reviewer; `<state>` is `queued` until a worker picks it up and `running` from then
+on. `--restart` is the only way to replace an in-flight job: it kills the reviewer process tree that job started,
+queues a fresh job and prints `QUEUED <key> <tip> <job> (restarted)`.
+
 The record is `$DORI_HOME/state/review-queue/<key>@<tip>.json`, written atomically, holding `lane`, `tip`, `base`,
-`model` (when one was given), `requestedAt` and `state` (`queued`, then `running` while a worker has it). A second
-request for the same lane and tip returns that record instead of starting a second reviewer. A record that cannot be
-read as a valid job (bad bytes or bad fields) is dropped by the next duty pass instead of blocking the queue; until
-then `dori done` refuses that lane and tip as in flight but unreadable and says to queue it again. The queue trusts
-the duty lock for liveness, so a worker that is alive but hung keeps a job waiting until it recovers or is replaced.
+`model` (when one was given), `requestedAt` and `state`. The record is never rewritten while queued; the live half of
+the job is the sibling `<key>@<tip>.running`, holding `requestedAt`, the reviewer's `pid`, the `host` that started it
+and its OS `startTime`, which is how another process finds the tree to kill and how `dori done` knows the job is
+running. A pid is never permission by itself: before any kill the marker must name this host and the same process
+start time, so a marker left through a reboot (or copied in from another host) whose pid Windows has reused drops the
+marker without touching that process. A record that cannot be read as a valid job (bad bytes or bad fields) is
+dropped by the next duty pass instead of blocking the queue; until then `dori done` refuses that lane and tip as in
+flight but unreadable and says to queue it again. The queue trusts the duty lock for liveness, so a worker that is
+alive but hung keeps a job waiting until it recovers or is replaced.
+
+Every reviewer is spawned as its own process group (`taskkill /T` walks the tree on Windows): a timeout, a printed
+verdict followed by a hang, `--restart`, or a lane dropped while its review runs kills the whole tree, so a provider
+child cannot outlive the shim it was started from. A kill that cannot land is reported and keeps its marker; the
+drain keeps that job and retries it next pass, and `--restart` refuses rather than start a second reviewer beside one
+it could not stop. A failed kill is fatal for the attempt, not a failed answer: no fallback model and no next chunk
+is started, because each spawn would overwrite the one marker that still names the live reviewer. It also outranks a
+BLOCK another chunk already reported: the receipt is `reviewer_timeout`, never BLOCK, so the job stays queued. The
+progress line and the `reviewer_timeout` receipt name the kill failure, and the next pass retries. A worker that dies
+mid-review leaves its job `running`; the next duty pass kills the reviewer tree it left and runs the job again. A
+finished drain deletes the job record only while it still carries the drain's own `requestedAt`, so a restart that
+wrote a new record at the same path is never erased by the old run.
 
 `dori duty` drains the queue at the end of each pass: it runs the same reviewer as the inline path (same prompts,
 chunking, deadline, log, diagnostics and receipt), drops the job, and sends the lead one inbox message:
@@ -178,8 +199,8 @@ current tip is pending it refuses, saying the review is in flight and that the v
 Once the receipt exists, land with `dori merge <key>`; `dori done` closes the lane after the PR lands.
 
 With no duty loop running (a plain install, or a worker that died), `dori review --lane` reviews inline exactly as
-before; that inline run also drops a job record a dead worker left for the same lane and tip. A worker that dies
-mid-review leaves its job `running`, and the next duty pass runs it again.
+before; that inline run first kills the reviewer tree a dead worker's verified marker names, and refuses rather than
+start a second reviewer when that kill cannot land.
 
 ## Layer 2: the lead review
 

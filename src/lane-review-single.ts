@@ -34,6 +34,7 @@ export type SingleReviewContext = {
   readonly attempt: (run: LaneRun, model: string | undefined, limitMs: number) => Promise<LaneResult>;
   readonly diagnose: (result: LaneResult, retry?: RetryFacts) => { diagnostic: ReviewDiagnostic; path: string };
   readonly reviewerField: (results: readonly LaneResult[]) => string;
+  readonly checkLive: () => void;
   readonly fail: SingleFail;
 };
 
@@ -46,7 +47,23 @@ export async function reviewSingle(ctx: SingleReviewContext): Promise<"CLEAR" | 
     () => ctx.attempt(ctx.run, ctx.chosen, Math.min(ctx.timeoutMs, budgetLeft())),
     ctx.run,
     ctx.chosen,
+    ctx.checkLive,
   );
+  const stopKill = (r: LaneResult): Promise<never> | undefined => {
+    const why = r.outcome.kind === "timeout" ? r.outcome.killFailed : undefined;
+    if (why === undefined) return undefined;
+    const { diagnostic, path } = ctx.diagnose(r);
+    return ctx.fail(
+      "reviewer_timeout",
+      failureSummary([r], path),
+      `reviewer for lane ${ctx.key} timed out and its process tree could not be killed (${why})`,
+      diagnostic,
+      path,
+      [r],
+    );
+  };
+  const primaryKill = stopKill(result);
+  if (primaryKill !== undefined) return primaryKill;
   if (failed(result) && ctx.fallback !== undefined && ctx.fallback !== ctx.chosen && deadline > Date.now()) {
     const primary = result;
     const fallback = ctx.fallback;
@@ -55,10 +72,13 @@ export async function reviewSingle(ctx: SingleReviewContext): Promise<"CLEAR" | 
       () => ctx.attempt(ctx.run, fallback, Math.min(ctx.timeoutMs, budgetLeft())),
       ctx.run,
       fallback,
+      ctx.checkLive,
     );
     result.retried = `${primary.model ?? "default"} ${failureKind(primary)}`;
     result.retryDiagnostic = primaryDiag.path;
   }
+  const fallbackKill = stopKill(result);
+  if (fallbackKill !== undefined) return fallbackKill;
   results.push(result);
   if (failed(result)) {
     const { diagnostic, path } = ctx.diagnose(result);
@@ -99,6 +119,7 @@ export async function reviewSingle(ctx: SingleReviewContext): Promise<"CLEAR" | 
     d: ctx.d,
     key: ctx.key,
     tip: ctx.tip,
+    checkLive: ctx.checkLive,
     receipt: {
       lane: ctx.key,
       verdict,

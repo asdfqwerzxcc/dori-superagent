@@ -53,8 +53,13 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori review <owner/repo#N> [--model M]      fresh omo reviewer at the exact head -> receipt
   dori review <owner/repo#N> --attest --verdict CLEAR|BLOCK --reviewer R --evidence E
                                              record a review done elsewhere as the receipt (no child process)
+<<<<<<< HEAD
   dori review --lane <key> [--model M]        queue the lane's own diff for dori duty -> QUEUED <key> <tip> <job>;
                                               with no duty loop running, review it inline now -> lane receipt
+  dori review --lane <key> [--model M] [--restart]
+                                              queue the lane's own diff for dori duty -> QUEUED <key> <tip> <job>;
+                                              an in-flight request -> already queued <job> (<state>); --restart kills
+                                              that reviewer tree first; with no duty loop, review it inline now
   dori merge <lane-key|lane/key> [--dry-run]  default gate: CLEAR lane receipt at the head -> push lane/<key> to the
                                               lane repo's own remote (fork when present, else origin) -> PR against
                                               main -> checks green (or none) -> merge commit -> delete the remote branch
@@ -117,6 +122,7 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "ready",
   "post",
   "attest",
+  "restart",
 ]);
 
 export function parse(argv: readonly string[]): Args {

@@ -27,15 +27,18 @@ import {
   runReviewer,
 } from "./review-run.ts";
 import type { LaneVerdict } from "./store-types.ts";
-
+import type { KillTree } from "./review-kill.ts";
 export type LaneReview = { readonly verdict: ReviewVerdict; readonly base: string; readonly tip: string };
 export type LaneReviewOptions = {
   readonly timeoutMs?: number;
   readonly budgetMs?: number;
   readonly progressMs?: number;
   readonly verdictGraceMs?: number;
+  /** Throws when this run's queue job was replaced or cancelled; checked around every reviewer attempt. */
+  readonly checkLive?: () => void;
+  readonly onReviewerPid?: (pid: number | undefined) => void;
+  readonly killTree?: KillTree;
 };
-
 /** Reviews one lane's commits into `receipts/lane_<key>@<tip>.json`; a large diff is split into `reviewChunks`. */
 export async function reviewLane(
   d: Deps,
@@ -44,7 +47,6 @@ export async function reviewLane(
   opts: LaneReviewOptions = {},
 ): Promise<LaneReview> {
   const { lane, repo, tip, base } = await laneReviewTarget(d, key);
-
   const diff = await laneGit(d, repo, ["--no-pager", "diff", "--no-color", "--no-ext-diff", `${base}..${tip}`]);
   if (diff.code !== 0)
     throw new Refusal(
@@ -52,7 +54,6 @@ export async function reviewLane(
     );
   const diffPath = d.store.laneDiffPath(key, tip);
   writeFileSync(diffPath, diff.stdout);
-
   const logPath = reviewLogPath(d.store.root, key);
   const settings = loadReviewSettings(d.store.root);
   const hook = settings.hooks.reviewCommand;
@@ -64,6 +65,7 @@ export async function reviewLane(
   const budgetMs = opts.budgetMs ?? reviewBudgetFromEnv();
   // Each attempt is soft-capped at half the chunk window, so a stalled primary cannot eat the fallback's turn.
   const attemptMs = Math.max(1, Math.min(REVIEW_ATTEMPT_MS, Math.floor(timeoutMs / 2)));
+  const checkLive = opts.checkLive ?? ((): void => undefined);
   const vars = { lane: key, key, base, tip, sha: tip, brief: lane.brief, diff: diffPath, repo };
   const argsFor = (text: string, m: string | undefined): readonly string[] => {
     const argv = hook
@@ -75,7 +77,6 @@ export async function reviewLane(
     hook === undefined
       ? `${d.agentCmd} -p --no-session${m === undefined ? "" : ` --model ${m}`}`
       : `hook: ${hook.join(" ")}`;
-
   const plan = hook === undefined ? planReview(diff.stdout) : undefined;
   const chunked = plan?.chunked === true;
   const chunks = chunked ? plan!.chunks : undefined;
@@ -115,7 +116,6 @@ export async function reviewLane(
   } else {
     for (const chunk of chunks) runs.push(chunkRun(chunk, chunks.length));
   }
-
   appendFileSync(logPath, `review lane ${key} at ${tip} (base ${base})\n`);
   const reviewerField = (rs: readonly LaneResult[]): string => {
     const retried = rs.some((r) => r.retried !== undefined);
@@ -145,6 +145,7 @@ export async function reviewLane(
       d,
       key,
       tip,
+      checkLive,
       receipt: {
         lane: key,
         verdict,
@@ -176,6 +177,8 @@ export async function reviewLane(
         log: logPath,
         label: run.label,
         timeoutMs: Math.max(1, limitMs),
+        ...(opts.onReviewerPid ? { onPid: opts.onReviewerPid } : {}),
+        ...(opts.killTree === undefined ? {} : { killTree: opts.killTree }),
         ...(opts.progressMs === undefined ? {} : { progressMs: opts.progressMs }),
         ...(opts.verdictGraceMs === undefined ? {} : { verdictGraceMs: opts.verdictGraceMs }),
       });
@@ -196,7 +199,6 @@ export async function reviewLane(
       };
     }
   };
-
   if (chunked) {
     const verdict = await reviewChunks({
       d,
@@ -216,13 +218,13 @@ export async function reviewLane(
       attempt,
       diagnose,
       reviewerField,
+      checkLive,
     });
     lane.tipSha = tip;
     d.store.saveLane(lane);
     d.usage.record({ name: "dori.review_completed", verdict });
     return { verdict, base, tip };
   }
-
   const verdict = await reviewSingle({
     d,
     key,
@@ -238,6 +240,7 @@ export async function reviewLane(
     attempt,
     diagnose,
     reviewerField,
+    checkLive,
     fail,
   });
   lane.tipSha = tip;

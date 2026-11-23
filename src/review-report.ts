@@ -31,20 +31,31 @@ const tail = (text: string): string => (text.trim() === "" ? "(empty)" : text.tr
 
 const exitLine = (outcome: ReviewOutcome): string =>
   outcome.kind === "timeout"
-    ? `timed out${outcome.code === undefined ? " (killed)" : ` (killed, exit ${outcome.code})`}`
+    ? outcome.killFailed !== undefined
+      ? `timed out; its process tree could not be killed (${outcome.killFailed})`
+      : `timed out${outcome.code === undefined ? " (killed)" : ` (killed, exit ${outcome.code})`}`
     : outcome.kind === "error"
       ? `threw: ${outcome.message}`
       : `exit ${outcome.code}`;
 
+/** A timeout whose process tree could not be killed; the attempt is fatal, never a verdict or a retry. */
+export const killFailed = (r: LaneResult): boolean =>
+  r.outcome.kind === "timeout" && r.outcome.killFailed !== undefined;
+
 /** A reviewer run that never produced a process is a failure like any other, never a pass. */
 export const failed = (r: LaneResult): boolean =>
-  r.outcome.kind === "error" || r.verdict === undefined || (r.outcome.kind === "exit" && r.outcome.code !== 0);
+  r.outcome.kind === "error" ||
+  killFailed(r) ||
+  r.verdict === undefined ||
+  (r.outcome.kind === "exit" && r.outcome.code !== 0);
 
 export const failureKind = (r: LaneResult): string =>
   r.outcome.kind === "error"
     ? "threw"
     : r.outcome.kind === "timeout"
-      ? `timed out after ${r.outcome.durationMs} ms`
+      ? r.outcome.killFailed === undefined
+        ? `timed out after ${r.outcome.durationMs} ms`
+        : "timed out; tree kill failed"
       : r.outcome.stdout.trim() === ""
         ? "empty output"
         : r.outcome.code !== 0
@@ -73,7 +84,10 @@ const stderrReason = (stderr: string): string =>
 /** One line naming why an attempt failed, quoted by a diagnostic's `cause` and by the retry note. */
 export const failureCause = (r: LaneResult): string => {
   if (r.outcome.kind === "error") return `threw: ${r.outcome.message}`;
-  if (r.outcome.kind === "timeout") return `timed out after ${r.outcome.durationMs} ms`;
+  if (r.outcome.kind === "timeout")
+    return r.outcome.killFailed === undefined
+      ? `timed out after ${r.outcome.durationMs} ms`
+      : `timed out; tree kill failed: ${r.outcome.killFailed}`;
   const line = stderrReason(r.outcome.stderr);
   if (r.outcome.code !== 0) return `exit ${r.outcome.code}${line === "" ? "" : `: ${line}`}`;
   return r.outcome.stdout.trim() === "" ? "empty output" : "no verdict";

@@ -23,6 +23,7 @@ export type ChunkOutcomeArgs = {
   readonly failureDiagnostics: readonly { readonly label: string; readonly path: string }[];
   readonly firstFailure: { readonly diagnostic: ReviewDiagnostic; readonly path: string } | undefined;
   readonly budgetHit: boolean;
+  readonly killFailure: string | undefined;
 };
 
 /** Decides the final chunked verdict, saves it without downgrading a completed one, and refuses on an incomplete review. */
@@ -32,15 +33,18 @@ export async function saveChunkOutcome(args: ChunkOutcomeArgs): Promise<"CLEAR" 
   const timedOut = args.budgetHit || failedResults.some((r) => r.outcome.kind === "timeout");
   const emptyFailure = failedResults.some((r) => r.outcome.kind === "exit" && r.outcome.stdout.trim() === "");
   const anyBlock = args.results.some((r) => r.verdict === "BLOCK");
-  const verdict: LaneVerdict = anyBlock
-    ? "BLOCK"
-    : timedOut
+  const verdict: LaneVerdict =
+    args.killFailure !== undefined
       ? "reviewer_timeout"
-      : emptyFailure
-        ? "reviewer_empty"
-        : failedResults.length > 0
-          ? "review_partial"
-          : "CLEAR";
+      : anyBlock
+        ? "BLOCK"
+        : timedOut
+          ? "reviewer_timeout"
+          : emptyFailure
+            ? "reviewer_empty"
+            : failedResults.length > 0
+              ? "review_partial"
+              : "CLEAR";
   const summary =
     failedResults.length === 0
       ? successSummary(args.results, args.notes, rows)
@@ -64,11 +68,13 @@ export async function saveChunkOutcome(args: ChunkOutcomeArgs): Promise<"CLEAR" 
   if (verdict !== "CLEAR" && verdict !== "BLOCK") {
     const first = args.firstFailure;
     const why =
-      verdict === "reviewer_timeout"
-        ? `review of lane ${args.key} at ${args.tip} is incomplete: a chunk timed out${args.budgetHit ? " or the job budget ran out" : ""}`
-        : verdict === "reviewer_empty"
-          ? `review of lane ${args.key} at ${args.tip} is incomplete: a chunk printed no output`
-          : `review of lane ${args.key} at ${args.tip} is incomplete: a chunk failed without a verdict`;
+      args.killFailure !== undefined
+        ? `review of lane ${args.key} at ${args.tip} is incomplete: its process tree could not be killed (${args.killFailure}); the job stays queued for the next pass`
+        : verdict === "reviewer_timeout"
+          ? `review of lane ${args.key} at ${args.tip} is incomplete: a chunk timed out${args.budgetHit ? " or the job budget ran out" : ""}`
+          : verdict === "reviewer_empty"
+            ? `review of lane ${args.key} at ${args.tip} is incomplete: a chunk printed no output`
+            : `review of lane ${args.key} at ${args.tip} is incomplete: a chunk failed without a verdict`;
     const where =
       saved.where === "sidecar"
         ? `; this job's verdict is ${verdict}, the canonical receipt stays ${saved.kept}, and its failure is in ${progressPath(args.d.store.root, args.key, args.tip)}`

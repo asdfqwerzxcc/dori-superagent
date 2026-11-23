@@ -1,11 +1,10 @@
 // The per-lane+tip receipt lock: an owner-first atomic acquire, process-identity liveness (pid + OS start time), a
 // takeover only for a verified dead owner, and a release that only removes a lock the caller still owns.
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
-import { hostname } from "node:os";
 import { join } from "node:path";
 import { readJson, writeJson } from "./json-file.ts";
+import { HOSTNAME, pidAlive, processStartTime } from "./process-identity.ts";
 
 export type ReceiptLockOwner = {
   readonly token: string;
@@ -28,41 +27,9 @@ export type ReceiptWriteHooks = {
 export const RECEIPT_LOCK_TTL_MS = 10_000;
 const LOCK_WAIT_MS = 15_000;
 const LOCK_RETRY_MS = 10;
-const HOSTNAME = hostname();
-let ownStartTime: number | null | undefined;
 export const receiptLockPath = (root: string, key: string, tip: string): string =>
   join(root, "state", "reviews", `${key}@${tip}.receipt.lock`);
 const ownerPath = (lock: string): string => join(lock, "owner.json");
-const readProcessStartTime = (pid: number): number | null => {
-  try {
-    if (process.platform === "win32") {
-      const script = `$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}'; if ($p) { ([DateTimeOffset]$p.CreationDate.ToUniversalTime()).ToUnixTimeMilliseconds() }`;
-      const out = execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
-        encoding: "utf8",
-        timeout: 5_000,
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "ignore"],
-      }).trim();
-      const value = Number(out);
-      return out !== "" && Number.isFinite(value) && value > 0 ? value : null;
-    }
-    const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
-      encoding: "utf8",
-      timeout: 5_000,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    const value = Date.parse(out);
-    return Number.isFinite(value) ? value : null;
-  } catch {
-    return null;
-  }
-};
-// The current process's start time never changes; a foreign pid is re-read every time so reuse cannot be cached.
-const processStartTime = (pid: number): number | null => {
-  if (pid !== process.pid) return readProcessStartTime(pid);
-  if (ownStartTime === undefined) ownStartTime = readProcessStartTime(pid);
-  return ownStartTime;
-};
 const readOwner = (lock: string): ReceiptLockOwner | undefined => {
   try {
     const owner = readJson<Partial<ReceiptLockOwner>>(ownerPath(lock));
@@ -77,16 +44,6 @@ const readOwner = (lock: string): ReceiptLockOwner | undefined => {
     return { token, pid, startTime: startTime ?? null, host: host ?? HOSTNAME, acquiredAt };
   } catch {
     return undefined;
-  }
-};
-/** `kill(pid, 0)` is the liveness probe: ESRCH means dead; EPERM (or no error) means alive. */
-const pidAlive = (pid: number): boolean => {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code !== "ESRCH";
   }
 };
 type Liveness = { readonly alive: boolean; readonly why?: string };

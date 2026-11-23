@@ -73,7 +73,8 @@ describe("queued lane review", () => {
     const first = await withWorker(d, () => queue(d));
     w.clock += 60_000;
     const second = await withWorker(d, () => queue(d));
-    expect(second.out).toBe(first.out);
+    expect(first.out).toBe(`QUEUED fix-login ${tip} fix-login@${tip}`);
+    expect(second.out).toBe(`already queued fix-login@${tip} (queued)`);
     expect(readdirSync(join(d.store.root, "state", "review-queue"))).toEqual([`fix-login@${tip}.json`]);
     expect(reviewJobFor(d.store.root, "fix-login", tip)).toMatchObject({ requestedAt: w.clock - 60_000 });
   });

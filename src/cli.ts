@@ -13,10 +13,9 @@ import { runLabels } from "./labels.ts";
 import { runStale } from "./stale.ts";
 import { listWorktrees, pruneWorktrees } from "./worktrees.ts";
 import { attest, isPrId, mergeGate, review } from "./gate.ts";
-import { reviewLane } from "./lane-review.ts";
 import { mergeLane } from "./lane-land.ts";
 import { runDoctor } from "./doctor.ts";
-import { queueLaneReview, reviewJobId } from "./review-queue.ts";
+import { runReviewLane } from "./review-lane-cli.ts";
 import { need, one, parse, textOf, USAGE } from "./cli-args.ts";
 import { defaultDeps, ROLES, type Deps } from "./harness.ts";
 import { ConfigError, hooksSettled, loadReviewSettings } from "./hooks.ts";
@@ -170,15 +169,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       const lane = one(a, "lane");
       if (lane !== undefined) {
         if (x !== undefined) throw new Refusal("give a PR or --lane, not both");
-        // With a duty loop running, the reviewer runs in its pane: the caller gets the job back and returns at once.
-        const job = await queueLaneReview(d, lane, one(a, "model"));
-        if (job !== undefined) {
-          console.log(`QUEUED ${job.lane} ${job.tip} ${reviewJobId(job.lane, job.tip)}`);
-          return 0;
-        }
-        const r = await reviewLane(d, lane, one(a, "model"));
-        console.log(`REVIEW_LANE ${lane} tip=${r.tip} verdict=${r.verdict}`);
-        return r.verdict === "CLEAR" ? 0 : 1;
+        return runReviewLane(d, lane, one(a, "model"), a.flags.has("restart"));
       }
       const prId = need(x, "PR");
       if (a.flags.has("attest")) {

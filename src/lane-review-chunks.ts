@@ -7,6 +7,7 @@ import { attemptChunk } from "./review-attempt.ts";
 import { loadResume } from "./review-checkpoint.ts";
 import { resplitChunk, type DiffChunk } from "./review-chunks.ts";
 import type { RetryFacts, ReviewDiagnostic } from "./review-diagnostic.ts";
+import { stopOnKillFailure } from "./review-kill-stop.ts";
 import { failed, type LaneResult, type LaneRun, outcomeState } from "./review-report.ts";
 import {
   markNotRun,
@@ -42,6 +43,8 @@ export type ChunkReviewContext = {
   readonly attempt: (run: LaneRun, model: string | undefined, limitMs: number) => Promise<LaneResult>;
   readonly diagnose: (result: LaneResult, retry?: RetryFacts) => { diagnostic: ReviewDiagnostic; path: string };
   readonly reviewerField: (results: readonly LaneResult[]) => string;
+  /** Throws when the queue job this run belongs to was replaced or cancelled. */
+  readonly checkLive: () => void;
 };
 
 /** Reviews every chunk under one job budget; a failed chunk does not end the job, and a completed verdict is fenced. */
@@ -78,6 +81,7 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
   /** Set by the first primary failure that names a dead provider; later chunks skip the primary entirely. */
   let primaryDown: { cause: string } | undefined;
   const fallback = ctx.fallback;
+  let killFailure: string | undefined;
 
   await savePartial();
   const queue = [...ctx.runs];
@@ -123,6 +127,7 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
         attemptMs: ctx.attemptMs,
         attempt: ctx.attempt,
         diagnose: ctx.diagnose,
+        checkLive: ctx.checkLive,
         canResplit: (r) =>
           r.outcome.kind === "exit" &&
           r.outcome.code === 0 &&
@@ -135,6 +140,11 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
       primaryDown,
     );
     if (outcome.primaryDown !== undefined) primaryDown = outcome.primaryDown;
+    const stopWhy = await stopOnKillFailure(outcome.result, run, units, results, savePartial);
+    if (stopWhy !== undefined) {
+      killFailure = stopWhy;
+      break;
+    }
     if (outcome.kind === "resplit") {
       const result = outcome.result;
       const chunk = run.chunk!;
@@ -211,5 +221,6 @@ export async function reviewChunks(ctx: ChunkReviewContext): Promise<"CLEAR" | "
     failureDiagnostics,
     firstFailure,
     budgetHit,
+    killFailure,
   });
 }

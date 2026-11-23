@@ -3,7 +3,8 @@
 
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Exec } from "./runtime/exec.ts";
+import type { Exec, SpawnedProcess } from "./runtime/exec.ts";
+import { type KillTree, killReviewTree } from "./review-kill.ts";
 
 /** The default chunk window: the most one chunk may take across its primary and fallback attempts. */
 export const REVIEW_TIMEOUT_MS = 1_800_000;
@@ -44,6 +45,8 @@ export type ReviewOutcome =
       readonly durationMs: number;
       /** True when a complete `VERDICT:` line was printed before the kill; the caller may accept it. */
       readonly verdictSeen: boolean;
+      /** Set when the process tree could not be killed; a failed kill is a fatal attempt, never a verdict. */
+      readonly killFailed?: string;
     }
   | {
       /** The reviewer could not be started at all (the exec rejected): a failed chunk, never a pass. */
@@ -70,6 +73,10 @@ export type ReviewerRun = {
   readonly progressMs?: number;
   /** Progress sink; defaults to one stderr line per tick. Tests collect these instead of capturing stderr. */
   readonly onProgress?: (line: string) => void;
+  /** The spawned reviewer's pid while it runs (and undefined once it exits), so the job record can name the tree. */
+  readonly onPid?: (pid: number | undefined) => void;
+  /** Test seam: replace the process-tree killer so a failed kill can be exercised end to end. */
+  readonly killTree?: KillTree;
   readonly now?: () => number;
 };
 
@@ -113,11 +120,13 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewProcessOutcom
   const started = now();
   const progressMs = run.progressMs ?? REVIEW_PROGRESS_MS;
   const progress = run.onProgress ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const kill = run.killTree ?? killReviewTree;
   let stdout = "";
   let stderr = "";
-  let proc: { kill(): void } | undefined;
+  let proc: SpawnedProcess | undefined;
   let timedOut = false;
   let killedAfterVerdict = false;
+  let killWhy: string | undefined;
   let verdictTimer: ReturnType<typeof setTimeout> | undefined;
   let fireTimeout: (() => void) | undefined;
   let fireVerdict: (() => void) | undefined;
@@ -127,13 +136,20 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewProcessOutcom
   const verdictSettledAt = new Promise<void>((resolve) => {
     fireVerdict = resolve;
   });
+  const terminate = (): void => {
+    const outcome = kill(proc?.pid, proc);
+    if (outcome.ok) {
+      killWhy = undefined;
+      return;
+    }
+    killWhy = outcome.why;
+    progress(`dori: ${run.label}: the reviewer tree could not be killed (${outcome.why}); the marker is kept`);
+  };
   if (run.timeoutMs < 1)
     return { kind: "timeout", stdout, stderr, durationMs: Date.now() - startedAt, verdictSeen: false };
   const deadline = setTimeout(() => {
     timedOut = true;
-    try {
-      proc?.kill();
-    } catch {}
+    terminate();
     fireTimeout?.();
   }, run.timeoutMs);
   const beat = setInterval(
@@ -147,13 +163,11 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewProcessOutcom
   );
   beat.unref();
   const pending = run.exec(run.cmd, run.argv, {
+    group: true,
     onSpawn: (p) => {
       proc = p;
-      if (timedOut) {
-        try {
-          p.kill();
-        } catch {}
-      }
+      run.onPid?.(p.pid);
+      if (timedOut) terminate();
     },
     onStdout: (chunk) => {
       stdout += chunk;
@@ -162,9 +176,7 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewProcessOutcom
       verdictTimer = setTimeout(
         () => {
           killedAfterVerdict = true;
-          try {
-            proc?.kill();
-          } catch {}
+          terminate();
           fireVerdict?.();
         },
         Math.max(1, run.verdictGraceMs ?? VERDICT_GRACE_MS),
@@ -185,6 +197,7 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewProcessOutcom
     clearTimeout(deadline);
     clearTimeout(verdictTimer);
     clearInterval(beat);
+    if (killWhy === undefined) run.onPid?.(undefined);
   });
   if (outcome.kind === "exit" && !timedOut && !killedAfterVerdict)
     return { kind: "exit", ...outcome.res, durationMs: Date.now() - startedAt };
@@ -206,6 +219,7 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewProcessOutcom
     stderr,
     durationMs: Date.now() - startedAt,
     verdictSeen: reviewVerdict(stdout) !== undefined,
+    ...(killWhy === undefined ? {} : { killFailed: killWhy }),
     ...(settled === undefined ? {} : { code: settled.code }),
   };
 }

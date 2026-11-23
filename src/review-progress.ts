@@ -148,6 +148,8 @@ export async function saveFinalReceipt(
     readonly key: string;
     readonly tip: string;
     readonly receipt: LaneReceipt;
+    /** Throws to abandon this write when the job that asked for it was replaced; checked inside the lock. */
+    readonly checkLive?: () => void;
   },
   hooks?: ReceiptWriteHooks,
 ): Promise<FinalSave> {
@@ -157,6 +159,7 @@ export async function saveFinalReceipt(
     args.tip,
     async (lock) => {
       await hooks?.beforeWrite?.();
+      args.checkLive?.();
       const current = args.d.store.laneReceipt(args.key, args.tip);
       const receipt: LaneReceipt = { ...args.receipt, writerAt: lock.acquiredAt };
       const preempted = current?.writerAt !== undefined && current.writerAt > lock.acquiredAt;
