@@ -7,6 +7,7 @@ import {
   formatSupervised,
   formatSupervisor,
   supervisorHealth,
+  writeSupervisorRecord,
 } from "../src/supervisors.ts";
 import { matchPids, parseCim, parsePs } from "../src/supervisor-run.ts";
 import { FIVE_UNITS, NOW, beat, homeWithState, supervisorRecord, watchdogRecord } from "./supervisor-fixtures.ts";
@@ -36,6 +37,21 @@ describe("supervisor records and heartbeats", () => {
     const dead = supervisorHealth(home, NOW, () => false)[0];
     expect(dead).toMatchObject({ name: "supervisor", alive: false });
     expect(formatSupervisor(dead!)).toContain("(dead)");
+  });
+
+  test("a unit's pane id is shown beside its pid and liveness", () => {
+    const home = homeWithState();
+    beat(home, "supervisor-heartbeat");
+    writeSupervisorRecord(home, {
+      name: "supervisor",
+      pid: process.pid,
+      startedAt: NOW,
+      units: [{ name: "duty", pid: process.pid, at: NOW, pane: "w9:p3" }],
+      at: NOW,
+    });
+    expect(formatSupervisor(supervisorHealth(home, NOW)[0]!)).toBe(
+      `SUPERVISED supervisor up pid=${process.pid} hb=0s units=duty:${process.pid}@w9:p3`,
+    );
   });
 
   test("old per-half heartbeats no longer make a supervisor, and the watchdog prints separately", () => {
