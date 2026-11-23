@@ -97,39 +97,82 @@ describe("lane review receipt lock", () => {
 
   test("two spawned writers converge on CLEAR, never on the failure", async () => {
     const { d } = setup();
+    const ackName = "writer.ack";
     const storeUrl = pathToFileURL(join(import.meta.dir, "..", "src", "store.ts")).href;
     const progressUrl = pathToFileURL(join(import.meta.dir, "..", "src", "review-progress.ts")).href;
     const script = join(d.store.root, "writer.ts");
     writeFileSync(
       script,
-      `import { Store } from ${JSON.stringify(storeUrl)};
+      `import { watch } from "node:fs";
+import { Store } from ${JSON.stringify(storeUrl)};
 import { saveFinalReceipt } from ${JSON.stringify(progressUrl)};
-const [root, key, tip, verdict] = process.argv.slice(2);
+const [root, key, tip, verdict, ackDir, ackName] = process.argv.slice(2);
+let told = false;
+const beforeWrite = ackDir && ackName
+  ? async () => {
+      await new Promise((resolve) => {
+        const watcher = watch(ackDir, (_event, filename) => {
+          if (String(filename) === ackName) {
+            watcher.close();
+            resolve();
+          }
+        });
+        process.stdout.write("CRITICAL\\n");
+      });
+    }
+  : undefined;
+const onLockWait = () => {
+  if (told) return;
+  told = true;
+  process.stdout.write("WAITING\\n");
+};
 const d = { store: new Store(root), now: Date.now };
+const hooks = { onLockWait, waitMs: 5_000, ...(beforeWrite ? { beforeWrite } : {}) };
 await saveFinalReceipt({
   d, key, tip,
   receipt: { lane: key, verdict, base: "a".repeat(40), tip, brief: "brief.md", reviewer: verdict, at: Date.now(), summary: verdict, chunks: [] },
-}, { beforeWrite: async () => { await new Promise((r) => setTimeout(r, 50)); }, waitMs: 5_000 });
+}, hooks);
 `,
     );
     const bun = Bun.which("bun") ?? process.execPath;
-    const spawn = (verdict: string) =>
-      Bun.spawn([bun, script, d.store.root, "spawned", tip, verdict], {
+    const spawn = (verdict: string, ack = false) =>
+      Bun.spawn([bun, script, d.store.root, "spawned", tip, verdict, ack ? d.store.root : "", ack ? ackName : ""], {
         env: process.env,
-        stdout: "ignore",
+        stdout: "pipe",
         stderr: "pipe",
       });
-    const clear = spawn("CLEAR");
-    const failure = spawn("reviewer_empty");
-    const [clearCode, failureCode] = await Promise.all([clear.exited, failure.exited]);
-    const [clearErr, failureErr] = await Promise.all([
-      new Response(clear.stderr).text(),
-      new Response(failure.stderr).text(),
-    ]);
-    expect({ code: clearCode, stderr: clearErr }).toEqual({ code: 0, stderr: "" });
-    expect({ code: failureCode, stderr: failureErr }).toEqual({ code: 0, stderr: "" });
+    const readSignal = async (stream: ReadableStream<Uint8Array>, label: string): Promise<string> => {
+      const reader = stream.getReader();
+      const decoder = new TextDecoder();
+      let out = "";
+      while (!out.includes("\n")) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error(`${label} exited before its signal: ${out}`);
+        out += decoder.decode(value);
+      }
+      return out;
+    };
+    const clear = spawn("CLEAR", true);
+    let failure: ReturnType<typeof spawn> | undefined;
+    try {
+      expect(await readSignal(clear.stdout, "clear")).toContain("CRITICAL");
+      failure = spawn("reviewer_empty");
+      expect(await readSignal(failure.stdout, "failure")).toContain("WAITING");
+      writeFileSync(join(d.store.root, ackName), "GO");
+      const [clearCode, failureCode] = await Promise.all([clear.exited, failure.exited]);
+      const [clearErr, failureErr] = await Promise.all([
+        new Response(clear.stderr).text(),
+        new Response(failure.stderr).text(),
+      ]);
+      expect({ code: clearCode, stderr: clearErr }).toEqual({ code: 0, stderr: "" });
+      expect({ code: failureCode, stderr: failureErr }).toEqual({ code: 0, stderr: "" });
 
-    expect(canonical(d, "spawned")?.verdict).toBe("CLEAR");
-    expect(existsSync(receiptLockPath(d.store.root, "spawned", tip))).toBe(false);
+      expect(canonical(d, "spawned")?.verdict).toBe("CLEAR");
+      expect(existsSync(receiptLockPath(d.store.root, "spawned", tip))).toBe(false);
+    } finally {
+      clear.kill();
+      failure?.kill();
+      await Promise.all([clear.exited, failure?.exited ?? Promise.resolve(0)]);
+    }
   });
 });
