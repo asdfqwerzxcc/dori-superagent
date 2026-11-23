@@ -53,9 +53,6 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori review <owner/repo#N> [--model M]      fresh omo reviewer at the exact head -> receipt
   dori review <owner/repo#N> --attest --verdict CLEAR|BLOCK --reviewer R --evidence E
                                              record a review done elsewhere as the receipt (no child process)
-<<<<<<< HEAD
-  dori review --lane <key> [--model M]        queue the lane's own diff for dori duty -> QUEUED <key> <tip> <job>;
-                                              with no duty loop running, review it inline now -> lane receipt
   dori review --lane <key> [--model M] [--restart]
                                               queue the lane's own diff for dori duty -> QUEUED <key> <tip> <job>;
                                               an in-flight request -> already queued <job> (<state>); --restart kills
