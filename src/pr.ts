@@ -5,7 +5,29 @@ import type { Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
 
 export type PrState = { readonly number: number; readonly url: string; readonly state: string };
-export type ListedPr = PrState & { readonly headRefOid?: string };
+export type ListedPr = PrState & {
+  readonly headRefOid?: string;
+  readonly baseRefName?: string;
+  readonly headRepositoryOwner?: { readonly login?: string };
+  readonly headRepository?: { readonly nameWithOwner?: string };
+  readonly isCrossRepository?: boolean;
+};
+
+/** Why the open PR does not belong to this lane: base main, the selected head repository, and the pushed head. */
+export function prIdentityRefusal(pr: ListedPr, repo: string, head: string): string | undefined {
+  if (pr.baseRefName?.toLowerCase() !== "main") return `base is ${pr.baseRefName ?? "(unknown)"}, not main`;
+  if (pr.isCrossRepository !== false) return "the head repository is not the selected remote (cross-repository PR)";
+  const headRepo = pr.headRepository?.nameWithOwner;
+  if (headRepo !== undefined && headRepo.toLowerCase() !== repo.toLowerCase())
+    return `the head repository is ${headRepo}, not ${repo}`;
+  const owner = pr.headRepositoryOwner?.login;
+  const expectedOwner = repo.split("/")[0] ?? "";
+  if (owner !== undefined && owner.toLowerCase() !== expectedOwner.toLowerCase())
+    return `the head owner is ${owner}, not ${expectedOwner}`;
+  if (pr.headRefOid === undefined || pr.headRefOid.toLowerCase() !== head.toLowerCase())
+    return `the head is ${pr.headRefOid?.slice(0, 12) ?? "(unknown)"}, not ${head.slice(0, 12)}`;
+  return undefined;
+}
 
 export async function findPr(d: Deps, repo: string, head: string): Promise<PrState | undefined> {
   const r = await d.exec("gh", ["pr", "view", head, "--repo", repo, "--json", "number,url,state"]);
@@ -25,6 +47,9 @@ export async function findPr(d: Deps, repo: string, head: string): Promise<PrSta
   return { number: raw.number, url: raw.url, state: raw.state };
 }
 
+const record = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
 const parseList = (head: string, text: string): ListedPr[] => {
   let raw: unknown;
   try {
@@ -34,15 +59,26 @@ const parseList = (head: string, text: string): ListedPr[] => {
   }
   if (!Array.isArray(raw)) throw new Refusal(`gh pr list ${head} printed no list`);
   return raw.map((entry): ListedPr => {
-    if (typeof entry !== "object" || entry === null) throw new Refusal(`gh pr list ${head} printed an incomplete PR`);
-    const pr = entry as { number?: unknown; url?: unknown; state?: unknown; headRefOid?: unknown };
-    if (typeof pr.number !== "number" || typeof pr.url !== "string" || typeof pr.state !== "string")
+    if (!record(entry)) throw new Refusal(`gh pr list ${head} printed an incomplete PR`);
+    const number = entry["number"];
+    const url = entry["url"];
+    const state = entry["state"];
+    if (typeof number !== "number" || typeof url !== "string" || typeof state !== "string")
       throw new Refusal(`gh pr list ${head} printed an incomplete PR`);
+    const headRefOid = entry["headRefOid"];
+    const baseRefName = entry["baseRefName"];
+    const cross = entry["isCrossRepository"];
+    const owner = record(entry["headRepositoryOwner"]) ? entry["headRepositoryOwner"]["login"] : undefined;
+    const headRepo = record(entry["headRepository"]) ? entry["headRepository"]["nameWithOwner"] : undefined;
     return {
-      number: pr.number,
-      url: pr.url,
-      state: pr.state,
-      ...(typeof pr.headRefOid === "string" ? { headRefOid: pr.headRefOid } : {}),
+      number,
+      url,
+      state,
+      ...(typeof headRefOid === "string" ? { headRefOid } : {}),
+      ...(typeof baseRefName === "string" ? { baseRefName } : {}),
+      ...(typeof cross === "boolean" ? { isCrossRepository: cross } : {}),
+      ...(typeof owner === "string" ? { headRepositoryOwner: { login: owner } } : {}),
+      ...(typeof headRepo === "string" ? { headRepository: { nameWithOwner: headRepo } } : {}),
     };
   });
 };
@@ -58,7 +94,7 @@ async function listPrs(d: Deps, repo: string, head: string, state: "open" | "all
     "--state",
     state,
     "--json",
-    "number,url,state,headRefOid",
+    "number,url,state,headRefOid,baseRefName,headRepositoryOwner,headRepository,isCrossRepository",
   ]);
   if (r.code !== 0)
     throw new Refusal(`gh pr list ${head} failed: ${(r.stderr || r.stdout).trim() || `exit ${r.code}`}`);

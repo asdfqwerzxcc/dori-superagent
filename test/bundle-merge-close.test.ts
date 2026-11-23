@@ -54,7 +54,7 @@ describe("merge --bundle", () => {
     expect(await mergeGate(d, "o/r#7", { bundle: "b1" })).toBe(`MERGED o/r#7 head=${head}`);
   });
 
-  test("refuses when a member is not CLEAR at its recorded sha, and an empty check list is never green", async () => {
+  test("refuses when a member is not CLEAR at its recorded sha; an empty check list is not a refusal", async () => {
     const first = await membersBundle();
     gh(first.w);
     first.repo.refs = { ...(first.repo.refs ?? {}), "lane/beta": tipC };
@@ -62,7 +62,7 @@ describe("merge --bundle", () => {
 
     const second = await membersBundle();
     gh(second.w, []);
-    await expect(mergeGate(second.d, "o/r#7", { bundle: "b1" })).rejects.toThrow("never green");
+    expect(await mergeGate(second.d, "o/r#7", { bundle: "b1" })).toBe(`MERGED o/r#7 head=${head}`);
   });
 });
 

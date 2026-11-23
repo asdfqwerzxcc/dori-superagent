@@ -72,13 +72,32 @@ export function laneGh(
     readonly existing?: boolean;
     readonly checks?: readonly { readonly name: string; readonly bucket: string }[];
     readonly stale?: "at-head" | "older";
+    readonly base?: string;
+    readonly headRepo?: string;
+    readonly cross?: boolean;
   } = {},
 ): void {
   w.gh = (argv) => {
     if (argv[0] === "pr" && argv[1] === "list") {
       const state = argv[argv.indexOf("--state") + 1];
-      if (state === "open" && opts.existing === true)
-        return { code: 0, stdout: JSON.stringify([{ number: 7, url, state: "OPEN", headRefOid: tipA }]) };
+      if (state === "open" && opts.existing === true) {
+        const headRepo = opts.headRepo ?? repoName;
+        return {
+          code: 0,
+          stdout: JSON.stringify([
+            {
+              number: 7,
+              url,
+              state: "OPEN",
+              headRefOid: tipA,
+              baseRefName: opts.base ?? "main",
+              headRepository: { nameWithOwner: headRepo },
+              headRepositoryOwner: { login: headRepo.split("/")[0] ?? "" },
+              isCrossRepository: opts.cross ?? false,
+            },
+          ]),
+        };
+      }
       if (state === "all" && opts.stale !== undefined)
         return {
           code: 0,

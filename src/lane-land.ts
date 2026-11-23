@@ -5,12 +5,12 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { short } from "./bundles.ts";
-import { checksRefusal } from "./gate.ts";
+import { checkGate } from "./gate.ts";
 import type { Deps } from "./harness.ts";
 import { asSha, laneHead, laneRepo } from "./lane-repo.ts";
 import { branchOf } from "./lane-worktree.ts";
 import { type OwnRemote, remoteRepo, upstreamRefusal } from "./own-remote.ts";
-import { findOpenPr, findPrAtHead } from "./pr.ts";
+import { findOpenPr, findPrAtHead, prIdentityRefusal } from "./pr.ts";
 import { Refusal } from "./refusal.ts";
 import type { ExecResult } from "./runtime/exec.ts";
 import { KEY_RE, type Lane, type LaneReceipt } from "./store-types.ts";
@@ -113,6 +113,9 @@ async function upsertPr(
   const title = prTitle(lane);
   const existing = await findOpenPr(d, repo, branch);
   if (existing !== undefined) {
+    const why = prIdentityRefusal(existing, repo, head);
+    if (why !== undefined)
+      throw new Refusal(`lane ${lane.key}: refusing to update PR #${existing.number} (${existing.url}): ${why}`);
     const edit = await d.exec("gh", [
       "pr",
       "edit",
@@ -182,12 +185,17 @@ export async function mergeLane(d: Deps, key: string, opts: LaneMergeOptions = {
       `head=${short(head)} receipt=CLEAR`,
     `  push ${remote.name} ${branch}`,
     `  gh pr create|edit --repo ${repo} --base main --head ${branch}`,
-    `  gh pr checks <new PR> --repo ${repo} (all pass)`,
+    `  gh pr checks <new PR> --repo ${repo} (green or none)`,
     `  gh pr merge --merge --match-head-commit ${head}`,
     `  git push ${remote.name} --delete ${branch}`,
   ];
   if (opts.dryRun === true) return [...plan, `LANE_MERGE_DRY_RUN ${key} (no push, no PR, no merge)`];
 
+  const landed = await findPrAtHead(d, repo, branch, head);
+  if (landed !== undefined)
+    throw new Refusal(
+      `lane ${key}: PR #${landed.number} is ${landed.state} at this exact head ${short(head)}; nothing new to land`,
+    );
   const bodyPath = join(d.store.root, "state", "lane-prs", `${lane.key}.md`);
   mkdirSync(dirname(bodyPath), { recursive: true });
   writeFileSync(bodyPath, prBody(lane, head, receipt));
@@ -195,11 +203,11 @@ export async function mergeLane(d: Deps, key: string, opts: LaneMergeOptions = {
   if (push.code !== 0)
     throw new Refusal(`lane ${key}: cannot push ${branch} to ${remote.name} (${repo}): ${gitWhy(push)}`);
   const pr = await upsertPr(d, lane, repo, branch, head, bodyPath);
-  const checks = await checksRefusal(d, { repo, number: pr.number });
-  if (checks !== undefined) {
-    d.usage.record({ name: "dori.merge_decided", outcome: checks[0] });
+  const check = await checkGate(d, { repo, number: pr.number });
+  if (check.refusal !== undefined) {
+    d.usage.record({ name: "dori.merge_decided", outcome: check.refusal[0] });
     throw new Refusal(
-      `MERGE_REFUSED lane ${key}: PR #${pr.number} (${pr.url}) is not green: ${checks[1]}; ` +
+      `MERGE_REFUSED lane ${key}: PR #${pr.number} (${pr.url}) is not ready: ${check.refusal[1]}; ` +
         `rerun dori merge ${key} once checks pass`,
     );
   }
@@ -223,7 +231,8 @@ export async function mergeLane(d: Deps, key: string, opts: LaneMergeOptions = {
   const deleted = del.code === 0 || /remote ref does not exist/i.test(deleteWhy);
   return [
     ...plan,
-    `MERGED ${branch} head=${short(head)} repo=${repo} pr=#${pr.number} ${pr.url} branch=${deleted ? "deleted" : "kept"}`,
+    `MERGED ${branch} head=${short(head)} repo=${repo} pr=#${pr.number} ${pr.url} ` +
+      `checks=${check.none ? "none" : "green"} branch=${deleted ? "deleted" : "kept"}`,
     ...(deleted
       ? []
       : [

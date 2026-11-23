@@ -119,9 +119,9 @@ export async function review(
 type Check = { name: string; bucket: string };
 
 /**
- * Merge only when the review dimension is satisfied and every check passed. The review dimension is a CLEAR receipt at
- * the exact current head, or with `--bundle` every recorded member still CLEAR at the sha it was admitted on. An empty
- * check list is never green, whichever path supplied the review.
+ * Merge only when the review dimension is satisfied and every configured check passed. The review dimension is a CLEAR
+ * receipt at the exact current head, or with `--bundle` every recorded member still CLEAR at the sha it was admitted on.
+ * An empty check list means no CI is configured and is not a refusal; pending or failed checks refuse.
  */
 export async function mergeGate(
   d: Deps,
@@ -161,16 +161,27 @@ async function gateRefusal(
   return checksRefusal(d, pr);
 }
 
-/** The check dimension alone, shared by the PR gate and the lane gate: an empty list is never green. */
+/** The check dimension alone, shared by the PR gate and the lane gate: an empty list means no CI is configured and is
+ * not a refusal; pending or failed checks refuse. */
+export type CheckGate = { readonly none: boolean; readonly refusal?: [MergeOutcome, string] };
+
+export async function checkGate(d: Deps, pr: { readonly repo: string; readonly number: number }): Promise<CheckGate> {
+  const checksRes = await d.exec("gh", ["pr", "checks", String(pr.number), "--repo", pr.repo, "--json", "name,bucket"]);
+  const checks: Check[] = checksRes.stdout.trim().startsWith("[") ? JSON.parse(checksRes.stdout) : [];
+  if (checks.length === 0) return { none: true };
+  const bad = checks.filter((c) => c.bucket !== "pass" && c.bucket !== "skipping");
+  if (bad.length > 0)
+    return {
+      none: false,
+      refusal: ["checks_red", `checks not green: ${bad.map((c) => `${c.name}=${c.bucket}`).join(", ")}`],
+    };
+  return { none: false };
+}
+
+/** The refusal form used by the PR gate. */
 export async function checksRefusal(
   d: Deps,
   pr: { readonly repo: string; readonly number: number },
 ): Promise<[MergeOutcome, string] | undefined> {
-  const checksRes = await d.exec("gh", ["pr", "checks", String(pr.number), "--repo", pr.repo, "--json", "name,bucket"]);
-  const checks: Check[] = checksRes.stdout.trim().startsWith("[") ? JSON.parse(checksRes.stdout) : [];
-  if (checks.length === 0) return ["no_checks", "no checks reported: an empty check list is never green"];
-  const bad = checks.filter((c) => c.bucket !== "pass" && c.bucket !== "skipping");
-  if (bad.length > 0) return ["checks_red", `checks not green: ${bad.map((c) => `${c.name}=${c.bucket}`).join(", ")}`];
-  if (!checks.some((c) => c.bucket === "pass")) return ["checks_all_skipped", "every check was skipped"];
-  return undefined;
+  return (await checkGate(d, pr)).refusal;
 }

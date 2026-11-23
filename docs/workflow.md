@@ -18,10 +18,10 @@ Lee: "이게 나의 정형적인 워크플로우가 될 거야. 어떠한 프로
 1. **요구 → 백로그**: 메시징/PM 도리가 요구를 백로그 항목 + 브리프로 만든다.
 2. **레인**: `dori start <key> --brief <f>` → 워크트리에서 작업 → **로컬 커밋** → `dori ready`(증거 링크).
 3. **리뷰 게이트(레인)**: `dori review --lane <key>` → 그 head에 묶인 **CLEAR 레인 영수증**. 없음/BLOCK/stale sha면 다음 단계로 못 간다.
-4. **레인 착지(기본)**: `dori merge <key>`가 ⑴ 영수증을 다시 확인하고 ⑵ `lane/<key>`를 레인 레포의 자기 리모트(`fork`가 있으면 `fork`, 없으면 `origin`)에 push하고 ⑶ PR을 생성/갱신하고 ⑷ **PR 체크가 전부 green일 때만** **merge commit**으로 머지한 뒤 ⑸ 원격 브랜치 삭제를 시도하고, 삭제가 실패하면 머지는 유지한 채 WARN으로 알린다. 체크가 pending/failed/없음이면 PR과 브랜치는 남기고 거부하므로, green이 된 뒤 `dori merge <key>`를 다시 실행한다. PR 대상은 `lane.repo`에서 유도하며, design 레포(`asdfqwerzxcc/dori-design-system`, `origin`만 있음)도 같은 기본 경로를 쓴다.
+4. **레인 착지(기본)**: `dori merge <key>`가 ⑴ 영수증을 다시 확인하고 ⑵ `lane/<key>`를 레인 레포의 자기 리모트(`fork`가 있으면 `fork`, 없으면 `origin`)에 push하고 ⑶ PR을 생성/갱신하고 ⑷ PR 체크가 있으면 전부 green일 때만(없으면 `checks=none`) **merge commit**으로 머지한 뒤 ⑸ 원격 브랜치 삭제를 시도하고, 삭제가 실패하면 머지는 유지한 채 WARN으로 알린다. 체크가 pending/failed면 PR과 브랜치는 남기고 거부하므로, green이 된 뒤 `dori merge <key>`를 다시 실행한다. PR 대상은 `lane.repo`에서 유도하며, design 레포(`asdfqwerzxcc/dori-design-system`, `origin`만 있음)도 같은 기본 경로를 쓴다.
 5. **묶음 착지(선택, 명시적 모드)**: 여러 레인을 한 PR로 묶어야 할 때만 `dori bundle open`/`add`/`land` → `dori merge <owner/repo#N> --bundle <id>`. 기본 경로가 아니다.
-6. **CI**: PR에서 `bun install` → `typecheck` → `test`(무료 티어, 런당 ~15초). 레인 게이트와 번들 게이트 모두 이 체크가 green이어야 머지한다.
-7. **머지/반영**: `dori merge`가 머지한다(레인 모드 merge commit, 번들 모드 squash). 머지 후 로컬 main은 `git fetch fork`(없으면 `origin`) 후 `git merge --ff-only <remote>/main`으로 동기화하고, `dori done <key>`로 워크트리와 브랜치를 정리한다. 실행 중인 하네스(duty/loop/plugins)는 **시작 시점 코드를 계속 실행**하므로 dori 코드가 바뀌면 `dori restart`로 재시작해야 새 규칙이 적용된다.
+6. **CI**: 워크플로가 있는 레포는 PR에서 `bun install` → `typecheck` → `test`(무료 티어, 런당 ~15초). 레인/번들 게이트는 체크가 있으면 전부 green이어야 머지하고, 워크플로가 없으면 `checks=none`으로 통과한다.
+7. **머지/반영**: `dori merge`가 머지한다(레인 모드 merge commit, 번들 모드 squash). 머지 후 로컬 main은 `git fetch fork`(없으면 `origin`) 후 `git merge --ff-only <remote>/main`으로 동기화하고, `dori done <key>`로 워크트리와 브랜치를 정리한다(`--ff-only`는 로컬 main이 뒤처져 있을 때만; dori 저장소의 예외는 `docs/dori-repo-ops.md`). 실행 중인 하네스(duty/loop/plugins)는 **시작 시점 코드를 계속 실행**하므로 dori 코드가 바뀌면 `dori restart`로 재시작해야 새 규칙이 적용된다.
 
 ## 3. 이 워크플로우를 지키는 규칙
 

@@ -57,10 +57,10 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
                                               with no duty loop running, review it inline now -> lane receipt
   dori merge <lane-key|lane/key> [--dry-run]  default gate: CLEAR lane receipt at the head -> push lane/<key> to the
                                               lane repo's own remote (fork when present, else origin) -> PR against
-                                              main -> checks green -> merge commit -> delete the remote branch
-  dori merge <owner/repo#N> [--dry-run]       PR form: CLEAR receipt at that head + green checks -> squash merge
+                                              main -> checks green (or none) -> merge commit -> delete the remote branch
+  dori merge <owner/repo#N> [--dry-run]       PR form: CLEAR receipt at that head + green checks when configured -> squash merge
   dori merge <owner/repo#N> --bundle <id>     explicit bundle gate: every recorded member CLEAR at its sha + green
-                                              checks -> squash merge
+                                              checks when configured -> squash merge
   dori bundle open <id> --title T [--issue N] [--repo owner/name]
   dori bundle add <id> <lane-key>...          only when the lane receipt is CLEAR at the current lane/<key> head
   dori bundle list [<id>] [--json]            bundles under state/bundles/<id>.json

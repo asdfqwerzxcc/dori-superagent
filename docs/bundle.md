@@ -24,7 +24,7 @@ dori merge <owner/repo#N> --bundle <id> # 명시적 번들 게이트로 머지
 2. **`land`**: `main`에서 `bundle/<id>`를 만들고 멤버 브랜치를 적힌 순서대로 `--no-ff` 머지한다. 충돌하면 **그 자리에서 멈추고 부분 브랜치를 남긴다**(조용히 넘어가지 않는다). 성공하면 자기 리모트(`fork`가 있으면 `fork`, 없으면 `origin`)로 푸시하고 `.github/PULL_REQUEST_TEMPLATE.md` + 멤버 목록으로 PR을 만들거나 갱신한다.
 3. **`merge --bundle <id>`**: 게이트는 둘 중 하나를 만족해야 한다.
    - ⑴ PR head에 **CLEAR 영수증**이 있다(번들 단위 리뷰), 또는
-   - ⑵ 기록된 **구성원 전원이 자기 sha에서 CLEAR**이고 **체크가 green**이다.
+   - ⑵ 기록된 **구성원 전원이 자기 sha에서 CLEAR**이고 **체크가 있으면 green, 없으면 none**이다.
    우회 플래그는 없다.
 4. **`close`**: PR이 MERGED 된 뒤에만 동작. 대표 이슈 외의 `Closes`가 있으면 거부하고, 구성원 영수증에 대한 `Refs` 코멘트를 한 번 남긴 뒤 번들을 closed로 표시한다.
 

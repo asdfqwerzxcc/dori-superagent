@@ -1,7 +1,9 @@
-# Review: three layers, no pull request, no push
+# Review: lane receipt, lane PR, merge gate
 
-Dori reviews lane work locally. Nothing in this flow contacts a remote: no branch is created, nothing is pushed, and no
-pull request is opened. The record of a review is a receipt file under `$DORI_HOME/receipts/`.
+Dori reviews lane work locally first. The record of a review is a receipt file under `$DORI_HOME/receipts/`. Once that
+lane receipt is CLEAR, `dori merge <key>` is the landing path: it pushes `lane/<key>`, opens or updates the PR, gates on
+the PR checks, merges with a merge commit, and deletes the remote branch. The review step itself still creates no git
+branch, no push, and no PR; the landing step does.
 
 ## The three layers
 
@@ -9,10 +11,10 @@ pull request is opened. The record of a review is a receipt file under `$DORI_HO
 | --- | --- | --- |
 | Lane review | `dori review --lane <key>` queues a fresh, non-interactive reviewer on the lane's own commits for `dori duty` | `receipts/lane_<key>@<tip>.json` |
 | Lead review | the lead reads the lane's final answer and its evidence (`dori ready`) and may read the receipt or diff | the lane's `final` entry and `lane-reviews/lane_<key>@<tip>.diff` |
-| Merge gate | `dori merge <owner/repo#N>`, only when the work exists as a PR | `receipts/<owner__repo>_<N>@<sha>.json` plus green checks |
+| Lane merge gate | `dori merge <key>` after a CLEAR lane receipt: push, PR create/update, checks, merge commit, remote-branch delete | the lane receipt plus the PR checks (`checks=none` when the repo has no workflows) |
 
-The first two layers always apply to a lane. The merge gate is the PR path: it is unchanged and it is skipped entirely
-when no PR exists. A local commit is approved by layers 1 and 2; it is never merged through `dori merge`.
+The lane receipt is written locally; `dori merge <key>` is the landing path that pushes the branch and opens the PR. A
+lane that committed nothing closes without a receipt and without a PR.
 
 ## Layer 1: the lane review
 
@@ -172,8 +174,8 @@ chunking, deadline, log, diagnostics and receipt), drops the job, and sends the 
 
 A review that fails or times out posts the same way, naming the failure instead of a verdict
 (`[REVIEW <key>] failed at <tip>: <reason>`). `dori done` never waits on a queued review: while a job for the lane's
-current tip is pending it refuses, saying the review is in flight and that the verdict will arrive as an inbox message,
-and the same `dori done` lands once the receipt exists.
+current tip is pending it refuses, saying the review is in flight and that the verdict will arrive as an inbox message.
+Once the receipt exists, land with `dori merge <key>`; `dori done` closes the lane after the PR lands.
 
 With no duty loop running (a plain install, or a worker that died), `dori review --lane` reviews inline exactly as
 before; that inline run also drops a job record a dead worker left for the same lane and tip. A worker that dies
@@ -185,15 +187,17 @@ A lane reports `dori ready <key> --text ... --evidence ...`; the final answer an
 The receipt from layer 1 answers "did a fresh reviewer see this exact diff and clear it", not "is the work right"; the
 lead still reads the answer, the evidence and, when it matters, the diff.
 
-## Layer 3: the merge gate (PR only)
+## Layer 3: the lane merge gate
 
-`dori merge` keeps its existing rule: a CLEAR receipt at the exact PR head plus at least one passing check, with an empty
-check list never green. This layer never runs for local-only work, and nothing in the lane flow pushes or opens a PR.
+`dori merge <key>` checks the CLEAR lane receipt at HEAD, pushes `lane/<key>` to the lane repo's own remote (fork when
+present, else origin; an upstream is refused), creates or updates the PR against `main`, refuses while PR checks are
+pending or failed, merges with a merge commit, and deletes the remote branch. A repository with no configured workflows
+records `checks=none` and is not refused. The `dori merge <owner/repo#N>` form remains for non-lane PRs.
 
-## `dori done` and the escape hatch
+## `dori done`: close and clean up after the PR lands
 
-`dori done <key>` refuses to close a lane whose current tip has no CLEAR receipt. The refusal is one line naming the
-command to run:
+`dori done <key>` is the close path, not the landing path; `dori merge <key>` lands the PR. `done` refuses to close a
+lane whose current tip has no CLEAR receipt (or whose receipt is a failed review), exactly as before:
 
 ```
 lane <key> at <sha> has no review receipt; run: dori review --lane <key> (or dori done --drop <key> --reason <text>)
@@ -230,9 +234,10 @@ the gate).
 
 Each lane commits in its own worktree on branch `lane/<key>`, so `base..tip` is the lane's own history: another lane
 cannot add to it, and a lane cannot dirty the main checkout. `dori done` checks the tree is clean, closes the pane,
-fast-forwards `main` when it still sits at the recorded base, then removes the worktree and the branch. If `main` moved,
-`done` refuses with `main moved: rebase required` and keeps both; `dori done --drop <key> --reason <text>` removes them
-without landing. A LOST lane keeps its tree and branch for inspection and refuses a restart until it is dropped.
+verifies `main` already contains the lane branch from the PR merge (or fast-forwards it as a legacy local fallback when
+`main` still sits at the recorded base), then removes the worktree and the local branch. If `main` moved without the
+lane, `done` refuses with `main moved: rebase required` and keeps both; `dori done --drop <key> --reason <text>` removes
+them without landing a PR. A LOST lane keeps its tree and branch for inspection and refuses a restart until it is dropped.
 `dori worktrees list` names every lane tree with its lane status and orphan reason, `dori worktrees prune` removes
 orphan trees and their branches (naming a dirty tree and leaving it, never forcing), and `dori status` adds one
 `WORKTREES <n> orphan` line when any exist. Receipts and diffs are per lane key and per tip commit, so they never

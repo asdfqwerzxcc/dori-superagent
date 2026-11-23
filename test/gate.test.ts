@@ -13,8 +13,7 @@ describe("review + merge gate", () => {
   const head = "a".repeat(40);
   function gh(w: World, checks: unknown[]) {
     w.gh = (argv) => {
-      if (argv[1] === "view")
-        return { code: 0, stdout: JSON.stringify({ headRefOid: head, title: "t", body: "b" }) };
+      if (argv[1] === "view") return { code: 0, stdout: JSON.stringify({ headRefOid: head, title: "t", body: "b" }) };
       if (argv[1] === "diff") return { code: 0, stdout: "diff --git a/x b/x\n+line\n" };
       if (argv[1] === "checks") return { code: 0, stdout: JSON.stringify(checks) };
       if (argv[1] === "merge") return { code: 0, stdout: "" };
@@ -22,7 +21,7 @@ describe("review + merge gate", () => {
     };
   }
 
-  test("merge is refused without a receipt, with an empty check list, with red checks; allowed at CLEAR + green", async () => {
+  test("merge is refused without a receipt or with red checks; allowed at CLEAR + green or no checks", async () => {
     const { w, d } = setup();
     gh(w, []);
     await expect(mergeGate(d, "o/r#7")).rejects.toThrow("no review receipt");
@@ -32,14 +31,14 @@ describe("review + merge gate", () => {
     w.reviewer = () => ({ code: 0, stdout: "no findings\nVERDICT: CLEAR" });
     await review(d, "o/r#7", "some/model");
     expect(d.store.receipt("o/r#7", head)!.model).toBe("some/model");
-    await expect(mergeGate(d, "o/r#7")).rejects.toThrow("never green");
+    expect(await mergeGate(d, "o/r#7")).toBe(`MERGED o/r#7 head=${head}`);
     gh(w, [
       { name: "test", bucket: "fail" },
       { name: "lint", bucket: "pass" },
     ]);
     await expect(mergeGate(d, "o/r#7")).rejects.toThrow("test=fail");
     gh(w, [{ name: "test", bucket: "skipping" }]);
-    await expect(mergeGate(d, "o/r#7")).rejects.toThrow("every check was skipped");
+    expect(await mergeGate(d, "o/r#7")).toBe(`MERGED o/r#7 head=${head}`);
     gh(w, [
       { name: "test", bucket: "pass" },
       { name: "docs", bucket: "skipping" },
@@ -48,7 +47,7 @@ describe("review + merge gate", () => {
     expect(w.calls.at(-1)!.argv).toContain("--match-head-commit");
     expect(
       w.usage.filter((e) => e.name === "dori.merge_decided").map((e) => (e as { outcome: string }).outcome),
-    ).toEqual(["no_receipt", "review_block", "no_checks", "checks_red", "checks_all_skipped", "merged"]);
+    ).toEqual(["no_receipt", "review_block", "merged", "checks_red", "merged", "merged"]);
     expect(w.usage.filter((e) => e.name === "dori.review_completed")).toHaveLength(2);
   });
 
@@ -64,9 +63,9 @@ describe("review + merge gate", () => {
       ++call === 1 ? { code: 0, stdout: "provider refused" } : { code: 0, stdout: "ok\nVERDICT: CLEAR" };
     expect((await review(d, "o/r#9")).verdict).toBe("CLEAR");
     expect(d.store.receipt("o/r#9", head)!.model).toBe("fallback/model (fallback)");
-    expect(w.calls.filter((c) => c.argv.includes("--model")).map((c) => c.argv[c.argv.indexOf("--model") + 1])).toEqual([
-      "fallback/model",
-    ]);
+    expect(w.calls.filter((c) => c.argv.includes("--model")).map((c) => c.argv[c.argv.indexOf("--model") + 1])).toEqual(
+      ["fallback/model"],
+    );
   });
 
   test("exit 0 without a VERDICT line: bounded stdout tail kept privately, no receipt", async () => {

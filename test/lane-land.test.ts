@@ -18,7 +18,7 @@ describe("lane landing", () => {
 
     const lines = await mergeLane(d, "alpha");
     expect(lines.at(-1)).toBe(
-      `MERGED lane/alpha head=${tipA.slice(0, 12)} repo=${repoName} pr=#7 ${url} branch=deleted`,
+      `MERGED lane/alpha head=${tipA.slice(0, 12)} repo=${repoName} pr=#7 ${url} checks=green branch=deleted`,
     );
 
     const push = w.calls.find((call) => call.cmd === "git" && call.argv.includes(`${tipA}:refs/heads/lane/alpha`));
@@ -54,6 +54,15 @@ describe("lane landing", () => {
     expect(del?.argv).toEqual(["-C", repoPath, "push", "origin", "--delete", "lane/alpha"]);
   });
 
+  test("merges a repo with no CI configured and records checks=none", async () => {
+    const { w, d } = laneFixture();
+    receiptAt(d, tipA);
+    laneGh(w, { checks: [] });
+    const lines = await mergeLane(d, "alpha");
+    expect(lines.at(-1)).toContain("checks=none");
+    expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(true);
+  });
+
   test("updates an existing open PR before merging it", async () => {
     const { w, d } = laneFixture();
     receiptAt(d, tipA);
@@ -67,6 +76,26 @@ describe("lane landing", () => {
     expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "create")).toBe(false);
   });
 
+  test("refuses an open PR based on develop", async () => {
+    const { w, d } = laneFixture();
+    receiptAt(d, tipA);
+    laneGh(w, { existing: true, base: "develop" });
+    await expect(mergeLane(d, "alpha")).rejects.toThrow("base is develop, not main");
+    expect(w.calls.some((call) => call.cmd === "gh" && (call.argv[1] === "edit" || call.argv[1] === "merge"))).toBe(
+      false,
+    );
+  });
+
+  test("refuses an open PR whose head is another fork", async () => {
+    const { w, d } = laneFixture();
+    receiptAt(d, tipA);
+    laneGh(w, { existing: true, cross: true, headRepo: "someone/else" });
+    await expect(mergeLane(d, "alpha")).rejects.toThrow("cross-repository");
+    expect(w.calls.some((call) => call.cmd === "gh" && (call.argv[1] === "edit" || call.argv[1] === "merge"))).toBe(
+      false,
+    );
+  });
+
   test("a reused lane key creates a new PR when the old PR merged another head (done -> start -> merge)", async () => {
     const { w, d } = laneFixture();
     receiptAt(d, tipA);
@@ -77,11 +106,12 @@ describe("lane landing", () => {
     expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(true);
   });
 
-  test("refuses when a merged PR already landed this exact head", async () => {
+  test("a retry after a successful merge refuses before any push", async () => {
     const { w, d } = laneFixture();
     receiptAt(d, tipA);
     laneGh(w, { stale: "at-head" });
     await expect(mergeLane(d, "alpha")).rejects.toThrow("at this exact head");
+    expect(w.calls.some((call) => call.cmd === "git" && call.argv.includes("push"))).toBe(false);
     expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "create")).toBe(false);
     expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(false);
   });

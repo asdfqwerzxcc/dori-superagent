@@ -6,11 +6,11 @@
 
 | 리모트 | 저장소 | 역할 |
 |---|---|---|
-| `origin` | `sisyphuslabs/dori-superagent` | **업스트림**. fetch/rebase만. push 금지 |
+| `origin` | `sisyphuslabs/dori-superagent` | **업스트림**. fetch만. push/PR 금지 |
 | `fork` | `asdfqwerzxcc/dori-superagent` | 우리 작업 원격. **레인 PR 대상 = `fork:main`** |
 | `local` | `~/.dori/remotes/dori.git` | 로컬 미러(백업) |
 
-- 업스트림 동기화: `git fetch origin` → `git merge --ff-only origin/main`. 통합 브랜치 `fork/main` 동기화: `git fetch fork` → `git merge --ff-only fork/main`. `fork/main` 직접 push는 금지한다.
+- 업스트림 반영: 업스트림 커밋은 `fork/main`(또는 업스트림 동기화 PR)을 거쳐 들어온다. 로컬 main이 리모트보다 **뒤처져 있을 때만** `git fetch <remote>` → `git merge --ff-only <remote>/main`을 쓴다. 로컬 main에 레인/PR 커밋이 앞서 있으면 fast-forward는 실패하므로 `fork/main`을 merge하거나 업스트림 동기화 PR을 머지한다. `fork/main` 직접 push는 금지한다.
 - `fork:main` = 우리 통합 브랜치. 업스트림 미러가 아니다.
 
 ## CI
