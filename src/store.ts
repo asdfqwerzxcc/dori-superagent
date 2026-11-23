@@ -77,6 +77,11 @@ export class Store {
       .sort((a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key));
   }
 
+  /** Deletes a lane record. Only `dori lanes prune` calls this, and only for a finished lane with no worktree. */
+  removeLane(key: string): void {
+    rmSync(join(this.root, "lanes", `${key}.json`), { force: true });
+  }
+
   laneBySession(ref: SessionRef): Lane | undefined {
     return this.lanes().find((l) => sameSession(l.sessionRef, ref) && l.status !== "done" && l.status !== "dropped");
   }

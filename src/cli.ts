@@ -8,7 +8,7 @@ import { runSop } from "./cli-sop.ts";
 import { pluginCommand } from "./cli-plugins.ts";
 import { runRemote } from "./cli-remotes.ts";
 import { status, up } from "./cli-up.ts";
-import { done, ready, report, startLane } from "./lanes.ts";
+import { done, pruneLaneRecords, ready, report, startLane } from "./lanes.ts";
 import { leadRestart } from "./cli-lead-restart.ts";
 import { runLabels } from "./labels.ts";
 import { runStale } from "./stale.ts";
@@ -222,6 +222,18 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
         ...(rebase ? { rebase: true } : {}),
       });
       console.log(`DONE ${x}${note === undefined ? "" : ` (${note})`}`);
+      return 0;
+    }
+    case "lanes": {
+      const sub = need(x, "lanes prune [--older-than N] [--dry-run]");
+      if (sub !== "prune") throw new Refusal(`unknown lanes command ${sub}\n\n${USAGE}`);
+      const daysArg = one(a, "older-than");
+      const days = daysArg === undefined ? 7 : Number(daysArg);
+      if (!Number.isFinite(days) || days < 0) throw new Refusal("--older-than must be a number of days");
+      const dryRun = a.flags.has("dry-run");
+      const result = pruneLaneRecords(d, days, d.now(), dryRun);
+      for (const key of result.removed) console.log(`${dryRun ? "WOULD PRUNE" : "PRUNED"} ${key}`);
+      console.log(`LANES_pruned=${result.removed.length} kept=${result.kept} kept_for_worktree=${result.skipped.length}`);
       return 0;
     }
     case "worktrees": {
