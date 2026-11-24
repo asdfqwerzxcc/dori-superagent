@@ -138,7 +138,7 @@ The loop only opens lanes and sends messages; it never merges, pushes or closes 
 
 ![lane lifecycle](docs/lane-flow.png)
 
-`dori start <key> --brief FILE` writes the brief plus the lane rules to `~/.dori/briefs/<key>.md`, opens a tab, runs omo with a prompt that names the brief, records the lane as `working`, and sends the lead `[START <key>]`. From there the lane reports (`[REPORT <key>]`, or `[REPORT <key> WAITING]` when it is blocked outside its own pane) and ends with `[READY <key>]` plus its evidence links. A lane that stays idle gets a nudge at 10 and 20 minutes and is escalated to the lead at 40. A lane whose pane disappears before READY is reported as `[LOST <key>]`.
+`dori start <key> --brief FILE` writes the brief plus the lane rules to `~/.dori/briefs/<key>.md`, opens a tab, runs omo with a prompt that names the brief, records the lane as `working`, and sends the lead `[START <key>]`. From there the lane reports (`[REPORT <key>]`, or `[REPORT <key> WAITING]` when it is blocked outside its own pane) and ends with `[READY <key>]` plus its evidence links; a report after READY is an addendum and leaves the lane `ready`. A lane that stays idle gets a nudge at 10 and 20 minutes and is escalated to the lead at 40. A lane whose pane disappears before READY is reported as `[LOST <key>]`.
 
 State is JSON on disk under `~/.dori` (or `$DORI_HOME`): `lanes/`, `inbox/`, `briefs/`, `receipts/`, plus `backlog/` and `loop/` for the hourly loop and `duty/` for the duty loop's stop file. Besides the agent sessions, the harness adds one supervisor, its core children (the Discord gateway, duty, the hourly loop), one child per enabled plugin (ensure-up, update-check, gateway-catchup, silence-check), and the watchdog; the only runtime dependency is Bun.
 
@@ -157,6 +157,8 @@ The lead is the only session that talks to you (`prompts/lead.md`). The lane rul
 ### READY needs evidence
 
 `dori ready` refuses without at least one `--evidence` link and without final answer text. Both are stored on the lane record, and `dori done` refuses any lane that is not `ready`, so no lane closes without a recorded answer.
+
+A READY is final. A `dori report` that arrives afterwards is delivered as an addendum and never lowers the status, and a lane record that is `done` or `dropped` is never put back on the board by a late `ready` or `report`: only `dori start` reopens a finished key, as a new lane.
 
 ### Busy panes are never interrupted, and nothing is sent twice
 

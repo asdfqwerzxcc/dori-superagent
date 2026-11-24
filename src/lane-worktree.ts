@@ -210,8 +210,11 @@ export async function dropLane(d: Deps, lane: Lane, reason: string): Promise<str
   const { status: st } = await rt.probe(lane.sessionRef);
   if (st !== "gone") await rt.close(lane.sessionRef);
   if (lane.worktree !== undefined) await removeWorktree(d, lane, "-D");
-  lane.status = "dropped";
-  lane.log.push({ at: d.now(), kind: "dropped", text: reason.trim() });
-  d.store.saveLane(lane);
+  // Re-read before the drop is recorded: a report may have landed while the pane and tree were removed, and its log
+  // entry must survive this write.
+  const latest = d.store.lane(lane.key) ?? lane;
+  latest.status = "dropped";
+  latest.log.push({ at: d.now(), kind: "dropped", text: reason.trim() });
+  d.store.saveLane(latest);
   return `dropped: ${reason.trim()}`;
 }
