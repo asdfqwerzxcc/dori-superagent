@@ -6,13 +6,18 @@ import { laneGate } from "./lane-gate.ts";
 import { laneHead } from "./lane-repo.ts";
 import {
   assertCleanWorktree,
+  branchOf,
   dropLane,
   landWorktree,
   paneWorktreeMismatch,
   rebaseLaneWorktree,
+  teardownTolerated,
 } from "./lane-worktree.ts";
 import { Refusal } from "./refusal.ts";
+import type { ExecResult } from "./runtime/exec.ts";
 import type { Lane } from "./store-types.ts";
+
+const gitWhy = (r: ExecResult): string => (r.stderr || r.stdout).trim() || `git exited ${r.code}`;
 
 export type DoneOptions = {
   /** Remove the worktree and branch without landing, and mark the lane `dropped` with this reason. */
@@ -86,34 +91,62 @@ export async function done(d: Deps, key: string, opts: DoneOptions = {}): Promis
 }
 
 /**
- * Closes a lane whose worktree is already gone, without landing anything: only when the lane's recorded tip is an
- * ancestor of the repository's HEAD, so the reviewed work is provably published. A checkout that is merely missing is
- * not proof of a landing; that lane is refused with both ways out named.
+ * The commit that proves the lane landed, or undefined when nothing proves it. A surviving `lane/<key>` is the truth:
+ * its own head must be on main, because the recorded tip is only the commit the last review pinned and lags behind any
+ * commit made after that review. With the branch already gone, the recorded tip plus its CLEAR receipt is the proof
+ * (the ordinary landed close deletes the branch, and the receipt was written before the merge).
+ */
+async function landedProof(d: Deps, lane: Lane): Promise<{ readonly repo: string; readonly sha: string } | undefined> {
+  const repo = lane.repo;
+  if (repo === undefined) return undefined;
+  const branch = branchOf(lane.key);
+  const ref = await d.exec("git", ["-C", repo, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]);
+  const branchTip = ref.code === 0 ? ref.stdout.trim() : undefined;
+  const sha = branchTip === undefined || branchTip === "" ? lane.tipSha : branchTip;
+  if (sha === undefined) return undefined;
+  if ((branchTip === undefined || branchTip === "") && d.store.laneReceipt(lane.key, sha)?.verdict !== "CLEAR")
+    return undefined;
+  const ancestor = await d.exec("git", ["-C", repo, "merge-base", "--is-ancestor", sha, "HEAD"]);
+  return ancestor.code === 0 ? { repo, sha } : undefined;
+}
+
+/**
+ * Closes a lane whose worktree is already gone, without landing anything: only when a commit proves the work is on
+ * main (see landedProof). The branch and its worktree registration are removed, so a retry under the same key starts
+ * clean. A checkout that is merely missing is not proof of a landing; that lane is refused with both ways out named.
  */
 async function closeMissingWorktree(d: Deps, lane: Lane): Promise<string> {
   const path = lane.worktree ?? "(none)";
-  const repo = lane.repo;
-  const tip = lane.tipSha;
-  const landed =
-    repo !== undefined && tip !== undefined
-      ? (await d.exec("git", ["-C", repo, "merge-base", "--is-ancestor", tip, "HEAD"])).code === 0
-      : false;
-  if (!landed || tip === undefined)
+  const proof = await landedProof(d, lane);
+  if (proof === undefined)
     throw new Refusal(
-      `lane ${lane.key}: its worktree ${path} is gone or unreadable and its recorded tip ` +
-        `${tip?.slice(0, 12) ?? "(none)"} is not on main, so the work cannot be proven landed; restore the checkout and ` +
-        `run dori done ${lane.key} again, or close the record with dori done --drop ${lane.key} --reason <text>`,
+      `lane ${lane.key}: its worktree ${path} is gone and nothing proves the lane landed: lane/${lane.key} is not on ` +
+        `main, and a recorded tip without a CLEAR receipt is not proof either. The lane is not closed; restore the ` +
+        `checkout and run dori done ${lane.key} again, or abandon it with dori done --drop ${lane.key} --reason <text>`,
     );
   const rt = d.runtimes.for(lane.sessionRef);
   const { status: st } = await rt.probe(lane.sessionRef);
   if (st === "working" || st === "blocked" || st === "error")
     throw new Refusal(`lane ${lane.key} pane is ${st}; let it finish first`);
+  if (lane.worktree !== undefined) {
+    const unlock = await d.exec("git", ["-C", proof.repo, "worktree", "unlock", lane.worktree]);
+    if (!teardownTolerated("unlock", unlock.code, unlock.stderr))
+      throw new Refusal(`lane ${lane.key}: cannot unlock ${lane.worktree}: ${gitWhy(unlock)}; the lane is not closed`);
+  }
+  const prune = await d.exec("git", ["-C", proof.repo, "worktree", "prune"]);
+  if (prune.code !== 0)
+    throw new Refusal(
+      `lane ${lane.key}: cannot prune worktrees in ${proof.repo}: ${gitWhy(prune)}; the lane is not closed`,
+    );
+  const del = await d.exec("git", ["-C", proof.repo, "branch", "-D", branchOf(lane.key)]);
+  if (del.code !== 0 && !/not found|no such branch/i.test(`${del.stderr}${del.stdout}`))
+    throw new Refusal(`lane ${lane.key}: cannot delete ${branchOf(lane.key)}: ${gitWhy(del)}; the lane is not closed`);
   if (st !== "gone") await rt.close(lane.sessionRef);
   const latest = d.store.lane(lane.key) ?? lane;
-  const closed = `closed by lead (worktree ${path} is gone; ${tip.slice(0, 12)} is already on main)`;
+  const closed = `closed by lead (worktree ${path} is gone; ${proof.sha.slice(0, 12)} is already on main)`;
   latest.status = "done";
   latest.log.push({ at: d.now(), kind: "done", text: closed });
   d.store.saveLane(latest);
-  closeItemForLane(d, latest, "done", `lane ${lane.key} done at ${tip.slice(0, 12)} (already landed)`);
+  closeItemForLane(d, latest, "done", `lane ${lane.key} done at ${proof.sha.slice(0, 12)} (already landed)`);
   return closed;
 }

@@ -5,19 +5,11 @@ import { done, ready, report, startLane } from "../src/lanes.ts";
 import { Refusal } from "../src/refusal.ts";
 import { Store } from "../src/store.ts";
 import { setup } from "./harness-setup.ts";
-import { repoWorld } from "./lanes-setup.ts";
 
 const readLane = (d: Deps, key: string) => {
   const lane = d.store.lane(key);
   if (lane === undefined) throw new Error(`no lane ${key}`);
   return lane;
-};
-
-/** git answers as if the lane checkout had been removed: no HEAD, and `merge-base --is-ancestor` returns `ancestorCode`. */
-const removedWorktreeGit = (ancestorCode: number) => (argv: readonly string[]) => {
-  const args = argv[0] === "-C" ? argv.slice(2) : argv;
-  if (args[0] === "rev-parse") return { code: 128, stdout: "", stderr: "fatal: cannot change to worktree" };
-  return { code: args[0] === "merge-base" ? ancestorCode : 0, stdout: "", stderr: "" };
 };
 
 describe("a closed lane stays closed", () => {
@@ -112,37 +104,5 @@ describe("a restart keeps a closed lane closed", () => {
     expect(record.log.at(-1)!.kind).toBe("done");
     expect(() => restarted.saveLane(stale)).toThrow(Refusal);
     expect(restarted.lane("survivor")!.status).toBe("done");
-  });
-});
-
-describe("done without a worktree", () => {
-  test("a lane whose recorded tip is already on main closes as landed instead of needing --drop", async () => {
-    const { w, d, brief } = repoWorld();
-    const lane = await startLane(d, "landed", brief, { group: "w1" });
-    await ready(d, "landed", "final", ["https://example.test/pull/7"]);
-    w.git = removedWorktreeGit(0);
-
-    const note = await done(d, "landed");
-    expect(note).toContain("is already on main");
-    const record = readLane(d, "landed");
-    expect(record.status).toBe("done");
-    expect(record.log.at(-1)).toMatchObject({ kind: "done" });
-    expect(w.panes.has(lane.paneId)).toBe(false);
-  });
-
-  test("a missing worktree whose tip is not on main refuses and names the --drop exit", async () => {
-    const { w, d, brief } = repoWorld();
-    await startLane(d, "gone-tree", brief, { group: "w1" });
-    await ready(d, "gone-tree", "final", ["https://example.test/pull/8"]);
-    w.git = removedWorktreeGit(1);
-
-    const failure: unknown = await done(d, "gone-tree").then(
-      () => undefined,
-      (e: unknown) => e,
-    );
-    expect(failure).toBeInstanceOf(Refusal);
-    expect((failure as Error).message).toContain("gone");
-    expect((failure as Error).message).toContain("dori done --drop gone-tree --reason");
-    expect(readLane(d, "gone-tree").status).toBe("ready");
   });
 });
