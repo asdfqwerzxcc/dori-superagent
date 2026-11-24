@@ -2,7 +2,7 @@ import type { Exec } from "../runtime/exec.ts";
 import { ToolError } from "../runtime/exec.ts";
 import { HerdrCli } from "../runtime/herdr/exec.ts";
 import type { SessionRef } from "../runtime/types.ts";
-import { listProcesses, type Proc } from "../supervisor-run.ts";
+import { bunChildren, listProcessTree, type ProcNode } from "../process-tree.ts";
 import type { PaneAdapter, PaneProbe } from "./panes.ts";
 
 const OPS_LABEL = "dori-ops";
@@ -22,46 +22,31 @@ const toRef = (pane: Row): SessionRef => ({
   ...(str(pane["tab_id"]) === "" ? {} : { container: str(pane["tab_id"]) }),
 });
 
-const normalized = (text: string): string => text.replaceAll("\\", "/");
-const matches = (command: string, marker: readonly string[]): boolean => {
-  const text = normalized(command);
-  return marker.every((part) => text.includes(normalized(part)));
-};
-
-/** The process's parent chain reaches `ancestor`; the pane's shell itself need not be in a bun-only process list. */
-const descends = (pid: number, ancestor: number, byPid: ReadonlyMap<number, Proc>): boolean => {
-  let current = byPid.get(pid)?.parent;
-  for (let depth = 0; depth < 32 && current !== undefined; depth++) {
-    if (current === ancestor) return true;
-    current = byPid.get(current)?.parent;
-  }
-  return false;
-};
-
 export type HerdrPanesOptions = {
   readonly home: string;
   readonly env: Readonly<Record<string, string>>;
   readonly exec?: Exec;
   readonly session?: string;
-  readonly procs?: () => Promise<readonly Proc[] | undefined>;
+  /** Test seam: the process tree the probe reads; production takes the kernel snapshot (or ps) without a console app. */
+  readonly tree?: () => Promise<readonly ProcNode[] | undefined>;
 };
 
 /**
  * herdr's half of pane placement: one workspace labelled `dori-ops`, one tab and pane per unit. The workspace's first
- * shell becomes the first unit's pane; every later unit gets a tab created without focus. A unit's process is verified
- * against its own pane's shell pid, because a command-line match alone would adopt a same-titled pane's unit.
+ * shell becomes the first unit's pane; every later unit gets a tab created without focus. A unit is the direct bun child
+ * of its pane's shell, so the probe reads the shell pid from herdr and the parent links from the OS process tree, never
+ * a command-line query.
  */
 export class HerdrPanes implements PaneAdapter {
   readonly kind = "herdr" as const;
   private readonly cli: HerdrCli;
-  private readonly procs: () => Promise<readonly Proc[] | undefined>;
+  private readonly tree: () => Promise<readonly ProcNode[] | undefined>;
   private workspace: string | undefined;
   private spare: Row | undefined;
-  private cached: { at: number; procs: readonly Proc[] } | undefined;
 
   constructor(private readonly options: HerdrPanesOptions) {
     this.cli = new HerdrCli(options.exec, options.session);
-    this.procs = options.procs ?? (() => listProcesses(options.exec));
+    this.tree = options.tree ?? (() => listProcessTree());
   }
 
   async ready(): Promise<void> {
@@ -126,23 +111,16 @@ export class HerdrPanes implements PaneAdapter {
     await this.cli.call(["pane", "run", ref.id, command]);
   }
 
-  async pid(ref: SessionRef, marker: readonly string[]): Promise<PaneProbe> {
+  async pid(ref: SessionRef, _marker: readonly string[]): Promise<PaneProbe> {
     const shell = await this.paneShell(ref.id);
     if (shell === undefined) return { kind: "unknown", why: `pane ${ref.id} process-info is unreadable` };
-    const procs = await this.list();
-    if (procs === undefined) return { kind: "unknown", why: "process list unavailable" };
-    const candidates = procs.filter((p) => matches(p.command, marker));
-    if (candidates.length === 0) return { kind: "stopped" };
-    const byPid = new Map(procs.map((p) => [p.pid, p]));
-    let unparented: string | undefined;
-    for (const candidate of candidates) {
-      if (candidate.parent === undefined) {
-        unparented ??= "process parent pid unavailable";
-        continue;
-      }
-      if (descends(candidate.pid, shell, byPid)) return { kind: "running", pid: candidate.pid };
-    }
-    return unparented === undefined ? { kind: "stopped" } : { kind: "unknown", why: unparented };
+    const nodes = await this.tree();
+    if (nodes === undefined) return { kind: "unknown", why: "process tree unavailable" };
+    const children = bunChildren(nodes, shell);
+    const [only] = children;
+    if (children.length === 1 && only !== undefined) return { kind: "running", pid: only };
+    if (children.length === 0) return { kind: "stopped" };
+    return { kind: "unknown", why: `${children.length} bun processes under pane ${ref.id}` };
   }
 
   async close(ref: SessionRef): Promise<void> {
@@ -167,14 +145,5 @@ export class HerdrPanes implements PaneAdapter {
 
   private envFlags(): string[] {
     return Object.entries(this.options.env).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
-  }
-
-  private async list(): Promise<readonly Proc[] | undefined> {
-    const now = Date.now();
-    if (this.cached !== undefined && now - this.cached.at < 500) return this.cached.procs;
-    const procs = await this.procs();
-    if (procs === undefined) return undefined;
-    this.cached = { at: now, procs };
-    return procs;
   }
 }

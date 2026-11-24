@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { restartSupervisors } from "../src/supervisor-run.ts";
+import { restartSupervisors } from "../src/supervisor-restart.ts";
 import type { SupervisorHealth } from "../src/supervisors.ts";
 import { homeWithState } from "./supervisor-fixtures.ts";
 

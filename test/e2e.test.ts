@@ -24,7 +24,7 @@ const herdr = async (...argv: string[]) => {
   return JSON.parse(r.stdout || "{}").result;
 };
 const dori = async (...argv: string[]) => {
-  const p = Bun.spawn(["bun", cli, ...argv], { env, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(["bun", cli, ...argv], { windowsHide: true, env, stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
   if (code !== 0) throw new Error(`dori ${argv.join(" ")} -> ${code}: ${err}`);
   return out;
@@ -47,7 +47,11 @@ const leadScreen = async (lead: string) =>
 
 beforeAll(async () => {
   if (!realAgent) return;
-  server = Bun.spawn([herdrBin!, "--session", session, "server"], { stdout: "ignore", stderr: "ignore" });
+  server = Bun.spawn([herdrBin!, "--session", session, "server"], {
+    windowsHide: true,
+    stdout: "ignore",
+    stderr: "ignore",
+  });
   await until("herdr server", () => herdr("workspace", "list"));
 });
 
@@ -73,6 +77,7 @@ test.skipIf(!realAgent)(
     const started = Bun.spawn(
       ["bun", cli, "start", "e2e-lane", "--brief", brief, "--workspace", ws.workspace.workspace_id],
       {
+        windowsHide: true,
         env: { ...env, DORI_AGENT_CMD: `DORI_E2E_CMD=${shq(doriCmd)} ${shq(fake)}`, DORI_CMD: doriCmd },
         stdout: "pipe",
         stderr: "pipe",
@@ -110,6 +115,7 @@ test.skipIf(!realAgent)(
     const fake = resolve(import.meta.dir, "fixtures/fake-agent.sh");
     const doriCmd = `DORI_HOME=${shq(home)} DORI_HERDR_SESSION=${session} DORI_TELEMETRY=0 bun ${shq(cli)}`;
     const loop = Bun.spawn(["bun", cli, "loop", "--once", "--max-lanes", "5", "--max-load", "100000"], {
+      windowsHide: true,
       env: {
         ...env,
         HERDR_WORKSPACE_ID: ws.workspace.workspace_id,

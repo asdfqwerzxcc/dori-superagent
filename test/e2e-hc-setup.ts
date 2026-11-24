@@ -47,7 +47,7 @@ export const newHome = (name: string): string => {
 };
 
 const run2 = async (argv: string[], env: Record<string, string | undefined>) => {
-  const p = Bun.spawn(argv, { env, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(argv, { windowsHide: true, env, stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
   return { out, err, code };
 };

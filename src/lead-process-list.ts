@@ -1,15 +1,9 @@
-import { spawnExec, type Exec } from "./runtime/exec.ts";
+import type { Exec } from "./runtime/exec.ts";
 
-/** A process the OS reports, with the command line `dori restart` matches against and its parent when the OS gives one. */
+/** A process with the command line the lead-stack matcher needs (pid, command, optional parent). */
 export type Proc = { readonly pid: number; readonly command: string; readonly parent?: number };
 
-export const matchPids = (procs: readonly Proc[] | undefined, ...patterns: readonly string[]): number[] =>
-  (procs ?? []).filter((p) => patterns.some((s) => p.command.includes(s))).map((p) => p.pid);
-
-const WINDOWS_LIST =
-  "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'bun.exe' } | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress";
-
-/** `ConvertTo-Json` output: one object when the OS found one bun, an array otherwise. */
+/** `ConvertTo-Json` output: one object when the OS found one process, an array otherwise. */
 export function parseCim(text: string): Proc[] {
   try {
     const parsed = JSON.parse(text.trim() || "[]") as unknown;
@@ -35,18 +29,25 @@ export function parseCim(text: string): Proc[] {
 /** `ps -A -o pid=,ppid=,args=` (or the older two-column form): pid, optional parent pid, then the command line. */
 export function parsePs(text: string): Proc[] {
   return text.split("\n").flatMap((line) => {
-    const m = /^\s*(\d+)\s+(?:(\d+)\s+)?(.*)$/.exec(line);
+    const m = /^\s*(\d+)\s+(?:([0-9]+)\s+)?(.*)$/.exec(line);
     if (m === null) return [];
     const parent = m[2] === undefined ? undefined : Number(m[2]);
     return [{ pid: Number(m[1]), command: m[3] ?? "", ...(parent === undefined ? {} : { parent }) }];
   });
 }
 
-/** Every bun process with its command line and parent; undefined when the OS query fails (liveness is then unknown). */
-export async function listProcesses(exec: Exec = spawnExec): Promise<Proc[] | undefined> {
+const WINDOWS_ALL =
+  "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress";
+
+/**
+ * Every process with its command line: the lead stack is identified by its command lines, which kernel32 does not
+ * expose. This is the one remaining Get-CimInstance call, only on an explicit lead restart, and its exec is forced
+ * hidden by spawnExec.
+ */
+export async function listAllProcesses(exec: Exec): Promise<Proc[] | undefined> {
   const windows = process.platform === "win32";
   const r = windows
-    ? await exec("powershell", ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_LIST])
+    ? await exec("powershell", ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_ALL])
     : await exec("ps", ["-A", "-o", "pid=,ppid=,args="]);
   if (r.code !== 0) return undefined;
   return windows ? parseCim(r.stdout) : parsePs(r.stdout);

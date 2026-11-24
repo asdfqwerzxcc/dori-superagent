@@ -14,7 +14,7 @@ describe("bin targets", () => {
       for (const target of Object.values(bin)) {
         const path = join(pkg, target);
         // The mode is git's record, so outside a git checkout (a source tarball, say) there is nothing to check.
-        const ls = Bun.spawnSync(["git", "ls-files", "-s", "--", path], { cwd: root });
+        const ls = Bun.spawnSync(["git", "ls-files", "-s", "--", path], { windowsHide: true, cwd: root });
         if (ls.exitCode !== 0)
           throw new Error(
             `this test requires a git checkout: git ls-files exited ${ls.exitCode}: ${ls.stderr.toString().trim()}`,

@@ -4,8 +4,7 @@
 import { closeSync, openSync, readSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { shq } from "./delivery.ts";
-import type { Exec } from "./runtime/exec.ts";
-import { parseCim, parsePs, type Proc } from "./supervisor-run.ts";
+import type { Proc } from "./lead-process-list.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -185,16 +184,3 @@ export const buildLeadCommand = (
   `${agentCmd} --session ${quoteArg(session, platform)}${
     prompt === undefined ? "" : ` --append-system-prompt ${quoteArg(prompt, platform)}`
   }`;
-
-const WINDOWS_ALL =
-  "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress";
-
-/** Every process the OS reports, not just bun: the lead runs as node/omo.exe above its bun engine. */
-export async function listAllProcesses(exec: Exec): Promise<Proc[] | undefined> {
-  const windows = process.platform === "win32";
-  const r = windows
-    ? await exec("powershell", ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_ALL])
-    : await exec("ps", ["-A", "-o", "pid=,ppid=,args="]);
-  if (r.code !== 0) return undefined;
-  return windows ? parseCim(r.stdout) : parsePs(r.stdout);
-}

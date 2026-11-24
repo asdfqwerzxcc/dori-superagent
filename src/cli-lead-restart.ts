@@ -3,7 +3,8 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { type Args, one, parse } from "./cli-args.ts";
 import { defaultDeps, type Deps } from "./harness.ts";
-import { listAllProcesses, readRuntimeBuild } from "./lead-swap-target.ts";
+import { listAllProcesses } from "./lead-process-list.ts";
+import { readRuntimeBuild } from "./lead-swap-target.ts";
 import { runLeadSwap } from "./lead-swap.ts";
 import { Refusal } from "./refusal.ts";
 

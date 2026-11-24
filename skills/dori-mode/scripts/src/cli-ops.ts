@@ -74,7 +74,7 @@ const heavy: Command = async ({ rest, config }) => {
     label ?? "",
   );
   try {
-    const child = Bun.spawn(cmd, { stdout: "inherit", stderr: "inherit", stdin: "inherit" });
+    const child = Bun.spawn(cmd, { stdout: "inherit", stderr: "inherit", stdin: "inherit", windowsHide: true });
     process.exitCode = await child.exited;
   } finally {
     releaseSlot(slot);

@@ -1,16 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Exec } from "../src/runtime/exec.ts";
 import {
   ensureUpHealth,
   formatEnsureUp,
   formatSupervised,
   formatSupervisor,
   supervisorHealth,
+  supervisorRecord as readSupervisorRecord,
   writeSupervisorRecord,
 } from "../src/supervisors.ts";
-import { listProcesses, matchPids, parseCim, parsePs } from "../src/supervisor-run.ts";
 import { FIVE_UNITS, NOW, beat, homeWithState, supervisorRecord, watchdogRecord } from "./supervisor-fixtures.ts";
 
 describe("supervisor records and heartbeats", () => {
@@ -75,45 +74,10 @@ describe("supervisor records and heartbeats", () => {
     expect(formatEnsureUp({ alive: false }, true)).toBe("ENSURE-UP off (ensure-up.off)");
   });
 
-  test("a failed process query is unavailable, and the parsers keep parent pids", async () => {
-    const failing: Exec = async () => ({ code: 1, stdout: "", stderr: "no powershell" });
-    expect(await listProcesses(failing)).toBeUndefined();
-    const empty: Exec = async () => ({ code: 0, stdout: "[]", stderr: "" });
-    expect(await listProcesses(empty)).toEqual([]);
-    expect(matchPids(undefined, "x")).toEqual([]);
-    expect(parseCim(JSON.stringify({ ProcessId: 7, ParentProcessId: 3, CommandLine: "bun x" }))).toEqual([
-      { pid: 7, command: "bun x", parent: 3 },
-    ]);
-    expect(parsePs("  10  5 bun a.ts\n  11 bun b.ts\n")).toEqual([
-      { pid: 10, command: "bun a.ts", parent: 5 },
-      { pid: 11, command: "bun b.ts" },
-    ]);
-  });
-
-  test("process lists parse on both shapes and match the merged entry plus a pre-merge shim", () => {
-    expect(parseCim(JSON.stringify({ ProcessId: 7, CommandLine: "bun supervisor.ts" }))).toEqual([
-      { pid: 7, command: "bun supervisor.ts" },
-    ]);
-    expect(
-      parseCim(
-        JSON.stringify([
-          { ProcessId: 7, CommandLine: "a" },
-          { ProcessId: 8, CommandLine: "b" },
-        ]),
-      ),
-    ).toHaveLength(2);
-    expect(parseCim("not json")).toEqual([]);
-    expect(parsePs("  10 bun a.ts\n 11 bun b.ts\n")).toEqual([
-      { pid: 10, command: "bun a.ts" },
-      { pid: 11, command: "bun b.ts" },
-    ]);
-    const procs = [
-      { pid: 1, command: "bun C:/home/bin/supervisor.ts" },
-      { pid: 2, command: "bun C:/home/bin/gateway-supervisor.ts" },
-      { pid: 3, command: "bun C:/home/bin/loops-supervisor.ts" },
-      { pid: 4, command: "bun C:/home/bin/gateway-watchdog.ts" },
-    ];
-    expect(matchPids(procs, "supervisor.ts")).toEqual([1, 2, 3]);
-    expect(matchPids(procs, "gateway-watchdog.ts", "supervisors/watchdog.ts")).toEqual([4]);
+  test("the raw record is the pid and start time a restart trusts", () => {
+    const home = homeWithState();
+    supervisorRecord(home);
+    expect(readSupervisorRecord(home, "supervisor")).toMatchObject({ pid: process.pid, units: expect.any(Array) });
+    expect(readSupervisorRecord(home, "watchdog")).toBeUndefined();
   });
 });

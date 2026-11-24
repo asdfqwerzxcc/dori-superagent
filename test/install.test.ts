@@ -27,7 +27,7 @@ afterEach(() => {
 });
 
 const git = (cwd: string, ...argv: string[]): string => {
-  const r = Bun.spawnSync(["git", ...argv], { cwd, env: gitEnv });
+  const r = Bun.spawnSync(["git", ...argv], { windowsHide: true, cwd, env: gitEnv });
   if (r.exitCode !== 0) throw new Error(`git ${argv.join(" ")}: ${r.stderr}`);
   return r.stdout.toString().trim();
 };
@@ -64,6 +64,7 @@ function setup() {
   };
   const install = (env: Record<string, string> = {}) => {
     const r = Bun.spawnSync(["bash", script], {
+      windowsHide: true,
       env: {
         ...gitEnv,
         HOME: home,

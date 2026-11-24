@@ -117,6 +117,7 @@ test("dori boot reads the current session's terminal metadata from PI_SESSION_DI
   );
   // When the real CLI runs boot with no Slack token and no herdr on PATH.
   const proc = Bun.spawn([process.execPath, join(import.meta.dir, "..", "src", "cli.ts"), "boot"], {
+    windowsHide: true,
     env: {
       HOME: home,
       PATH: dirname(process.execPath),

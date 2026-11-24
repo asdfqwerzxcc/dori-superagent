@@ -12,6 +12,7 @@ import { RuntimeChoiceError } from "./runtime/select.ts";
 import { superviseHome, type SupervisedState } from "./supervisor-run.ts";
 import { pluginLines } from "./plugins/state.ts";
 import { formatEnsureUp, formatSupervised, supervisorHealth } from "./supervisors.ts";
+import { unitMode } from "./supervisors/unit-mode.ts";
 import { scanWorktrees } from "./worktrees.ts";
 
 const supervisorAlive = (root: string): boolean =>
@@ -61,13 +62,14 @@ const ensureLine = (state: SupervisedState): string =>
  */
 export async function up(d: Deps, cwd: string, retireOld = false): Promise<void> {
   const previous = d.store.roles().lead;
+  const units = unitMode(d.store.root);
   // A live lead owns the human conversation: opening a second workspace and duty would split it and orphan this one.
   if (!retireOld && previous !== undefined) {
     const liveness = await leadLiveness(d, previous);
     if (liveness !== "gone") {
       // A dead supervisor is the one thing this path must start; an alive one is left exactly as it is.
       await supervise(d, !supervisorAlive(d.store.root));
-      console.log(`UP lead ${liveness}; ensuring units only (lead=${refText(previous)})`);
+      console.log(`UP lead ${liveness}; ensuring units only (lead=${refText(previous)}) units=${units}`);
       return;
     }
   }
@@ -105,7 +107,7 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
     console.log("UP loops are supervised; skipping the loop panes (lead+duty only)");
     const state = await supervise(d, false);
     console.log(
-      `UP runtime=${rt.kind} lead=${refText(lead)} duty=${refText(duty)} loops=supervised ensure-up=${ensureLine(state)}`,
+      `UP runtime=${rt.kind} lead=${refText(lead)} duty=${refText(duty)} loops=supervised ensure-up=${ensureLine(state)} units=${units}`,
     );
     for (const line of formatSupervised(state.health)) console.log(line);
     console.log(formatEnsureUp(state.ensureUp, state.off));
@@ -129,7 +131,7 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
   // Pane mode: the loops are this command's children, so a supervisor must not be started beside them.
   const state = await supervise(d, false);
   console.log(
-    `UP runtime=${rt.kind} lead=${refText(lead)} duty=${refText(duty)} loop=${refText(loop)} hourly=${refText(hourly)} home=${d.store.root}`,
+    `UP runtime=${rt.kind} lead=${refText(lead)} duty=${refText(duty)} loop=${refText(loop)} hourly=${refText(hourly)} home=${d.store.root} units=${units}`,
   );
   console.log(formatEnsureUp(state.ensureUp, state.off));
   await retire();

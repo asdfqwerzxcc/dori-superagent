@@ -73,7 +73,7 @@ describe("dori up", () => {
       "hourly-loop": "w1:p5",
     });
     expect(out).toBe(
-      `UP runtime=herdr lead=w1:p2 duty=w1:p3 loop=w1:p4 hourly=w1:p5 home=${root}\nENSURE-UP off (ensure-up.off)`,
+      `UP runtime=herdr lead=w1:p2 duty=w1:p3 loop=w1:p4 hourly=w1:p5 home=${root} units=panes\nENSURE-UP off (ensure-up.off)`,
     );
     expect(w.superviseCalls).toEqual([{ startMissing: false }]);
   });
@@ -92,7 +92,7 @@ describe("dori up", () => {
     expect(d.store.roles()).toEqual({ lead: href("w1:p1") });
     // startMissing is the one argument that makes superviseHome call ensureSupervisors; a dead supervisor needs it.
     expect(w.superviseCalls).toEqual([{ startMissing: true }]);
-    expect(out).toBe("UP lead alive; ensuring units only (lead=w1:p1)");
+    expect(out).toBe("UP lead alive; ensuring units only (lead=w1:p1) units=panes");
   });
 
   test("a live registered lead with the supervisor up is left as is: ensure is not asked", async () => {
@@ -108,7 +108,7 @@ describe("dori up", () => {
       return 0;
     });
     expect(w.superviseCalls).toEqual([{ startMissing: false }]);
-    expect(out).toBe("UP lead alive; ensuring units only (lead=w1:p1)");
+    expect(out).toBe("UP lead alive; ensuring units only (lead=w1:p1) units=panes");
   });
 
   test("--retire-old true replaces the live lead and closes the previous pane", async () => {
@@ -191,5 +191,18 @@ describe("dori up", () => {
     expect(w.superviseCalls).toEqual([{ startMissing: false }]);
     expect(out).toStartWith("UP loops are supervised; skipping the loop panes (lead+duty only)\n");
     expect(out).toContain("ensure-up=off");
+    expect(out).toContain("units=panes");
+  });
+
+  test("supervisors.panes=false prints the headless unit mode", async () => {
+    const w = new World();
+    const d = w.deps();
+    writeFileSync(join(d.store.root, "config.json"), JSON.stringify({ supervisors: { panes: false } }));
+    const { out } = await captureIo(async () => {
+      await up(d, "/w");
+      return 0;
+    });
+    expect(out).toContain("units=headless");
+    expect(out).not.toContain("units=panes");
   });
 });

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { pidAlive } from "./process-liveness.ts";
 
 // The record files and heartbeat files of the always-on processes. The supervisor writes state/supervisor.json and
 // state/supervisor-heartbeat every 30 s; the watchdog writes its own pair. `dori status` reports what runs without
@@ -70,20 +71,7 @@ export function entryFor(home: string, name: SupervisorName): string {
   return existsSync(shim) ? shim : join(import.meta.dir, "supervisors", SOURCE[name]);
 }
 
-/** The children's command lines; a restart and a new supervisor use them to clean orphans. */
-export const UNIT_PATTERNS: readonly string[] = [
-  "discord-gateway.ts",
-  "cli.ts duty",
-  "cli.ts loop",
-  "plugins/run.ts",
-  "plugins\\run.ts",
-  "update-check.ts",
-  "dori-ensure-up.ts",
-  "supervisors/ensure-up.ts",
-  "supervisors\\ensure-up.ts",
-];
-
-/** A heartbeat or record file's age in ms, or undefined when it is missing. */
+/** The children's recorded pids; a restart and a new supervisor take them back from `supervisor.json`. */ /** A heartbeat or record file's age in ms, or undefined when it is missing. */
 export function ageMs(path: string, now: number = Date.now()): number | undefined {
   try {
     return now - statSync(path).mtimeMs;
@@ -101,16 +89,8 @@ export function freshSince(path: string, since: number): boolean {
   }
 }
 
-/** A pid the OS says exists. On Windows a live process owned by someone else answers EPERM, which is still alive. */
-export const pidAlive = (pid: number): boolean => {
-  if (!(pid > 0)) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as { code?: unknown }).code === "EPERM";
-  }
-};
+/** A pid the OS still holds: kernel32 OpenProcess on Windows (no console child), kill(pid, 0) on POSIX. */
+export { pidAlive };
 
 function readJson<T>(path: string): T | undefined {
   try {
@@ -139,6 +119,11 @@ export function writeEnsureUpRecord(home: string, record: EnsureUpRecord): void 
 }
 export const ensureUpOff = (home: string): boolean => existsSync(join(stateDir(home), ENSURE_UP_OFF));
 
+/** One supervisor's record as written (pid, startedAt, units), or undefined when it never wrote one. */
+export function supervisorRecord(home: string, name: SupervisorName): SupervisorRecord | undefined {
+  return readJson<SupervisorRecord>(recordPath(home, name));
+}
+
 /** One supervisor's state: its recorded pid and heartbeat, liveness = pid alive and beat fresh. */
 export function supervisorHealth(
   home: string,
@@ -166,13 +151,18 @@ export function supervisorHealth(
   });
 }
 
+/** The ensure-up loop's record, whether a supervisor or a person started it. */
+export function ensureUpRecord(home: string): EnsureUpRecord | undefined {
+  return readJson<EnsureUpRecord>(join(stateDir(home), ENSURE_UP_RECORD));
+}
+
 /** The ensure-up loop: its own record and beat, written whether a supervisor or a person started it. */
 export function ensureUpHealth(
   home: string,
   now: number = Date.now(),
   alive: (pid: number) => boolean = pidAlive,
 ): EnsureUpHealth {
-  const record = readJson<EnsureUpRecord>(join(stateDir(home), ENSURE_UP_RECORD));
+  const record = ensureUpRecord(home);
   const beat = ageMs(join(stateDir(home), ENSURE_UP_HEARTBEAT), now);
   const fresh = beat !== undefined && beat <= STALE_MS;
   return {

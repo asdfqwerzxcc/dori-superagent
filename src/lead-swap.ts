@@ -7,7 +7,7 @@ import { failureDetail } from "./delivery.ts";
 import { buildLeadCommand, matchLeadStack, newestSession } from "./lead-swap-target.ts";
 import { refText } from "./refs.ts";
 import type { Probe, SessionRef } from "./runtime/types.ts";
-import type { Proc } from "./supervisor-run.ts";
+import type { Proc } from "./lead-process-list.ts";
 
 export type LeadSwapResult = {
   readonly code: number;

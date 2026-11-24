@@ -8,7 +8,7 @@ const posix = test.skipIf(process.platform === "win32");
 describe("shq", () => {
   posix("a quoted word reaches a real shell unchanged, single quotes and $ included", async () => {
     for (const s of ["plain", "two words", "it's", "''", "$HOME `id` $(echo x)", "back\\slash", "new\nline", ""]) {
-      const proc = Bun.spawn(["sh", "-c", `printf %s ${shq(s)}`], { stdout: "pipe" });
+      const proc = Bun.spawn(["sh", "-c", `printf %s ${shq(s)}`], { windowsHide: true, stdout: "pipe" });
       expect(await new Response(proc.stdout).text()).toBe(s);
     }
   });

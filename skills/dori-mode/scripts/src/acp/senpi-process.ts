@@ -41,7 +41,11 @@ export const killProcessTree = async (pid: number): Promise<void> => {
   if (!Number.isInteger(pid) || pid <= 0) return;
   if (process.platform === "win32") {
     try {
-      const killer = Bun.spawn(["taskkill", "/PID", String(pid), "/T", "/F"], { stdout: "ignore", stderr: "ignore" });
+      const killer = Bun.spawn(["taskkill", "/PID", String(pid), "/T", "/F"], {
+        stdout: "ignore",
+        stderr: "ignore",
+        windowsHide: true,
+      });
       await killer.exited;
     } catch {
       return;

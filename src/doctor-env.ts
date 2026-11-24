@@ -40,6 +40,7 @@ const runCommand: RunCommand = async (argv, opts = {}) => {
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",
+      windowsHide: true,
     });
     const [stdout, stderr, code] = await Promise.all([
       new Response(proc.stdout).text(),
