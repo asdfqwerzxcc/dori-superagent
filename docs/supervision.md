@@ -84,7 +84,9 @@ Kills the supervisor and every child process by command line (core units and plu
 killed on its own does not leave orphans behind. It starts one supervisor again and returns only when the supervisor
 heartbeat, `gateway-ws-heartbeat` (the Discord socket actually acked) and the units — the three core children plus every
 enabled plugin — are newer than the moment the restart began. `RESTART INCOMPLETE` (exit 1) means one of them did not
-come back, and the lines above the verdict say which.
+come back, and the lines above the verdict say which. An attempt that comes back short is retried once with the same
+ensure step; when it fails again, each missing piece is printed as `RESTART MISSING <heartbeat|gateway-ws|unit|ensure-up>`
+and the verdict carries `retried=1`.
 A live watchdog is left alone; a missing one is started.
 
 Measured on this host (Windows, herdr 0.9.5, 2026-11-16). These runs predate the plugin split: "five units" means the

@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { statSync } from "node:fs";
 import { join } from "node:path";
 import { spawnExec } from "./runtime/exec.ts";
 import { listProcesses, matchPids, type Proc } from "./process-list.ts";
@@ -8,8 +7,10 @@ import {
   entryFor,
   ensureUpHealth,
   ensureUpOff,
+  freshSince,
   heartbeatPath,
   pidAlive,
+  restartMissing,
   stateDir,
   SUPERVISORS,
   supervisorHealth,
@@ -83,14 +84,7 @@ export async function waitFresh(
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
   const deadline = now() + (opts.timeoutMs ?? 120_000);
-  const fresh = (): boolean =>
-    paths.every((path) => {
-      try {
-        return statSync(path).mtimeMs >= since - 1000;
-      } catch {
-        return false;
-      }
-    });
+  const fresh = (): boolean => paths.every((path) => freshSince(path, since));
   while (now() < deadline) {
     if (fresh()) return true;
     await sleep(250);
@@ -135,19 +129,17 @@ export type SupervisedState = {
 };
 
 /**
- * Ensures the supervisors (unless the caller is opening its own loop panes) and the ensure-up plugin, then waits briefly
- * for the first beat. `dori up` prints this; nothing here opens a workspace.
+ * Starts the supervisors that are missing (`startMissing`) or only reads their health, then reports the ensure-up
+ * plugin and waits briefly for its first beat. `dori up` prints this; nothing here opens a workspace.
  */
-export async function superviseHome(
-  home: string,
-  opts: { readonly supervisors?: boolean } = {},
-): Promise<SupervisedState> {
-  const health = opts.supervisors === false ? supervisorHealth(home) : await ensureSupervisors(home);
+export async function superviseHome(home: string, opts: { readonly startMissing: boolean }): Promise<SupervisedState> {
+  const health = opts.startMissing ? await ensureSupervisors(home) : supervisorHealth(home);
   const off = ensureUpOff(home);
   const wantUp = !off && isPluginEnabled(home, "ensure-up");
-  let ensureUp = await waitEnsureUp(home, wantUp, opts.supervisors === false ? 0 : 15_000);
+  const supervised = health.some((h) => h.name === "supervisor" && h.alive);
+  let ensureUp = await waitEnsureUp(home, wantUp, supervised ? 15_000 : 0);
   // The supervisor owns the ensure-up plugin; only a pane-mode `dori up` starts it outside a supervisor.
-  if (opts.supervisors === false && wantUp && !ensureUp.alive) {
+  if (!supervised && wantUp && !ensureUp.alive) {
     spawnDetached(pluginRunEntry(), home, ["ensure-up"]);
     ensureUp = await waitEnsureUp(home, true, 10_000);
   }
@@ -162,46 +154,94 @@ export type RestartResult = {
   readonly ensureUp: EnsureUpHealth;
   readonly wsHeartbeatAgeMs?: number;
   readonly off: boolean;
+  readonly retried: boolean;
+  readonly missing: readonly string[];
+};
+
+/** What a restart needs from outside; tests replace it to drive a partial failure and its retry without real processes. */
+type RestartIo = {
+  readonly kill: () => Promise<readonly number[]>;
+  readonly ensure: (home: string, waitMs: number) => Promise<readonly SupervisorHealth[]>;
+  readonly health: (home: string) => readonly SupervisorHealth[];
+  readonly waitFresh: (paths: readonly string[], since: number, waitMs: number) => Promise<boolean>;
+  readonly waitEnsureUp: (home: string, wanted: boolean, waitMs: number) => Promise<EnsureUpHealth>;
+  readonly sleep: (ms: number) => Promise<void>;
+  readonly now: () => number;
 };
 
 /**
  * One command for the supervised half of the stack: kills the supervisor tree and any orphaned unit, starts one
  * supervisor again, and waits until the supervisor heartbeat, the Discord socket heartbeat (`gateway-ws-heartbeat`)
- * and all five units are up and newer than the moment the restart began.
+ * and all units are up and newer than the moment the restart began. A failed attempt is retried once, and the second
+ * verdict names every piece that is still missing and why.
  */
-export async function restartSupervisors(home: string, timeoutMs = 120_000): Promise<RestartResult> {
-  const started = Date.now();
-  const killed = await killSupervisorTree();
-  // The trees are dead before the replacements start, or the watchdog's duplicate check sees the old one and exits.
-  for (let i = 0; i < 40 && killed.some(pidAlive); i++) await Bun.sleep(250);
-  await ensureSupervisors(home, timeoutMs);
-
-  const ok = await waitFresh([heartbeatPath(home, "supervisor"), join(stateDir(home), WS_HEARTBEAT)], started, {
-    timeoutMs,
-  });
-  const wanted = !ensureUpOff(home) && isPluginEnabled(home, "ensure-up");
-  const ensureUp = await waitEnsureUp(home, wanted, ok ? 15_000 : 0);
+export async function restartSupervisors(
+  home: string,
+  opts: { readonly timeoutMs?: number; readonly io?: Partial<RestartIo> } = {},
+): Promise<RestartResult> {
+  const timeoutMs = opts.timeoutMs ?? 120_000;
+  const io: RestartIo = {
+    kill: killSupervisorTree,
+    ensure: ensureSupervisors,
+    health: supervisorHealth,
+    waitFresh: (paths, since, waitMs) => waitFresh(paths, since, { timeoutMs: waitMs }),
+    waitEnsureUp,
+    sleep: (ms) => Bun.sleep(ms),
+    now: Date.now,
+    ...opts.io,
+  };
+  const started = io.now();
+  const killed = await io.kill(); // A replacement must not start while an old tree lives, or it exits as a duplicate.
+  for (let i = 0; i < 40 && killed.some(pidAlive); i++) await io.sleep(250);
   const expected = ["discord-gateway", "duty", "loop", ...enabledPluginNames(home)];
-  // Units started through panes register a moment after the supervisor's own heartbeat, so poll instead of reading once.
-  const deadline = started + timeoutMs;
-  let health = supervisorHealth(home);
-  let supervisor = health.find((h) => h.name === "supervisor");
-  let unitsUp = expected.every((name) => (supervisor?.units ?? []).some((u) => u.name === name && u.alive));
-  while (!unitsUp && Date.now() < deadline) {
-    await Bun.sleep(500);
-    health = supervisorHealth(home);
-    supervisor = health.find((h) => h.name === "supervisor");
-    unitsUp = expected.every((name) => (supervisor?.units ?? []).some((u) => u.name === name && u.alive));
+  const wanted = !ensureUpOff(home) && isPluginEnabled(home, "ensure-up");
+  const beats = [heartbeatPath(home, "supervisor"), join(stateDir(home), WS_HEARTBEAT)];
+  const settle = async () => {
+    const fresh = await io.waitFresh(beats, started, timeoutMs);
+    const ensureUp = await io.waitEnsureUp(home, wanted, fresh ? 15_000 : 0);
+    const deadline = io.now() + timeoutMs;
+    let health = io.health(home);
+    const unitsUp = (h: readonly SupervisorHealth[]): boolean => {
+      const units = h.find((s) => s.name === "supervisor")?.units ?? [];
+      return expected.every((name) => units.some((u) => u.name === name && u.alive));
+    };
+    // Units started through panes register a moment after the supervisor's own heartbeat, so poll instead of reading once.
+    while (!unitsUp(health) && io.now() < deadline) {
+      await io.sleep(500);
+      health = io.health(home);
+    }
+    const supervisor = health.find((h) => h.name === "supervisor");
+    const ok = fresh && supervisor?.alive === true && unitsUp(health) && (!wanted || ensureUp.alive);
+    return { health, ensureUp, ok };
+  };
+  await io.ensure(home, timeoutMs);
+  let attempt = await settle();
+  const retried = !attempt.ok;
+  if (retried) {
+    await io.ensure(home, timeoutMs);
+    attempt = await settle();
   }
-  const all = ok && supervisor?.alive === true && unitsUp && (!wanted || ensureUp.alive);
-  const wsAge = ageMs(join(stateDir(home), WS_HEARTBEAT));
+  const now = io.now();
+  const wsAge = ageMs(beats[1]!, now);
   return {
-    ok: all,
-    elapsedMs: Date.now() - started,
+    ok: attempt.ok,
+    elapsedMs: now - started,
     killed,
-    health,
-    ensureUp,
+    health: attempt.health,
+    ensureUp: attempt.ensureUp,
     ...(wsAge !== undefined ? { wsHeartbeatAgeMs: wsAge } : {}),
     off: !wanted,
+    retried,
+    missing: attempt.ok
+      ? []
+      : restartMissing({
+          home,
+          since: started,
+          expected,
+          wanted,
+          health: attempt.health,
+          ensureUp: attempt.ensureUp,
+          now,
+        }),
   };
 }

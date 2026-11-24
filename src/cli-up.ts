@@ -26,8 +26,10 @@ const supervisorAlive = (root: string): boolean =>
  */
 const LEAD_ENV = { OMO_TASK_DEFAULT_BACKGROUND: "1" } as const;
 
-const supervise = (d: Deps, supervisors: boolean): Promise<SupervisedState> =>
-  d.supervise !== undefined ? d.supervise(d.store.root, { supervisors }) : superviseHome(d.store.root, { supervisors });
+const supervise = (d: Deps, startMissing: boolean): Promise<SupervisedState> =>
+  d.supervise !== undefined
+    ? d.supervise(d.store.root, { startMissing })
+    : superviseHome(d.store.root, { startMissing });
 
 /** A registered lead is replaced only when its pane is gone; a probe that fails is doubt, and doubt must not add a second lead. */
 type LeadLiveness = "alive" | "unverified" | "gone";
@@ -63,7 +65,8 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
   if (!retireOld && previous !== undefined) {
     const liveness = await leadLiveness(d, previous);
     if (liveness !== "gone") {
-      await supervise(d, supervisorAlive(d.store.root));
+      // A dead supervisor is the one thing this path must start; an alive one is left exactly as it is.
+      await supervise(d, !supervisorAlive(d.store.root));
       console.log(`UP lead ${liveness}; ensuring units only (lead=${refText(previous)})`);
       return;
     }
@@ -100,7 +103,7 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
     d.store.clearRole("duty-loop");
     d.store.clearRole("hourly-loop");
     console.log("UP loops are supervised; skipping the loop panes (lead+duty only)");
-    const state = await supervise(d, true);
+    const state = await supervise(d, false);
     console.log(
       `UP runtime=${rt.kind} lead=${refText(lead)} duty=${refText(duty)} loops=supervised ensure-up=${ensureLine(state)}`,
     );
@@ -123,6 +126,7 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
     loopCommand,
   );
   d.store.setRole("hourly-loop", hourly);
+  // Pane mode: the loops are this command's children, so a supervisor must not be started beside them.
   const state = await supervise(d, false);
   console.log(
     `UP runtime=${rt.kind} lead=${refText(lead)} duty=${refText(duty)} loop=${refText(loop)} hourly=${refText(hourly)} home=${d.store.root}`,

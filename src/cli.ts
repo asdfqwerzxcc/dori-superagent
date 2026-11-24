@@ -170,8 +170,12 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       const r = await restartSupervisors(d.store.root);
       for (const line of formatSupervised(r.health)) console.log(line);
       console.log(formatEnsureUp(r.ensureUp, r.off));
+      for (const part of r.missing) console.log(`RESTART MISSING ${part}`);
       const ws = r.wsHeartbeatAgeMs === undefined ? "missing" : `${Math.round(r.wsHeartbeatAgeMs / 1000)}s`;
-      console.log(`${r.ok ? "RESTARTED" : "RESTART INCOMPLETE"} killed=${r.killed.length} ms=${r.elapsedMs} ws=${ws}`);
+      const retried = r.retried ? " retried=1" : "";
+      console.log(
+        `${r.ok ? "RESTARTED" : "RESTART INCOMPLETE"} killed=${r.killed.length} ms=${r.elapsedMs} ws=${ws}${retried}`,
+      );
       return r.ok ? 0 : 1;
     }
     case "status":

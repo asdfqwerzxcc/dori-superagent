@@ -206,7 +206,7 @@ describe("dori plugin and dori status", () => {
     const home = homeWithState();
     writePluginsConfig(home, setPluginEnabled(home, "ensure-up", false));
     const started = Date.now();
-    const state = await superviseHome(home, { supervisors: false });
+    const state = await superviseHome(home, { startMissing: false });
     expect(state.ensureUp).toMatchObject({ alive: false });
     expect(state.off).toBe(false);
     expect(Date.now() - started).toBeLessThan(3_000);

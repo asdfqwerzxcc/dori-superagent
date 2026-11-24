@@ -90,7 +90,7 @@ export class World {
   }
 
   /** `dori up` asks the Deps for the supervised half of the stack; the fake records the call and answers off. */
-  superviseCalls: { supervisors: boolean }[] = [];
+  superviseCalls: { startMissing: boolean }[] = [];
 
   exec: Exec = async (cmd, argv, options) => {
     this.calls.push({ cmd, argv });
@@ -206,7 +206,7 @@ export class World {
       host: () => this.host,
       usage: this.recorder,
       supervise: async (_home, opts) => {
-        this.superviseCalls.push({ supervisors: opts?.supervisors ?? true });
+        this.superviseCalls.push({ startMissing: opts?.startMissing ?? false });
         return { health: [], ensureUp: { alive: false }, off: true };
       },
     };
