@@ -107,8 +107,8 @@ describe("lint ratchet ignore files", () => {
     // sources; a POSIX symlink is stored as a link and walked no further, so the entries are inert there.
     writeFileSync(join(scratch, ".gitignore"), "node_modules/\nscripts/oxlint/\n");
     writeFileSync(join(scratch, ".eslintignore"), "scripts/hidden.test.ts\n");
-    execFileSync("git", ["init", "-q"], { cwd: scratch });
-    execFileSync("git", ["add", "."], { cwd: scratch });
+    execFileSync("git", ["init", "-q"], { windowsHide: true, cwd: scratch });
+    execFileSync("git", ["add", "."], { windowsHide: true, cwd: scratch });
     listedInEslintignore = lint(scratch);
     writeFileSync(config, JSON.stringify({ ...shipped, ignorePatterns: ["hidden.test.ts"] }));
     hiddenByIgnorePatterns = lint(scratch);

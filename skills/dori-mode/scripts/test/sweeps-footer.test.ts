@@ -69,6 +69,7 @@ test("the footer CLI command survives a skill path with a space or a quote", asy
     expect(shellQuote("/plain/path/cli.ts")).toBe("/plain/path/cli.ts");
     const command = cliCommand(cli);
     const proc = Bun.spawn(["bash", "-c", `${command} report path-lane --kind milestone`], {
+      windowsHide: true,
       stdout: "pipe",
       stderr: "pipe",
     });

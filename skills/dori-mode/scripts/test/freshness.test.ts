@@ -84,6 +84,7 @@ console.log(JSON.stringify([
 ]));`;
   // When Bun executes the actual exported parser script surface.
   const child = Bun.spawn([process.execPath, "-e", script, instruction, wrappedReport], {
+    windowsHide: true,
     cwd: new URL("..", import.meta.url).pathname,
     stdout: "pipe",
     stderr: "pipe",

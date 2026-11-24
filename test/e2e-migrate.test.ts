@@ -38,7 +38,7 @@ let herdrServer: ReturnType<typeof Bun.spawn> | undefined;
 let corePid: number | undefined;
 
 const exec = async (argv: string[], extra: Record<string, string> = {}) => {
-  const p = Bun.spawn(argv, { env: { ...env, ...extra }, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawn(argv, { windowsHide: true, env: { ...env, ...extra }, stdout: "pipe", stderr: "pipe" });
   const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
   return { out, err, code };
 };
@@ -81,7 +81,12 @@ beforeAll(async () => {
     agent7501,
     `report() { printf '\\033]7501;state=%s:app=fake\\033\\\\' "$1"; }\nreport idle\nwhile IFS= read -r line; do printf 'echo: %s\\n' "$line"; done\n`,
   );
-  herdrServer = Bun.spawn(["herdr", "--session", session, "server"], { env, stdout: "ignore", stderr: "ignore" });
+  herdrServer = Bun.spawn(["herdr", "--session", session, "server"], {
+    windowsHide: true,
+    env,
+    stdout: "ignore",
+    stderr: "ignore",
+  });
   await until("herdr server", () => herdr("workspace", "list"));
   const started = await exec(["hc", "--json", "server", "start"]);
   if (started.code !== 0) throw new Error(`hc server start -> ${started.code}: ${started.err}`);

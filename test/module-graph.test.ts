@@ -44,6 +44,7 @@ test("every module loads on its own in a fresh process", async () => {
   await Promise.all(
     files.map(async (file) => {
       const proc = Bun.spawn([process.execPath, "-e", `await import(${JSON.stringify(join(ROOT, file))})`], {
+        windowsHide: true,
         stdout: "pipe",
         stderr: "pipe",
       });

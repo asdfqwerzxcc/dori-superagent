@@ -194,7 +194,7 @@ export const collectStatus = async (probe: StatusProbe): Promise<LinkStatus> => 
 };
 
 const runCommand = async (cmd: string, argv: readonly string[]): Promise<ExecResult> => {
-  const proc = Bun.spawn([cmd, ...argv], { stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn([cmd, ...argv], { stdout: "pipe", stderr: "pipe", windowsHide: true });
   const [code, stdout] = await Promise.all([proc.exited, new Response(proc.stdout).text()]);
   return { code, stdout };
 };

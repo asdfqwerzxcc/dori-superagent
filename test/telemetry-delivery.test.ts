@@ -154,6 +154,7 @@ describe("telemetry", () => {
       t.record({ name: "dori.lane_started", open_lanes: 1 }); await t.flush(5000); console.log(hashes[0] ?? "none");`;
     const runs = Array.from({ length: 6 }, () =>
       Bun.spawn([process.execPath, "-e", script, home], {
+        windowsHide: true,
         stdin: "pipe",
         stdout: "pipe",
         stderr: "pipe",

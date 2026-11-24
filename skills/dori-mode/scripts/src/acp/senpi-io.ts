@@ -10,6 +10,7 @@ export const spawnSenpi = (argv: readonly string[], cwd: string): SenpiChild => 
       stdout: "pipe",
       stderr: "pipe",
       env: process.env,
+      windowsHide: true,
       ...(process.platform === "win32" ? {} : { detached: true }),
     }) as unknown as SenpiChild;
   } catch (error) {

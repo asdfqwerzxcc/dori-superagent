@@ -23,7 +23,7 @@ export const lintFixtures = (sources: readonly string[]): Finding[][] => {
     });
     const result = Bun.spawnSync(
       [oxlintBin(root), "-c", "scripts/lint-ratchet.oxlintrc.json", "-f", "json", ...files],
-      { cwd: root, env: oxlintEnv() },
+      { cwd: root, env: oxlintEnv(), windowsHide: true },
     );
     if (result.exitCode !== 0 && result.exitCode !== 1)
       throw new Error(`oxlint failed (${result.exitCode}): ${result.stderr.toString()}`);

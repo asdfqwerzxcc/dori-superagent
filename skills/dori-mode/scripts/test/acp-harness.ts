@@ -28,6 +28,7 @@ const repoRoot = join(import.meta.dir, "..");
 
 export const startAcp = (env: Record<string, string>) => {
   const proc = Bun.spawn([process.execPath, "src/cli.ts", "acp"], {
+    windowsHide: true,
     cwd: repoRoot,
     stdin: "pipe",
     stdout: "pipe",
@@ -160,7 +161,7 @@ export const startAcp = (env: Record<string, string>) => {
 
 export const processList = async (pid: number): Promise<string> => {
   const argv = process.platform === "win32" ? ["tasklist", "/FI", `PID eq ${pid}`] : ["ps", "-p", String(pid)];
-  const result = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+  const result = Bun.spawn(argv, { windowsHide: true, stdout: "pipe", stderr: "pipe", stdin: "ignore" });
   const [out, err, code] = await Promise.all([
     new Response(result.stdout).text(),
     new Response(result.stderr).text(),

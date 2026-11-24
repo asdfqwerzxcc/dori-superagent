@@ -63,7 +63,7 @@ export const pidAlive = (pid: number): boolean => {
   } catch {
     return false;
   }
-  const stat = Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)])
+  const stat = Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)], { windowsHide: true })
     .stdout.toString()
     .trim();
   return stat !== "" && !stat.startsWith("Z");

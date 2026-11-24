@@ -117,6 +117,7 @@ describe("checkpoints", () => {
             ...args,
           ],
           {
+            windowsHide: true,
             env: { ...process.env, DORI_CONFIG: join(state.dir, "none.json"), DORI_STATE_DIR: state.dir },
             stdout: "pipe",
             stderr: "pipe",

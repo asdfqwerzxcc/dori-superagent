@@ -108,7 +108,7 @@ export const oxlintBin = (root: string): string => {
  * flag, and older Nodes cannot run the plugin at all (the config load then names the unknown extension).
  */
 const tsPluginNodeOptions = (): string | undefined => {
-  const version = spawnSync("node", ["--version"], { encoding: "utf8" }).stdout?.trim() ?? "";
+  const version = spawnSync("node", ["--version"], { encoding: "utf8", windowsHide: true }).stdout?.trim() ?? "";
   const m = /^v(\d+)\.(\d+)\./.exec(version);
   if (m === null) return undefined;
   const major = Number(m[1]);
@@ -125,7 +125,7 @@ export const oxlintEnv = (): Record<string, string | undefined> => {
 };
 
 const run = (root: string, command: string, args: readonly string[], env: Record<string, string | undefined>) =>
-  spawnSync(command, args, { cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, env });
+  spawnSync(command, args, { cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, env, windowsHide: true });
 
 // A diagnostic with no rule code is a parse error: that file's findings cannot be counted. A file
 // oxlint was given but did not lint (`skipped`) cannot be counted either.

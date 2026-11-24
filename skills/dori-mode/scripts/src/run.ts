@@ -16,6 +16,7 @@ export const run: Runner = async (argv, opts = {}) => {
     p = Bun.spawn([...argv], {
       stdout: "pipe",
       stderr: "pipe",
+      windowsHide: true,
       ...(opts.cwd ? { cwd: opts.cwd } : {}),
       ...(opts.timeoutMs ? { timeout: opts.timeoutMs, killSignal: "SIGKILL" } : {}),
     });

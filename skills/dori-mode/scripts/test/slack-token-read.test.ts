@@ -89,7 +89,7 @@ test("a directory or a FIFO at the path is refused as not a regular file, and a 
     `DORI_SLACK_TOKEN_FILE ${dir} is not a regular file`,
   );
   const fifo = join(base(), "fifo");
-  expect(Bun.spawnSync(["mkfifo", "-m", "600", fifo]).exitCode).toBe(0);
+  expect(Bun.spawnSync(["mkfifo", "-m", "600", fifo], { windowsHide: true }).exitCode).toBe(0);
   expect(() => read({ DORI_SLACK_TOKEN_FILE: fifo }, "linux")).toThrow(
     `DORI_SLACK_TOKEN_FILE ${fifo} is not a regular file`,
   );

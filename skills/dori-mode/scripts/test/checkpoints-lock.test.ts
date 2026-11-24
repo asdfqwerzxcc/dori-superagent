@@ -15,7 +15,12 @@ const holder = (dir: string) => {
     console.log("LOCKED");
     for await (const _ of console) break;
     release();`;
-  const proc = Bun.spawn([process.execPath, "-e", script], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+  const proc = Bun.spawn([process.execPath, "-e", script], {
+    windowsHide: true,
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "inherit",
+  });
   const locked = (async () => {
     let seen = "";
     for await (const chunk of proc.stdout) {
