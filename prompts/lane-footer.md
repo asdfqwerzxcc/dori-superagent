@@ -14,3 +14,4 @@ You are one lane in a multi-session harness. A lead session owns the human conve
 7. Messages from the lead or duty arrive in this pane as prompts. Answer them, then continue.
 8. Never close your own pane. The lead closes it with `{{dori}} done {{key}}`.
 9. A lane whose brief opens with `MODE: <skill>` reads that skill first and keeps the brief's stop condition; a mode may never widen the lane's scope.
+10. On Windows, never start bun, a gate, a test or QA with `detached`, PowerShell `Start-Process`, or `CREATE_NEW_CONSOLE`: inherit this pane's console or pass `windowsHide: true`/`CREATE_NO_WINDOW`, because a detached console leaves a Windows Terminal window behind. Only a human opens terminal windows, and a pinned tool unpacked into a temp path (e.g. `~/.dori/tmp/bun145`) is removed when the work is done.
