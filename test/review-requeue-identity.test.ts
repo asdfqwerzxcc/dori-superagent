@@ -31,7 +31,7 @@ const queue = (d: Deps, extra: readonly string[] = []) =>
 async function sleeperProcess(d: Deps) {
   const file = join(d.store.root, "sleeper.ts");
   writeFileSync(file, "await Bun.sleep(60_000);\n");
-  return Bun.spawn([process.execPath, file], { detached: true, stdout: "ignore", stderr: "ignore" });
+  return Bun.spawn([process.execPath, file], { detached: true, stdout: "ignore", stderr: "ignore", windowsHide: true });
 }
 
 const alive = (pid: number): boolean => {

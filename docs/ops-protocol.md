@@ -129,6 +129,16 @@
 
 - 조사·탐색은 `explore` 서브에이전트가 하고 리드는 결과만 판단하며(한 줄 확인·결정적 읽기는 예외), 긴 작업은 `run_in_background: true`로 돌려 리드 턴을 짧게 끊고 턴 사이에 `dori inbox list lead`로 큐를 확인하며, 인바운드가 늦으면 `dori status`의 게이트웨이·슈퍼바이저 줄과 리드 인박스부터 본다.
 
+## 8. Windows: 레인과 리뷰어는 창을 열지 않는다 (2026-11-24)
+
+- 레인·리뷰어·게이트·QA는 Windows에서 콘솔 프로세스(bun, 게이트, 테스트, QA)를 `detached`, PowerShell
+  `Start-Process`, `CREATE_NEW_CONSOLE`로 띄우지 않는다. 부모 콘솔을 상속하거나 `windowsHide: true`/
+  `CREATE_NO_WINDOW`로 실행한다. 이 셋은 프로세스가 끝난 뒤에도 Windows Terminal 창을 남긴다
+  (2026-11-23 69창, 2026-11-24 10창).
+- 터미널 창은 사람만 연다. 레인과 리뷰어는 자기 pane 밖에 새 창을 만들지 않는다.
+- 고정 도구를 `~/.dori/tmp`(예: `bun145`) 같은 임시 경로에 풀어 썼다면 작업이 끝날 때 그 경로를 지운다.
+  임시 추출본을 띄울 때도 같은 규칙(부모 콘솔 상속 또는 `windowsHide: true`)을 지킨다.
+
 ## 운영 순서
 
 1. 이슈가 들어오면 `dori labels` 드라이런으로 상태 라벨 공백·충돌을 확인하고, 확인 후 `--apply`.
