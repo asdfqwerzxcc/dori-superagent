@@ -8,37 +8,13 @@ import { startLane } from "./lanes.ts";
 import { audit, HOUR } from "./loop-audit.ts";
 import { DEFAULT_MAX_LANES, DEFAULT_MAX_STARTS } from "./loop-caps.ts";
 import { acquire, holds, release } from "./loop-lock.ts";
+import { rememberQuiet, worthTelling } from "./loop-quiet.ts";
 import { refText } from "./refs.ts";
 import type { LoopRun } from "./store-types.ts";
-import { join } from "node:path";
 
 export { HOUR };
 export { MAX_ATTEMPTS };
 export const REMIND_HOURS = 6;
-const QUIET_HOURS = 6;
-
-type LoopStatus = NonNullable<LoopRun["status"]>;
-const quietPath = (d: Deps) => join(d.store.root, "state", "loop-quiet.json");
-const quietKey = (s: LoopStatus) =>
-  `lanes ${s.lanes}/${s.maxLanes} open ${s.items.open} decide ${s.items.decide} running ${s.items.running}`;
-
-/** An unchanged hourly status reaches the lead at most once every QUIET_HOURS; anything new goes straight through. */
-async function worthTelling(d: Deps, run: LoopRun): Promise<boolean> {
-  if (run.synced.length || run.findings.length || run.started.length || run.held.length || run.asked.length)
-    return true;
-  const key = quietKey(run.status as LoopStatus);
-  const prev = (await Bun.file(quietPath(d))
-    .json()
-    .catch(() => undefined)) as { key?: string; at?: number } | undefined;
-  if (prev === undefined || prev.key !== key) return true;
-  return d.now() - (prev.at ?? 0) >= QUIET_HOURS * HOUR;
-}
-
-async function rememberQuiet(d: Deps, run: LoopRun): Promise<void> {
-  try {
-    await Bun.write(quietPath(d), JSON.stringify({ key: quietKey(run.status as LoopStatus), at: d.now() }));
-  } catch {}
-}
 export const MEM_FREE_MIN_PCT = 10;
 /** Absolute floor too: 10% of 7.7 GB is 770 MB, less than one agent's private memory; 700 MB is what this host can actually keep free beside a lead. */
 export const MEM_FREE_MIN_MB = 700;
@@ -112,7 +88,10 @@ async function pull(
     .items()
     .filter((i) => i.status === "open" && !i.decision && !served.has(i.id))
     .sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt || a.id.localeCompare(b.id));
-  if (candidates.length > 0 && (host.load1 > (maxLoad ?? host.cores) || host.memFreePct < MEM_FREE_MIN_PCT || host.memFreeMb < MEM_FREE_MIN_MB)) {
+  if (
+    candidates.length > 0 &&
+    (host.load1 > (maxLoad ?? host.cores) || host.memFreePct < MEM_FREE_MIN_PCT || host.memFreeMb < MEM_FREE_MIN_MB)
+  ) {
     run.held.push(
       `host busy: load ${host.load1.toFixed(1)} (limit ${maxLoad ?? host.cores}), mem free ${host.memFreePct}% (${host.memFreeMb} MB)`,
     );

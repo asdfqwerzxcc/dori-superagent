@@ -9,27 +9,6 @@ export type ContentBlock = {
   readonly text?: unknown;
 };
 
-export type PromptParams = {
-  readonly sessionId?: unknown;
-  readonly prompt?: unknown;
-};
-
-export type SessionParams = {
-  readonly sessionId?: unknown;
-};
-
-export type NewSessionParams = {
-  readonly cwd?: unknown;
-  readonly mcpServers?: unknown;
-  readonly additionalDirectories?: unknown;
-};
-
-export type InitializeParams = {
-  readonly protocolVersion?: unknown;
-  readonly clientCapabilities?: unknown;
-  readonly clientInfo?: unknown;
-};
-
 export interface Backend {
   readonly pid?: number | undefined;
   prompt(text: string, onText: (text: string) => void): Promise<StopReason>;
@@ -72,7 +51,12 @@ export const jsonRpcResult = (id: JsonRpcId, result: unknown): Record<string, un
   result,
 });
 
-export const jsonRpcError = (id: JsonRpcId, code: number, message: string, data?: unknown): Record<string, unknown> => ({
+export const jsonRpcError = (
+  id: JsonRpcId,
+  code: number,
+  message: string,
+  data?: unknown,
+): Record<string, unknown> => ({
   jsonrpc: "2.0",
   id,
   error: { code, message, ...(data === undefined ? {} : { data }) },

@@ -6,7 +6,8 @@
     "src/plugins/run.ts",
     "test/**/*.test.ts",
     "skills/dori-mode/scripts/test/**/*.test.ts",
-    "skills/dori-mode/scripts/test/record-fetch.ts"
+    "skills/dori-mode/scripts/test/record-fetch.ts",
+    "skills/dori-mode/scripts/test/fixtures/fake-senpi.ts"
   ],
   "project": [
     "src/**/*.ts",

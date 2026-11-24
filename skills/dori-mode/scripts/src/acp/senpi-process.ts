@@ -7,7 +7,9 @@ export const assertLocalModel = (model: string): void => {
   if (!trimmed) throw new AcpError("defaultModel is empty; set one in ~/.dori/config.json");
   const provider = (trimmed.split("/")[0] ?? "").trim().toLowerCase();
   if (FORBIDDEN_PROVIDERS.has(provider)) {
-    throw new AcpError(`refusing GOAT provider "${provider}" as the ACP backend; ACP only delegates to a local senpi process`);
+    throw new AcpError(
+      `refusing GOAT provider "${provider}" as the ACP backend; ACP only delegates to a local senpi process`,
+    );
   }
 };
 

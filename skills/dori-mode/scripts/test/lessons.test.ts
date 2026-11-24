@@ -137,15 +137,13 @@ test("a malformed or unknown field is rejected by name, and an immutable change 
   // Given one valid record and three bad copies of it.
   const added = lessons.add(input, T0);
   const original = readFileSync(lessons.path, "utf8");
-  writeFileSync(
-    lessons.path,
-    [
-      original.trimEnd(),
-      JSON.stringify({ ...added, outcome: "done" }),
-      JSON.stringify({ ...added, extra: 1 }),
-      JSON.stringify({ ...added, cwd: "/other" }),
-    ].join("\n") + "\n",
-  );
+  const appended = [
+    original.trimEnd(),
+    JSON.stringify({ ...added, outcome: "done" }),
+    JSON.stringify({ ...added, extra: 1 }),
+    JSON.stringify({ ...added, cwd: "/other" }),
+  ].join("\n");
+  writeFileSync(lessons.path, `${appended}\n`);
   // When reading.
   const read = lessons.read();
   // Then each line's problem names its field, and the first record stands.

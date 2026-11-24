@@ -1,5 +1,5 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import type { Deps } from "./harness.ts";
 import { branchOf, teardownTolerated, worktreeRoot } from "./lane-worktree.ts";
 import type { Lane } from "./store-types.ts";
@@ -24,7 +24,21 @@ export type WorktreeScan = {
   readonly locks: readonly string[];
 };
 
-const norm = (path: string): string => resolve(path).replaceAll("\\", "/").toLowerCase();
+// Git reports worktree paths as the OS resolves them, while a caller's path may run through a symlink (macOS `tmpdir()`
+// is `/var/folders/...`, whose real path is `/private/var/...`). Compare filesystem identity, not the text.
+const norm = (path: string): string => {
+  const abs = resolve(path);
+  let real = abs;
+  try {
+    real = realpathSync.native(abs);
+  } catch {
+    // A tree that is gone still compares by its recorded path; resolve its parent so it can still match a HEAD lock.
+    try {
+      real = join(realpathSync.native(dirname(abs)), basename(abs));
+    } catch {}
+  }
+  return real.replaceAll("\\", "/").toLowerCase();
+};
 
 async function gitOut(d: Deps, cwd: string, argv: readonly string[]): Promise<string | undefined> {
   const r = await d.exec("git", ["-C", cwd, ...argv]);

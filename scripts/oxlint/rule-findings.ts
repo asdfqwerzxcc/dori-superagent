@@ -2,6 +2,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
+import { oxlintBin, oxlintEnv } from "../lint-ratchet.ts";
+
 const root = join(import.meta.dir, "../..");
 
 export type Finding = { readonly code: string; readonly message: string };
@@ -20,8 +22,8 @@ export const lintFixtures = (sources: readonly string[]): Finding[][] => {
       return file;
     });
     const result = Bun.spawnSync(
-      [join(root, "node_modules/.bin/oxlint"), "-c", "scripts/lint-ratchet.oxlintrc.json", "-f", "json", ...files],
-      { cwd: root },
+      [oxlintBin(root), "-c", "scripts/lint-ratchet.oxlintrc.json", "-f", "json", ...files],
+      { cwd: root, env: oxlintEnv() },
     );
     if (result.exitCode !== 0 && result.exitCode !== 1)
       throw new Error(`oxlint failed (${result.exitCode}): ${result.stderr.toString()}`);

@@ -197,6 +197,8 @@ describe("hc unit panes", () => {
     const panes = new HcPanes({
       home: "/home/dori",
       env: { DORI_HOME: "/home/dori" },
+      // The terminal shell otherwise follows the host's $SHELL, which differs per CI platform.
+      shell: "sh",
       exec: hc.exec,
       sleep: async () => {},
       log: () => {},

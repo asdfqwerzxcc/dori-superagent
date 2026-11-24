@@ -6,7 +6,12 @@ import { setup } from "./harness-setup.ts";
 
 const DAY = 86_400_000;
 
-const lane = (d: ReturnType<typeof setup>["d"], key: string, status: "done" | "dropped" | "working", ageDays: number) => {
+const lane = (
+  d: ReturnType<typeof setup>["d"],
+  key: string,
+  status: "done" | "dropped" | "working",
+  ageDays: number,
+) => {
   const at = d.now() - ageDays * DAY;
   d.store.saveLane({
     key,

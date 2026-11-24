@@ -1,22 +1,30 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, readdirSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { backlogDecide } from "../src/backlog.ts";
 import { dutyTick } from "../src/duty.ts";
-import { done, ready, report, startLane } from "../src/lanes.ts";
+import { done, ready, startLane } from "../src/lanes.ts";
 import { HOUR, loopTick } from "../src/loop.ts";
-import { setup } from "./loop-setup.ts";
+import {
+  decisionSetup,
+  failingStarts,
+  headlessSetup,
+  hourlyTick,
+  laneFiles,
+  leadUnreachableSetup,
+  lose,
+  readyIdle,
+  seedAudit,
+  seedBroken,
+  seedFull,
+  seedPriority,
+  seedRunning,
+  setup,
+} from "./loop-setup.ts";
 
 describe("hourly loop", () => {
   test("starts by priority, then age, then id, within the per-run and lane budget; skips a second run in the hour", async () => {
-    const { w, d, lead, add, destructive } = setup();
-    add("old-five");
-    w.clock += 1000;
-    add("urgent", { priority: 1 });
-    w.clock += 1000;
-    add("new-five");
-    add("aaa-five");
-    lead.received.length = 0;
+    const { w, d, lead, destructive } = seedPriority();
 
     const run = await loopTick(d, { maxLanes: 3, maxStarts: 2 });
     expect(run.started).toEqual(["urgent (p1)", "old-five (p5)"]);
@@ -47,11 +55,7 @@ describe("hourly loop", () => {
   });
 
   test("holds starts when lanes are full, the host is busy, or the item needs a decision", async () => {
-    const { w, d, brief, add, tick } = setup();
-    add("next");
-    add("blocked", { priority: 1, decision: "which database?" });
-    await startLane(d, "hand-a", brief, { group: "w1" });
-    await startLane(d, "hand-b", brief, { group: "w1" });
+    const { w, d, tick } = await seedFull();
     const full = await tick({ maxLanes: 2 });
     expect(full.started).toEqual([]);
     expect(full.held[0]).toContain("0 free of 2 lanes");
@@ -59,7 +63,9 @@ describe("hourly loop", () => {
 
     w.host = { load1: 20, cores: 8, memFreePct: 50, memFreeMb: 4096 };
     expect((await tick({ maxLanes: 5 })).held[0]).toBe("host busy: load 20.0 (limit 8), mem free 50% (4096 MB)");
-    expect((await tick({ maxLanes: 5, maxLoad: 10 })).held[0]).toBe("host busy: load 20.0 (limit 10), mem free 50% (4096 MB)");
+    expect((await tick({ maxLanes: 5, maxLoad: 10 })).held[0]).toBe(
+      "host busy: load 20.0 (limit 10), mem free 50% (4096 MB)",
+    );
     w.host = { load1: 1, cores: 8, memFreePct: 5, memFreeMb: 4096 };
     expect((await tick({ maxLanes: 5 })).held[0]).toContain("mem free 5%");
     w.host = { load1: 1, cores: 8, memFreePct: 50, memFreeMb: 4096 };
@@ -74,18 +80,14 @@ describe("hourly loop", () => {
     add("item-c");
     await tick({ maxStarts: 3 });
 
-    const a = d.store.lane("item-a")!;
-    await ready(d, "item-a", "fixed", ["note.txt"]);
-    w.panes.get(a.paneId)!.status = "idle";
+    await readyIdle(w, d, "item-a", "fixed", ["note.txt"]);
     await done(d, "item-a");
     // Closing the lane closes its item right away, so the next tick has nothing to reconcile or start.
     expect(d.store.item("item-a")).toMatchObject({ status: "done" });
     expect(d.store.item("item-a")!.log.at(-1)).toMatchObject({ kind: "done", text: "lane item-a done" });
 
     w.panes.delete(d.store.lane("item-b")!.paneId);
-    const lost = d.store.lane("item-b")!;
-    lost.status = "lost";
-    d.store.saveLane(lost);
+    lose(d, "item-b");
 
     await ready(d, "item-c", "PR up", ["https://github.com/acme/app/pull/9"]);
     w.gh = (argv) => ({ code: 0, stdout: JSON.stringify({ state: argv[2] === "9" ? "MERGED" : "OPEN" }) });
@@ -99,9 +101,7 @@ describe("hourly loop", () => {
     // D16: a lost key is kept as evidence and refuses a restart until the operator drops it.
     expect(await done(d, "item-b", { drop: "lost" })).toBe("dropped: lost");
     expect((await tick()).started).toEqual(["item-b (p5)"]);
-    const again = d.store.lane("item-b")!;
-    again.status = "lost";
-    d.store.saveLane(again);
+    lose(d, "item-b");
     const second = await tick();
     expect(d.store.item("item-b")!.decision).toBe("lane lost 2 times; retry, re-brief or drop?");
     expect(second.started).toEqual([]);
@@ -115,14 +115,12 @@ describe("hourly loop", () => {
   });
 
   test("done closes the item its lane served, and a done item is never started again", async () => {
-    const { w, d, add } = setup();
-    add("landed");
-    await loopTick(d, { force: true });
-    const lane = d.store.lane("landed")!;
+    const s = setup();
+    const lane = await seedRunning(s, "landed");
+    const { w, d } = s;
     expect(lane.item).toBe("landed");
     expect(d.store.item("landed")!.status).toBe("running");
-    await ready(d, "landed", "done", ["file:///x"]);
-    w.panes.get(lane.paneId)!.status = "idle";
+    await readyIdle(w, d, "landed", "done", ["file:///x"]);
     await done(d, "landed");
     const item = d.store.item("landed")!;
     expect(item.status).toBe("done");
@@ -140,8 +138,7 @@ describe("hourly loop", () => {
     expect(lane.item).toBe("manual-item");
     // The observed bug: a hand-started lane leaves the item open, so the loop saw it as fresh work after the landing.
     expect(d.store.item("manual-item")!.status).toBe("open");
-    await ready(d, "manual-item", "landed", ["file:///x"]);
-    w.panes.get(lane.paneId)!.status = "idle";
+    await readyIdle(w, d, "manual-item", "landed", ["file:///x"]);
     await done(d, "manual-item");
     expect(d.store.item("manual-item")!.status).toBe("done");
 
@@ -167,27 +164,14 @@ describe("hourly loop", () => {
 
   test("audit flags stale, long-waiting, unclosed-READY and vanished lanes without touching them", async () => {
     const { w, d, brief, tick, destructive } = setup();
-    const quiet = await startLane(d, "quiet", brief, { group: "w1" });
-    const busy = await startLane(d, "busy", brief, { group: "w1" });
-    const wait = await startLane(d, "wait-ci", brief, { group: "w1" });
-    const fin = await startLane(d, "finished", brief, { group: "w1" });
-    const gone = await startLane(d, "vanished", brief, { group: "w1" });
-    await startLane(d, "fresh", brief, { group: "w1" });
-    await report(d, "wait-ci", "WAITING: CI on acme/app#3", "waiting");
-    await ready(d, "finished", "done", ["https://github.com/acme/app/pull/3"]);
-    for (const l of [quiet, wait, fin]) w.panes.get(l.paneId)!.status = "idle";
-    w.panes.get(busy.paneId)!.status = "working";
-    w.panes.delete(gone.paneId);
-    w.gh = () => ({ code: 0, stdout: JSON.stringify({ state: "OPEN" }) });
+    const { gone } = await seedAudit(w, d, brief);
 
     w.clock += 30 * 60_000;
-    expect((await tick({ maxStarts: 0 })).findings).toEqual(["vanished pane " + gone.paneId + " is gone"]);
+    expect((await tick({ maxStarts: 0 })).findings).toEqual([`vanished pane ${gone.paneId} is gone`]);
     w.clock += 4 * HOUR;
     await dutyTick(d);
     expect(d.store.lane("busy")!.lastActivityAt).toBe(w.clock);
-    const lanesBefore = readdirSync(join(d.store.root, "lanes")).map((f) =>
-      readFileSync(join(d.store.root, "lanes", f), "utf8"),
-    );
+    const lanesBefore = laneFiles(d);
     const run = await tick({ maxStarts: 0 });
     expect(run.findings.sort()).toEqual([
       "busy working, no report for 4h",
@@ -196,20 +180,13 @@ describe("hourly loop", () => {
       "quiet working, no report for 4h",
       "wait-ci waiting 4h on: WAITING: CI on acme/app#3",
     ]);
-    const lanesAfter = readdirSync(join(d.store.root, "lanes")).map((f) =>
-      readFileSync(join(d.store.root, "lanes", f), "utf8"),
-    );
+    const lanesAfter = laneFiles(d);
     expect(lanesAfter).toEqual(lanesBefore);
     expect(destructive()).toEqual([]);
   });
 
   test("a decision is asked once, reminded once after 6 hours, then left alone until answered", async () => {
-    const { w, d, lead, add } = setup();
-    add("pick-db", { decision: "postgres or sqlite?" });
-    const at = async (h: number) => {
-      w.clock += h * HOUR;
-      return loopTick(d);
-    };
+    const { d, lead, at } = decisionSetup();
     expect((await at(0)).asked).toEqual([
       "[DECIDE pick-db] postgres or sqlite? -> dori backlog decide pick-db --text '...' | dori backlog drop pick-db",
     ]);
@@ -222,13 +199,7 @@ describe("hourly loop", () => {
   });
 
   test("failed lane starts are recorded, each uses a slot, and the run still reports what is waiting; with no lead nothing starts", async () => {
-    const failing = setup({
-      exec: (inner) => async (cmd, argv) =>
-        cmd === "herdr" && argv[0] === "tab" ? { code: 1, stdout: "", stderr: "server down" } : inner(cmd, argv),
-    });
-    failing.add("one");
-    failing.add("two");
-    failing.add("three");
+    const failing = failingStarts();
     const run = await failing.tick({ maxStarts: 2 });
     expect(run.started).toEqual([]);
     expect(run.findings).toEqual([
@@ -240,8 +211,7 @@ describe("hourly loop", () => {
     expect(failing.d.store.lastRun()!.at).toBe(run.at);
     expect(readdirSync(join(failing.d.store.root, "loop"))).not.toContain("lock");
 
-    const headless = setup({ lead: false });
-    headless.add("one");
+    const headless = headlessSetup();
     const quiet = await headless.tick();
     expect(quiet.held).toEqual(["no lead pane registered"]);
     expect(quiet.started).toEqual([]);
@@ -249,14 +219,8 @@ describe("hourly loop", () => {
   });
 
   test("an item whose start keeps failing becomes a question and stops blocking the items behind it", async () => {
-    const { w, d, lead, add } = setup();
-    add("broken", { priority: 1 });
-    add("healthy", { priority: 5 });
-    rmSync(d.store.item("broken")!.brief);
-    const hourly = async () => {
-      w.clock += HOUR;
-      return loopTick(d, { maxStarts: 1 });
-    };
+    const { w, d, lead } = seedBroken();
+    const hourly = hourlyTick(w, d);
     expect((await hourly()).findings[0]).toStartWith("start broken failed");
     const second = await hourly();
     expect(second.findings[0]).toStartWith("start broken failed");
@@ -269,13 +233,7 @@ describe("hourly loop", () => {
 
 describe("hardening", () => {
   test("a lane that opened but whose [START] could not reach the lead counts as started", async () => {
-    const { d, add, tick } = setup({
-      exec: (inner) => async (cmd, argv) =>
-        cmd === "herdr" && argv[0] === "agent" && argv[2] === "w1:p1"
-          ? { code: 1, stdout: "", stderr: "lead pane hung" }
-          : inner(cmd, argv),
-    });
-    add("solo");
+    const { d, tick } = leadUnreachableSetup();
     const run = await tick({ maxStarts: 1 });
     expect(run.started).toEqual(["solo (p5)"]);
     expect(d.store.item("solo")!.status).toBe("running");

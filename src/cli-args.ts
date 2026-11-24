@@ -1,3 +1,4 @@
+import type { SendResult } from "./inbox.ts";
 import { Refusal } from "./refusal.ts";
 
 export const USAGE = `dori - a proactive multi-session harness on herdr or hc + omo
@@ -100,6 +101,49 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
 send, report and ready exit 3 and print HELD <target> when the delivery may or may not have reached the pane:
 it is held and never resent, so do not send it again: check the pane, then dori inbox ack or dori inbox resend it.
 QUEUED (exit 0) means it waits in the pane's inbox.`;
+
+/** Every subcommand main() knows; an unknown word still prints the usage, and only these touch the usage ping. */
+export const COMMANDS: ReadonlySet<string> = new Set([
+  "up",
+  "role",
+  "start",
+  "report",
+  "ready",
+  "send",
+  "inbox",
+  "duty",
+  "review",
+  "merge",
+  "done",
+  "bundle",
+  "worktrees",
+  "status",
+  "loop",
+  "backlog",
+  "board",
+  "sop",
+  "labels",
+  "stale",
+  "migrate",
+  "restart",
+  "lead-restart",
+  "plugin",
+  "remote",
+  "agent",
+  "link",
+  "devices",
+  "doctor",
+]);
+
+/** Prints the line for a delivery that did not land now and returns the exit code: HELD 3, everything else 0. */
+export function deliveryOutcome(result: SendResult | undefined, target: string): number {
+  if (result === "HELD") {
+    console.log(`HELD ${target}: delivery may or may not have reached the pane; do not resend`);
+    return 3;
+  }
+  if (result === "QUEUED") console.log(`QUEUED ${target}`);
+  return 0;
+}
 
 export type Args = { pos: string[]; flags: Map<string, string[]> };
 

@@ -1,10 +1,13 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runReviewer } from "../src/review-run.ts";
 import { killReviewTree } from "../src/review-kill.ts";
 import { spawnExec } from "../src/runtime/exec.ts";
+
+// The probe waits on real process death (seconds, not milliseconds); the test's own waits still bound it.
+setDefaultTimeout(15_000);
 
 const alive = (pid: number): boolean => {
   try {
@@ -67,5 +70,5 @@ describe("reviewer process tree", () => {
     } finally {
       for (const pid of pids) killReviewTree(pid);
     }
-  }, 15_000);
+  });
 });

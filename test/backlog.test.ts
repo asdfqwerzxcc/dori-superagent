@@ -1,7 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { backlogAdd, backlogDecide, backlogDrop, backlogImport, importId, reconcileRunningItems } from "../src/backlog.ts";
+import {
+  backlogAdd,
+  backlogDecide,
+  backlogDrop,
+  backlogImport,
+  importId,
+  reconcileRunningItems,
+} from "../src/backlog.ts";
 import { startLane } from "../src/lanes.ts";
 import { Refusal } from "../src/refusal.ts";
 import { HOUR, loopTick } from "../src/loop.ts";

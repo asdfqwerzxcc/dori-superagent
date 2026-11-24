@@ -100,13 +100,15 @@ export class AcpServer {
     this.closed = true;
     const sessions = [...this.sessions.values()];
     this.sessions.clear();
-    await Promise.all(sessions.map(async (session) => {
-      try {
-        await session.backend.close();
-      } catch (error) {
-        this.log(`session ${session.id} close failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    }));
+    await Promise.all(
+      sessions.map(async (session) => {
+        try {
+          await session.backend.close();
+        } catch (error) {
+          this.log(`session ${session.id} close failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }),
+    );
   }
 
   private async dispatch(method: string, params: unknown): Promise<unknown> {
@@ -135,7 +137,10 @@ export class AcpServer {
     try {
       backend = await this.opts.createBackend({ cwd });
     } catch (error) {
-      throw new JsonRpcError(INTERNAL_ERROR, `could not create the session backend: ${error instanceof Error ? error.message : String(error)}`);
+      throw new JsonRpcError(
+        INTERNAL_ERROR,
+        `could not create the session backend: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
     const sessionId = `sess_${crypto.randomUUID()}`;
     this.sessions.set(sessionId, { id: sessionId, backend, cwd, busy: false, cancelRequested: false });
@@ -152,10 +157,12 @@ export class AcpServer {
     session.cancelRequested = false;
     try {
       const stop = await session.backend.prompt(text, (chunk) => {
-        this.opts.write(jsonRpcNotification("session/update", {
-          sessionId: session.id,
-          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: chunk } },
-        }));
+        this.opts.write(
+          jsonRpcNotification("session/update", {
+            sessionId: session.id,
+            update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: chunk } },
+          }),
+        );
       });
       return { stopReason: session.cancelRequested ? "cancelled" : stop };
     } catch (error) {
@@ -200,7 +207,8 @@ export class AcpServer {
   }
 
   private toRpcError(error: unknown, method: string): { code: number; message: string; data?: unknown } {
-    if (error instanceof JsonRpcError) return { code: error.code, message: error.message, ...(error.data === undefined ? {} : { data: error.data }) };
+    if (error instanceof JsonRpcError)
+      return { code: error.code, message: error.message, ...(error.data === undefined ? {} : { data: error.data }) };
     if (error instanceof AcpError) return { code: INTERNAL_ERROR, message: error.message };
     const message = error instanceof Error ? error.message : String(error);
     this.log(`${method} failed: ${message}`);

@@ -93,15 +93,46 @@ export const ratchetedFiles = (files: readonly string[]): string[] => files.filt
 
 const CONFIG = "scripts/lint-ratchet.oxlintrc.json";
 
-const run = (root: string, command: string, args: readonly string[]) =>
-  spawnSync(command, args, { cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+// A bun install on Windows writes the .bin shims with an .exe suffix and no extensionless entry.
+const OXLINT_BINS = ["node_modules/.bin/oxlint", "node_modules/.bin/oxlint.exe"] as const;
+export const oxlintBin = (root: string): string => {
+  for (const bin of OXLINT_BINS) {
+    const path = join(root, bin);
+    if (existsSync(path)) return path;
+  }
+  throw new Error("oxlint is not installed; run bun install");
+};
+
+/**
+ * oxlint loads the TS rule plugin through the host's Node. Node 23.6 strips types by default; 22.6-23.5 needs the
+ * flag, and older Nodes cannot run the plugin at all (the config load then names the unknown extension).
+ */
+const tsPluginNodeOptions = (): string | undefined => {
+  const version = spawnSync("node", ["--version"], { encoding: "utf8" }).stdout?.trim() ?? "";
+  const m = /^v(\d+)\.(\d+)\./.exec(version);
+  if (m === null) return undefined;
+  const major = Number(m[1]);
+  const minor = Number(m[2]);
+  if (major > 23 || (major === 23 && minor >= 6)) return undefined;
+  if (major < 22 || (major === 22 && minor < 6)) return undefined;
+  return "--experimental-strip-types";
+};
+
+export const oxlintEnv = (): Record<string, string | undefined> => {
+  const options = tsPluginNodeOptions();
+  if (options === undefined) return process.env;
+  return { ...process.env, NODE_OPTIONS: [process.env["NODE_OPTIONS"], options].filter(Boolean).join(" ") };
+};
+
+const run = (root: string, command: string, args: readonly string[], env: Record<string, string | undefined>) =>
+  spawnSync(command, args, { cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024, env });
 
 // A diagnostic with no rule code is a parse error: that file's findings cannot be counted. A file
 // oxlint was given but did not lint (`skipped`) cannot be counted either.
 type Lint = { readonly counts: Counts; readonly unparsed: readonly string[]; readonly skipped: number };
 
 export const lint = (root: string): Lint => {
-  const listed = run(root, "git", ["ls-files", "-z"]);
+  const listed = run(root, "git", ["ls-files", "-z"], process.env);
   if (listed.status !== 0) throw new Error(`git ls-files failed: ${listed.stderr}`);
   const files = ratchetedFiles(listed.stdout.split("\0")).filter((file) => existsSync(join(root, file)));
   const diagnostics: Diagnostic[] = [];
@@ -109,16 +140,21 @@ export const lint = (root: string): Lint => {
   // Batches keep each argv under the OS limit.
   for (let start = 0; start < files.length; start += 2000) {
     const batch = files.slice(start, start + 2000);
-    const result = run(root, join(root, "node_modules/.bin/oxlint"), [
-      "-c",
-      CONFIG,
-      // No ignore file (.eslintignore, --ignore-path) may hide a tracked file from the count:
-      // ratchetedFiles is the only exclusion.
-      "--no-ignore",
-      "--format",
-      "json",
-      ...batch,
-    ]);
+    const result = run(
+      root,
+      oxlintBin(root),
+      [
+        "-c",
+        CONFIG,
+        // No ignore file (.eslintignore, --ignore-path) may hide a tracked file from the count:
+        // ratchetedFiles is the only exclusion.
+        "--no-ignore",
+        "--format",
+        "json",
+        ...batch,
+      ],
+      oxlintEnv(),
+    );
     if (result.error !== undefined || (result.status !== 0 && result.status !== 1))
       throw new Error(`oxlint failed (status ${String(result.status)}): ${result.stderr}`);
     const parsed: { readonly diagnostics: readonly Diagnostic[]; readonly number_of_files: number } = JSON.parse(

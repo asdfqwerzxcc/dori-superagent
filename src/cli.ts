@@ -17,61 +17,18 @@ import { attest, isPrId, mergeGate, review } from "./gate.ts";
 import { mergeLane } from "./lane-land.ts";
 import { runDoctor } from "./doctor.ts";
 import { runReviewLane } from "./review-lane-cli.ts";
-import { need, one, parse, textOf, USAGE } from "./cli-args.ts";
-import { defaultDeps, ROLES, type Deps } from "./harness.ts";
+import { COMMANDS, deliveryOutcome, need, one, parse, textOf, USAGE } from "./cli-args.ts";
+import { runRole } from "./cli-role.ts";
+import { defaultDeps, type Deps } from "./harness.ts";
 import { ConfigError, hooksSettled, loadReviewSettings } from "./hooks.ts";
-import { send, type SendResult } from "./inbox.ts";
+import { send } from "./inbox.ts";
 import { inboxList, releaseHeld, sendToShell } from "./inbox-held.ts";
 import { Refusal } from "./refusal.ts";
 import { runMigrate } from "./migrate.ts";
 import { refText } from "./refs.ts";
 import { ConfigError as RuntimeConfigError, RuntimeChoiceError } from "./runtime/select.ts";
-import { parseRef } from "./runtime/types.ts";
 import { formatEnsureUp, formatSupervised } from "./supervisors.ts";
 import { restartSupervisors } from "./supervisor-run.ts";
-import { RESERVED_KEYS, type Role } from "./store-types.ts";
-
-const COMMANDS = new Set([
-  "up",
-  "role",
-  "start",
-  "report",
-  "ready",
-  "send",
-  "inbox",
-  "duty",
-  "review",
-  "merge",
-  "done",
-  "bundle",
-  "worktrees",
-  "status",
-  "loop",
-  "backlog",
-  "board",
-  "sop",
-  "labels",
-  "stale",
-  "migrate",
-  "restart",
-  "lead-restart",
-  "plugin",
-  "remote",
-  "agent",
-  "link",
-  "devices",
-  "doctor",
-]);
-
-/** Prints the line for a delivery that did not land now and returns the exit code: HELD 3, everything else 0. */
-function deliveryOutcome(result: SendResult | undefined, target: string): number {
-  if (result === "HELD") {
-    console.log(`HELD ${target}: delivery may or may not have reached the pane; do not resend`);
-    return 3;
-  }
-  if (result === "QUEUED") console.log(`QUEUED ${target}`);
-  return 0;
-}
 
 export async function main(argv: readonly string[], d: Deps = defaultDeps()): Promise<number> {
   const a = parse(argv);
@@ -89,26 +46,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "up":
       await up(d, resolve(one(a, "cwd") ?? process.cwd()), one(a, "retire-old") === "true");
       return 0;
-    case "role": {
-      const role = need(x, "role") as Role;
-      const given = a.pos[2];
-      if (given === "-") {
-        // Clearing accepts the loop roles too: a supervised home registers only lead (and duty on a pane), and an
-        // older roles.json may still hold stale loop panes that no `up` will open again.
-        if (!RESERVED_KEYS.includes(role)) throw new Refusal(`role must be one of ${RESERVED_KEYS.join(", ")}`);
-        d.store.clearRole(role);
-        console.log(`ROLE ${role}=-`);
-        return 0;
-      }
-      if (!ROLES.includes(role)) throw new Refusal(`role must be one of ${ROLES.join(", ")}`);
-      const ref = given === undefined ? d.runtimes.selfAny(process.env) : parseRef(given);
-      if (given !== undefined && ref === undefined)
-        throw new Refusal(`${given} is not a session ref (w1:p3, herdr:w1:p3 or hc:t7)`);
-      if (ref === undefined) throw new Refusal(`missing session ref (not inside herdr or hc?)\n\n${USAGE}`);
-      d.store.setRole(role, ref);
-      console.log(`ROLE ${role}=${refText(ref)}`);
-      return 0;
-    }
+    case "role":
+      return runRole(d, a);
     case "start": {
       const cwd = one(a, "cwd");
       const workspace = one(a, "workspace");
@@ -233,7 +172,9 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       const dryRun = a.flags.has("dry-run");
       const result = pruneLaneRecords(d, days, d.now(), dryRun);
       for (const key of result.removed) console.log(`${dryRun ? "WOULD PRUNE" : "PRUNED"} ${key}`);
-      console.log(`LANES_pruned=${result.removed.length} kept=${result.kept} kept_for_worktree=${result.skipped.length}`);
+      console.log(
+        `LANES_pruned=${result.removed.length} kept=${result.kept} kept_for_worktree=${result.skipped.length}`,
+      );
       return 0;
     }
     case "worktrees": {

@@ -38,7 +38,11 @@ export const readStdout = async (
   }
 };
 
-export const readStderr = async (child: SenpiChild, log: (line: string) => void, closed: () => boolean): Promise<void> => {
+export const readStderr = async (
+  child: SenpiChild,
+  log: (line: string) => void,
+  closed: () => boolean,
+): Promise<void> => {
   const reader = child.stderr.getReader();
   const framer = new LineFramer();
   try {

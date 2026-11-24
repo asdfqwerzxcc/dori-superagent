@@ -14,11 +14,14 @@ export type RunAcpOptions = {
 export const runAcp = async (options: RunAcpOptions = {}): Promise<void> => {
   const config = await loadConfig();
   const log = options.log ?? ((line: string) => process.stderr.write(`[dori-acp] ${line}\n`));
-  const write = options.write ?? ((message: Record<string, unknown>) => {
-    process.stdout.write(`${JSON.stringify(message)}\n`);
-  });
-  const createBackend = options.createBackend ?? (async ({ cwd }: { readonly cwd: string }) =>
-    new SenpiBackend({ model: config.defaultModel, cwd, log }));
+  const write =
+    options.write ??
+    ((message: Record<string, unknown>) => {
+      process.stdout.write(`${JSON.stringify(message)}\n`);
+    });
+  const createBackend =
+    options.createBackend ??
+    (async ({ cwd }: { readonly cwd: string }) => new SenpiBackend({ model: config.defaultModel, cwd, log }));
   const server = new AcpServer({ write, createBackend, log });
   const inflight = new Set<Promise<void>>();
   const track = (task: Promise<void>): void => {
@@ -37,7 +40,10 @@ export const runAcp = async (options: RunAcpOptions = {}): Promise<void> => {
     return shuttingDown;
   };
   const stop = (code: number): void => {
-    void shutdown().then(() => process.exit(code), () => process.exit(code));
+    void shutdown().then(
+      () => process.exit(code),
+      () => process.exit(code),
+    );
   };
   process.on("SIGINT", () => stop(130));
   process.on("SIGTERM", () => stop(143));
