@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { up } from "../src/cli-up.ts";
 import { groupId } from "../src/runtime/group.ts";
-import { World } from "./fake.ts";
+import { World, href } from "./fake.ts";
 import { captureIo } from "./inbox-setup.ts";
 
 describe("dori up", () => {
@@ -76,6 +76,36 @@ describe("dori up", () => {
       `UP runtime=herdr lead=w1:p2 duty=w1:p3 loop=w1:p4 hourly=w1:p5 home=${root}\nENSURE-UP off (ensure-up.off)`,
     );
     expect(w.superviseCalls).toEqual([{ supervisors: false }]);
+  });
+
+  test("a live registered lead is kept: no new workspace or duty, only the units are ensured", async () => {
+    const w = new World();
+    w.addPane("w1:p1", "idle");
+    const d = w.deps();
+    d.store.setRole("lead", href("w1:p1"));
+    const { out } = await captureIo(async () => {
+      await up(d, "/w");
+      return 0;
+    });
+    expect(w.calls.filter((c) => c.cmd === "herdr" && (c.argv[1] === "create" || c.argv[1] === "split"))).toEqual([]);
+    expect(w.calls.filter((c) => c.cmd === "herdr" && c.argv[0] === "pane" && c.argv[1] === "run")).toHaveLength(0);
+    expect(d.store.roles()).toEqual({ lead: href("w1:p1") });
+    expect(w.superviseCalls).toEqual([{ supervisors: false }]);
+    expect(out).toBe("UP lead alive; ensuring units only (lead=w1:p1)");
+  });
+
+  test("--retire-old true replaces the live lead and closes the previous pane", async () => {
+    const w = new World();
+    w.addPane("w1:p1", "idle");
+    const d = w.deps();
+    d.store.setRole("lead", href("w1:p1"));
+    const { out } = await captureIo(async () => {
+      await up(d, "/w", true);
+      return 0;
+    });
+    expect(w.panes.has("w1:p1")).toBe(false);
+    expect(d.store.roles().lead).toEqual(href("w1:p2"));
+    expect(out).toContain("UP retired previous lead w1:p1");
   });
 
   test("a configured loop budget rides on the hourly pane command", async () => {

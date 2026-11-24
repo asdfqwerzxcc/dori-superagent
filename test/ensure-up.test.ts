@@ -3,7 +3,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Exec } from "../src/runtime/exec.ts";
-import { ensureUpStopped, runEnsureUp, workspaceAlive } from "../src/supervisors/ensure-up.ts";
+import {
+  ensureUpCheck,
+  ensureUpStopped,
+  leadRef,
+  leadStatus,
+  runEnsureUp,
+  type EnsureUpState,
+} from "../src/supervisors/ensure-up.ts";
 import { ensureUpOff } from "../src/supervisors.ts";
 
 const homeWithState = (): string => {
@@ -12,41 +19,99 @@ const homeWithState = (): string => {
   return home;
 };
 
-const herdrWith = (workspaces: { workspace_id: string; label?: string }[], panes: Record<string, unknown>[]): Exec => {
+/** `pane get` answers only for the panes given; `pane process-info` reports a live agent in front of every one. */
+const herdrPanes = (panes: Readonly<Record<string, string>>): Exec => {
   return async (cmd, argv) => {
     if (cmd !== "herdr") return { code: 1, stdout: "", stderr: `unexpected ${cmd}` };
-    if (argv[0] === "workspace") return { code: 0, stdout: JSON.stringify({ result: { workspaces } }), stderr: "" };
-    return { code: 0, stdout: JSON.stringify({ result: { panes } }), stderr: "" };
+    if (argv[0] === "pane" && argv[1] === "get") {
+      const status = panes[argv[2] ?? ""];
+      if (status === undefined) return { code: 1, stdout: "", stderr: `pane_not_found ${argv[2]}` };
+      return {
+        code: 0,
+        stdout: JSON.stringify({ result: { pane: { pane_id: argv[2], agent: "pi", agent_status: status } } }),
+        stderr: "",
+      };
+    }
+    if (argv[0] === "pane" && argv[1] === "process-info") {
+      return {
+        code: 0,
+        stdout: JSON.stringify({
+          result: {
+            process_info: {
+              shell_pid: 100,
+              foreground_process_group_id: 101,
+              foreground_processes: [{ name: "omo", argv: ["omo"], pid: 101 }],
+            },
+          },
+        }),
+        stderr: "",
+      };
+    }
+    return { code: 1, stdout: "", stderr: `unhandled ${argv.join(" ")}` };
   };
 };
 
-const ALIVE = herdrWith(
-  [{ workspace_id: "w9", label: "dori" }],
-  [
-    { workspace_id: "w9", agent: "pi", agent_status: "idle" },
-    { workspace_id: "w9", agent: "pi", agent_status: "working" },
-  ],
-);
-const DEAD = herdrWith([], []);
-const HALF = herdrWith(
-  [{ workspace_id: "w9", label: "dori" }],
-  [{ workspace_id: "w9", agent: "pi", agent_status: "idle" }],
-);
+const LEAD = herdrPanes({ "w9:p1": "idle" });
+const LEAD_GONE = herdrPanes({});
+
+/** A home whose roles.json names a lead, as `dori up` writes it. */
+const homeWithLead = (ref: string): string => {
+  const home = homeWithState();
+  writeFileSync(join(home, "roles.json"), JSON.stringify({ lead: ref }));
+  return home;
+};
 
 describe("ensure-up decisions", () => {
-  test("two agent panes in a dori workspace is up; one pane or no workspace is down", async () => {
-    expect(await workspaceAlive(ALIVE)).toBe(true);
-    expect(await workspaceAlive(HALF)).toBe(false);
-    expect(await workspaceAlive(DEAD)).toBe(false);
+  test("the registered lead's own pane decides: one live lead is up, a gone pane or no role is down", async () => {
+    const home = homeWithLead("w9:p1");
+    expect(leadRef(home)).toEqual({ runtime: "herdr", id: "w9:p1" });
+    expect(await leadStatus(home, LEAD)).toBe("idle");
+    expect(await leadStatus(home, LEAD_GONE)).toBe("gone");
+    expect(await leadStatus(homeWithState(), LEAD)).toBe("absent");
   });
 
-  test("a down workspace runs dori up once and leaves a record plus a heartbeat", async () => {
+  test("a live lead alone is alive and raises nothing", async () => {
+    const home = homeWithLead("w9:p1");
+    let calls = 0;
+    const states: EnsureUpState[] = [];
+    const state = await ensureUpCheck({
+      home,
+      exec: LEAD,
+      up: async () => {
+        calls += 1;
+        return { code: 0, detail: "UP runtime=herdr lead=w9:p2" };
+      },
+      log: () => {},
+      report: (s) => states.push(s),
+    });
+    expect(state).toBe("alive");
+    expect(states).toEqual(["alive"]);
+    expect(calls).toBe(0);
+  });
+
+  test("a gone lead pane is down and runs dori up once", async () => {
+    const home = homeWithLead("w9:p1");
+    let calls = 0;
+    const state = await ensureUpCheck({
+      home,
+      exec: LEAD_GONE,
+      up: async () => {
+        calls += 1;
+        return { code: 0, detail: "UP runtime=herdr lead=w9:p2" };
+      },
+      log: () => {},
+    });
+    expect(state).toBe("down");
+    expect(calls).toBe(1);
+  });
+
+  test("a down home runs dori up once and leaves a record plus a heartbeat", async () => {
     const home = homeWithState();
     let calls = 0;
     const code = await runEnsureUp({
       home,
       once: true,
-      exec: DEAD,
+      exec: LEAD_GONE,
       up: async () => {
         calls += 1;
         return { code: 0, detail: "UP runtime=herdr lead=w9:p1" };
@@ -61,31 +126,28 @@ describe("ensure-up decisions", () => {
     expect(existsSync(join(home, "state", "ensure-up.lock"))).toBe(false);
   });
 
-  test("an up workspace, or ensure-up.off, never runs dori up", async () => {
-    for (const exec of [ALIVE]) {
-      const home = homeWithState();
-      let calls = 0;
-      await runEnsureUp({
-        home,
-        once: true,
-        exec,
-        up: async () => {
-          calls += 1;
-          return { code: 0, detail: "" };
-        },
-        log: () => {},
-      });
-      expect(calls).toBe(0);
-    }
-    const home = homeWithState();
-    writeFileSync(join(home, "state", "ensure-up.off"), "");
+  test("a live lead, or ensure-up.off, never runs dori up", async () => {
+    const home = homeWithLead("w9:p1");
     let calls = 0;
-    expect(ensureUpStopped(home)).toBe(true);
-    expect(ensureUpOff(home)).toBe(true);
     await runEnsureUp({
       home,
       once: true,
-      exec: DEAD,
+      exec: LEAD,
+      up: async () => {
+        calls += 1;
+        return { code: 0, detail: "" };
+      },
+      log: () => {},
+    });
+    expect(calls).toBe(0);
+    const stopped = homeWithState();
+    writeFileSync(join(stopped, "state", "ensure-up.off"), "");
+    expect(ensureUpStopped(stopped)).toBe(true);
+    expect(ensureUpOff(stopped)).toBe(true);
+    await runEnsureUp({
+      home: stopped,
+      once: true,
+      exec: LEAD_GONE,
       up: async () => {
         calls += 1;
         return { code: 0, detail: "" };
@@ -95,7 +157,7 @@ describe("ensure-up decisions", () => {
     expect(calls).toBe(0);
   });
 
-  test("a lock held by another live process keeps a second loop from raising a second workspace", async () => {
+  test("a lock held by another live process keeps a second loop from opening a second lead", async () => {
     const home = homeWithState();
     writeFileSync(join(home, "state", "ensure-up.lock"), JSON.stringify({ pid: process.ppid, at: Date.now() }));
     let calls = 0;
@@ -103,7 +165,7 @@ describe("ensure-up decisions", () => {
     await runEnsureUp({
       home,
       once: true,
-      exec: DEAD,
+      exec: LEAD_GONE,
       up: async () => {
         calls += 1;
         return { code: 0, detail: "" };

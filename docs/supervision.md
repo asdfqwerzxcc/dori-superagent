@@ -120,16 +120,19 @@ Verified on this host (2026-11-16):
 
 `ensure-up` is a plugin (`src/plugins/ensure-up.ts`) over the same engine in `src/supervisors/ensure-up.ts`. The
 supervisor starts its child while `state/plugins.json` enables it; the plugin idles and reports `off` while
-`state/ensure-up.off` exists. Every 20 s the loop checks whether a workspace labelled `dori` holds two panes with a live
-agent; only when none does it runs `dori up`. One loop per home is enforced by `state/ensure-up.lock` (a dead holder's
-lock is taken over), so two supervisors cannot raise two workspaces. A pane-mode `dori up` (loops not supervised) starts
-the same plugin child itself.
+`state/ensure-up.off` exists. Every 20 s the loop probes the pane `roles.json` registers as `lead`; only when that role
+is missing or its pane is `gone` does it run `dori up`. A probe that fails is doubt and raises nothing. One loop per home
+is enforced by `state/ensure-up.lock` (a dead holder's lock is taken over), so two supervisors cannot raise two
+workspaces. A pane-mode `dori up` (loops not supervised) starts the same plugin child itself.
+
+Because the decision is the lead's own pane, a `dori up` that finds a live lead opens no second workspace: it ensures
+the supervised units and prints one line, and only `dori up --retire-old true` opens a fresh lead and closes the old one.
 
 ## Roles under supervision
 
 The duty and hourly loops are supervisor children; on a runtime they are shown in the `dori-ops` panes described above,
-which is why `dori up` under a live supervisor opens only the lead and duty panes and drops `duty-loop` / `hourly-loop`
-from `roles.json`; a stale role left by an older layout is removed with `dori role <role> -` (clearing accepts the loop
+which is why a `dori up` that opens panes under a live supervisor opens only the lead and duty panes and drops
+`duty-loop` / `hourly-loop` from `roles.json`; a stale role left by an older layout is removed with `dori role <role> -` (clearing accepts the loop
 roles; registering still accepts only lead and duty).
 
 ## What the merge removed

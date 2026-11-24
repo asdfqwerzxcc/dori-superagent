@@ -1,43 +1,37 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { readJson } from "../json-file.ts";
+import { refFromText } from "../refs.ts";
 import { spawnExec, type Exec } from "../runtime/exec.ts";
+import { HcRuntime } from "../runtime/hc/index.ts";
+import { HerdrRuntime } from "../runtime/herdr/index.ts";
+import type { AgentStatus, SessionRef } from "../runtime/types.ts";
 import { ENSURE_UP_HEARTBEAT, ENSURE_UP_OFF, pidAlive, stateDir, writeEnsureUpRecord } from "../supervisors.ts";
 
 /** True when state/ensure-up.off exists; the loop idles and the ensure-up plugin reports `off`. */
 export const ensureUpStopped = (home: string): boolean => existsSync(join(stateDir(home), ENSURE_UP_OFF));
 
-/** `herdr` addresses a named session for every call when one is set, exactly as the runtime CLI does. */
-const withSession = (session: string | undefined, argv: readonly string[]): string[] =>
-  session === undefined || session === "" ? [...argv] : ["--session", session, ...argv];
-
-/** `herdr workspace list`: the workspaces labelled `dori`. */
-export async function doriWorkspaces(
-  exec: Exec,
-  session: string | undefined = process.env["DORI_HERDR_SESSION"],
-): Promise<string[]> {
-  const r = await exec("herdr", withSession(session, ["workspace", "list"]));
-  if (r.code !== 0) throw new Error(`herdr workspace list failed: ${r.stderr.slice(0, 200)}`);
-  const data = JSON.parse(r.stdout) as { result?: { workspaces?: { workspace_id: string; label?: string }[] } };
-  return (data.result?.workspaces ?? []).filter((w) => w.label === "dori").map((w) => w.workspace_id);
+/** The lead role roles.json registers, or undefined when no `dori up` has run in this home. */
+export function leadRef(home: string): SessionRef | undefined {
+  const raw = readJson<Partial<Record<string, string>>>(join(home, "roles.json")) ?? {};
+  const text = raw["lead"];
+  return text === undefined || text === "" ? undefined : refFromText(text);
 }
 
-/** The workspace counts as up when one dori workspace holds at least two panes with a live agent. */
-export async function workspaceAlive(
-  exec: Exec,
+/**
+ * The lead's own runtime answers for its pane, so a stale role from before a reboot is `gone`; `absent` when no role is
+ * registered. A thrown probe is the caller's doubt, never evidence that the lead is down.
+ */
+export async function leadStatus(
+  home: string,
+  exec: Exec = spawnExec,
   session: string | undefined = process.env["DORI_HERDR_SESSION"],
-): Promise<boolean> {
-  const workspaces = await doriWorkspaces(exec, session);
-  if (workspaces.length === 0) return false;
-  const r = await exec("herdr", withSession(session, ["pane", "list"]));
-  if (r.code !== 0) return false;
-  const data = JSON.parse(r.stdout) as {
-    result?: { panes?: { workspace_id: string; agent?: string; agent_status?: string }[] };
-  };
-  const panes = data.result?.panes ?? [];
-  return workspaces.some(
-    (ws) => panes.filter((p) => p.workspace_id === ws && p.agent && p.agent_status !== "unknown").length >= 2,
-  );
+): Promise<AgentStatus | "absent"> {
+  const ref = leadRef(home);
+  if (ref === undefined) return "absent";
+  const rt = ref.runtime === "hc" ? new HcRuntime(exec) : new HerdrRuntime(exec, session);
+  return (await rt.probe(ref)).status;
 }
 
 export type EnsureUpOptions = {
@@ -130,11 +124,13 @@ export async function ensureUpCheck(opts: EnsureUpOptions = {}): Promise<EnsureU
     return "off";
   }
   try {
-    if (await workspaceAlive(exec)) {
+    const lead = await leadStatus(home, exec);
+    if (lead !== "gone" && lead !== "absent") {
       opts.report?.("alive", "ENSURE_UP alive");
       return "alive";
     }
-    opts.report?.("down", "ENSURE_UP dori workspace is down; running dori up");
+    const why = lead === "absent" ? "no lead role" : "lead pane is gone";
+    opts.report?.("down", `ENSURE_UP ${why}; running dori up`);
     const r = await up();
     log(`DORI_UP exit=${r.code} ${r.detail}`);
     return "down";

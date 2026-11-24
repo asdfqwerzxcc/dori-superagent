@@ -3,7 +3,7 @@ import { Refusal } from "./refusal.ts";
 
 export const USAGE = `dori - a proactive multi-session harness on herdr or hc + omo
 
-  dori up [--cwd DIR]                         open lead, duty, duty loop and hourly loop sessions
+  dori up [--cwd DIR] [--retire-old true]     open lead, duty and loops; a live lead is kept, --retire-old swaps it
   dori role <lead|duty> [REF|-]               register a session (w1:p3, herdr:w1:p3, hc:t7) as lead or duty (default: this one); - drops a stale role
   dori start <key> --brief FILE [--cwd DIR]   open a lane: new tab, omo session, brief + lane rules
   dori report <key> --text T [--status working|waiting]

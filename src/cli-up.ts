@@ -29,6 +29,17 @@ const LEAD_ENV = { OMO_TASK_DEFAULT_BACKGROUND: "1" } as const;
 const supervise = (d: Deps, supervisors: boolean): Promise<SupervisedState> =>
   d.supervise !== undefined ? d.supervise(d.store.root, { supervisors }) : superviseHome(d.store.root, { supervisors });
 
+/** A registered lead is replaced only when its pane is gone; a probe that fails is doubt, and doubt must not add a second lead. */
+type LeadLiveness = "alive" | "unverified" | "gone";
+
+const leadLiveness = async (d: Deps, ref: SessionRef): Promise<LeadLiveness> => {
+  try {
+    return (await d.runtimes.for(ref).probe(ref)).status === "gone" ? "gone" : "alive";
+  } catch {
+    return "unverified";
+  }
+};
+
 function renderPrompt(d: Deps, name: string): string {
   const dir = join(d.store.root, "prompts");
   mkdirSync(dir, { recursive: true });
@@ -47,9 +58,18 @@ const ensureLine = (state: SupervisedState): string =>
  * this home's group. When the loops are supervised, their panes are not opened and the stale loop roles are dropped.
  */
 export async function up(d: Deps, cwd: string, retireOld = false): Promise<void> {
+  const previous = d.store.roles().lead;
+  // A live lead owns the human conversation: opening a second workspace and duty would split it and orphan this one.
+  if (!retireOld && previous !== undefined) {
+    const liveness = await leadLiveness(d, previous);
+    if (liveness !== "gone") {
+      await supervise(d, supervisorAlive(d.store.root));
+      console.log(`UP lead ${liveness}; ensuring units only (lead=${refText(previous)})`);
+      return;
+    }
+  }
   const caps = readLoopCaps(d.store.root);
   const rt = d.runtimes.default;
-  const previous = d.store.roles().lead;
   const env = { DORI_HOME: d.store.root };
   const agent = (name: string) => `${d.agentCmd} --append-system-prompt ${shq(renderPrompt(d, name))}`;
   // herdr ignores the group of a workspace-root session and reports the new workspace as the lead ref's group.
