@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
+import { omoInputReady } from "../src/runtime/screen.ts";
 import { HerdrRuntime, omoScreenIdle } from "../src/runtime/herdr/index.ts";
 import { recorder, ref, world } from "./herdr-recorder.ts";
 
@@ -56,6 +57,51 @@ describe("omoScreenIdle (#62: herdr reports an omo with live monitors as working
     w.addPane("w1:p1", "blocked").screen = await screen("omo-idle-live-monitors");
     expect((await rt.probe(ref("w1:p1"))).status).toBe("blocked");
     expect(herdr().some((a) => a[1] === "read")).toBe(false);
+  });
+});
+
+describe("omoInputReady (the live composer, not only the idle box)", () => {
+  test("waiting on background children: ready while the status word stays working", async () => {
+    expect(omoInputReady(await screen("omo-waiting-children"))).toEqual({
+      ready: true,
+      why: "input box live while waiting on background children",
+    });
+    expect(omoScreenIdle(await screen("omo-waiting-children"))).toBe(false);
+  });
+
+  test("a turn, a draft or a dialog is not ready, with the logged reason", async () => {
+    expect(omoInputReady(await screen("omo-turn"))).toEqual({
+      ready: false,
+      why: "a turn is running (esc to interrupt)",
+    });
+    expect(omoInputReady(await screen("omo-draft"))).toEqual({
+      ready: false,
+      why: "the input box holds a draft",
+    });
+    expect(omoInputReady(await screen("omo-dialog"))).toEqual({ ready: false, why: "no input box on screen" });
+  });
+
+  test("the current footer wording (`~ •`, `effort max`, `mem:user`) does not hide an idle box", async () => {
+    expect(omoScreenIdle(await screen("omo-idle-current-footer"))).toBe(true);
+    expect(omoInputReady(await screen("omo-idle-current-footer"))).toEqual({ ready: true, why: "idle input box" });
+  });
+
+  test("the TPS footer fused onto the composer's top border does not hide an idle box", async () => {
+    expect(omoScreenIdle(await screen("omo-idle-fused-tps"))).toBe(true);
+    expect(omoInputReady(await screen("omo-idle-fused-tps"))).toEqual({ ready: true, why: "idle input box" });
+  });
+
+  test("an unknown line below the box without waiting_children is not ready", async () => {
+    const idle = await screen("omo-idle-live-monitors");
+    expect(omoInputReady(`${idle}\nsome late output`)).toEqual({ ready: false, why: "output below the input box" });
+  });
+
+  test("waiting_children above the composer does not excuse output below it", async () => {
+    const idle = await screen("omo-idle-live-monitors");
+    expect(omoInputReady(`the footer said waiting_children\n${idle}\nsome late output`)).toEqual({
+      ready: false,
+      why: "output below the input box",
+    });
   });
 });
 
