@@ -32,6 +32,24 @@ describe("duty loop", () => {
     expect((await dutyTick(d)).filter((e) => e.lane === "blocked-on-ci")).toEqual([]);
   });
 
+  test("a lead inbox held past five minutes is warned once, and delivers when the pane returns", async () => {
+    const { w, d, lead } = setup();
+    w.panes.get("w1:p1")!.status = "blocked";
+    d.store.enqueue(href("w1:p1"), { at: w.clock - 6 * 60_000, from: "cli", text: "waiting for the lead" });
+    expect(await dutyTick(d)).toContainEqual(expect.objectContaining({ pane: "w1:p1", action: "inbox-wait" }));
+    expect(d.store.queued(href("w1:p1")).filter((m) => m.text.includes("[INBOX-WAIT lead]"))).toHaveLength(1);
+    expect(lead.received).toEqual([]);
+
+    w.clock += 60_000;
+    expect((await dutyTick(d)).some((e) => e.action === "inbox-wait")).toBe(false);
+    expect(d.store.queued(href("w1:p1")).filter((m) => m.text.includes("[INBOX-WAIT lead]"))).toHaveLength(1);
+
+    w.panes.get("w1:p1")!.status = "idle";
+    await dutyTick(d);
+    expect(lead.received.at(-1)).toContain("waiting for the lead");
+    expect(lead.received.at(-1)).toContain("[INBOX-WAIT lead]");
+  });
+
   test("a failing inbox flush on one pane does not stop the loop for the other panes", async () => {
     const { w, d, lead } = setup();
     const broken = w.addPane("w1:p9", "idle");

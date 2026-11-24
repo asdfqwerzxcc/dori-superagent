@@ -1,0 +1,10 @@
+ The review came back clear; the lane is waiting on CI.
+
+ TPS 172.1 tok/s. Cache hit 99.7%, 25.8s
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~ • Review runner single first lane • CH99.8% • $0.000 • 120K/1M (12.0%) (auto)
+                  (opencode-go@login-2) deepseek-v4.1-flash • effort max (shift+tab)
+(😺 OmO Native by Q Kim) mem:user-55e58147 3m ago (+7) ◉ watching 7: a monitor… +6 more (12h 58m)

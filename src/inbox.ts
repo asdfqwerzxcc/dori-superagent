@@ -1,10 +1,10 @@
 import { DeliveryUncertain, failureDetail } from "./delivery.ts";
 import type { Deps } from "./harness.ts";
+import { inboxReadiness } from "./inbox-readiness.ts";
 import { Refusal } from "./refusal.ts";
 import { resolveLiveTarget, StaleRole } from "./target.ts";
 import { refText } from "./refs.ts";
 import type { AgentStatus, SessionRef } from "./runtime/types.ts";
-import { omoScreenIdle, SCREEN_LINES } from "./runtime/screen.ts";
 import { migrating } from "./store-journal.ts";
 import type { DeliveryAttempt, QueuedMessage } from "./store-types.ts";
 
@@ -93,15 +93,7 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
   const rt = d.runtimes.for(ref);
   // The probe carries the #62 screen check on herdr: an omo with live monitors between turns reads idle.
   // Its live status is the readiness gate; a stale `working` lane record never holds a message this pane can read.
-  let { status } = await rt.probe(ref);
-  // A runtime word that lags the screen (live monitors, #62/#178): a positive idle box is the pane's real signal.
-  if (status === "working") {
-    try {
-      if (omoScreenIdle(await rt.read(ref, SCREEN_LINES))) status = "idle";
-    } catch {
-      // A failed read is doubt: the message stays queued.
-    }
-  }
+  const { status, fromBusy } = await inboxReadiness(d, ref, (await rt.probe(ref)).status, queued.length);
   // Before the held check, so a gone session with only held messages says so instead of delivery-ambiguous forever (#108).
   if (status === "gone") throw new Refusal(`pane ${refText(ref)} is gone; ${all.length} message(s) kept in its inbox`);
   if (queued.length === 0) return "held";
@@ -140,7 +132,9 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
       ? (queued[0]?.text ?? "")
       : `${queued.length} messages arrived while you were busy:\n\n` +
         queued.map((m, i) => `(${i + 1}) from ${m.from}:\n${m.text}`).join("\n\n");
-  const out = await rt.deliver(ref, body);
+  // Readiness came from the screen while the runtime still says working (hc gates on its own word): type as if
+  // working, so hc's compare-and-send matches and a turn that started meanwhile keeps the message queued.
+  const out = await rt.deliver(ref, body, fromBusy ? { when: "working" } : undefined);
   switch (out.kind) {
     case "delivered":
       settleInbox(d, ref, queued);

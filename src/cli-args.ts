@@ -58,9 +58,9 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
                                              record the lead reviewer's verdict as the lane receipt
   dori review --lane <key> [--model M] [--restart] [--legacy-kill]
                                               record the request and print QUEUED <key> <tip> <job>; duty never
-                                              spawns a reviewer; the lead reviews as a subagent and attests it.
-                                              --restart replaces the request; --legacy-kill also kills a reviewer
-                                              tree an older dori recorded
+                                              spawns a reviewer; the lead runs the review in dori review's own
+                                              session and attests it. --restart replaces the request; --legacy-kill
+                                              also kills a reviewer tree an older dori recorded
   dori merge <lane-key|lane/key> [--dry-run]  default gate: CLEAR lane receipt at the head -> push lane/<key> to the
                                               lane repo's own remote (fork when present, else origin) -> PR against
                                               main -> checks green (or none) -> merge commit -> delete the remote branch

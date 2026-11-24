@@ -1,0 +1,9 @@
+ Final message for the turn. Summary:
+ - PR merged, lane done.
+
+ TPS 193.1 tok/s. Cache hit 99.6%, 44.2s────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~ • Review runner single first lane • CH99.8% • $1.326 (+1.283) • 238K/1M (23.8%) (auto)
+                  (opencode-go@login-2) deepseek-v4.1-flash • effort max (shift+tab)
+(😺 OmO Native by Q Kim) mem:user-55e58147 13m ago (+1) done

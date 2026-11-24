@@ -1,0 +1,11 @@
+ Final message for the turn. Summary:
+ - Work done, one child still running.
+
+ TPS 193.1 tok/s. Cache hit 99.6%, 44.2s
+── • Working (4s • esc to interrupt) ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ⠙ Gate review for design PR #31 (CTA restore + pattern-docs) · agent:omo-native-gate-reviewer(opencode-go/deepseek-v4.1-flash) · turn 21 (50 tools) · $0.0389 · 186 tok/s · running · 33m 13s
+~ • Review runner single first lane • CH99.5% • $1.197 (+1.184) • 138K/1M (13.8%) (auto)
+                  (opencode-go@login-2) deepseek-v4.1-flash • effort max (shift+tab)
+(😺 OmO Native by Q Kim) mem:user-55e58147 8m ago (+12) running · children: 1 · senpi-task: 1 · Gate review for design PR #31 (CTA restore + pattern-docs) · activity: model

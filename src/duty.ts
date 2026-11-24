@@ -5,10 +5,15 @@ import { flushInbox, sendOrThrow, tellLead } from "./inbox.ts";
 import { nextWatch, observe, WORKING_STALE_MS } from "./lane-watch.ts";
 import { Refusal } from "./refusal.ts";
 import { refText, sameSession } from "./refs.ts";
+import type { SessionRef } from "./runtime/types.ts";
 import { drainReviewQueue } from "./review-queue.ts";
 import type { Lane } from "./store-types.ts";
 
 export const NUDGE_MINUTES = [10, 20, 40] as const;
+
+/** A lead inbox that has waited this long is one the pane cannot take: warn the lead once per batch. */
+const INBOX_WAIT_WARN_MS = 5 * 60_000;
+const warnedLeadWaits = new Set<string>();
 
 export type DutyEvent = { lane?: string; pane?: string; action: string; detail?: string };
 
@@ -29,6 +34,7 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
       // flushInbox follows a `.forward` marker; the counts are read where the entries live now.
       const at = d.store.forwardOf(ref) ?? ref;
       if (result === "delivered") events.push({ pane: paneId, action: "flushed" });
+      if (result === "queued") await warnWaitingLead(d, ref, events);
       if (result === "no-agent") {
         events.push({
           pane: paneId,
@@ -137,6 +143,39 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
     lost: count((a) => a === "lost"),
   });
   return events;
+}
+
+/**
+ * A lead inbox that stayed queued past the threshold is one the pane cannot take (blocked, a dialog, a failed read).
+ * The hold reason is already on stderr; this warns the lead once per oldest message, so a stuck inbox is never silent
+ * (r-extra3). The notice itself queues in the same inbox and is delivered with the batch.
+ */
+async function warnWaitingLead(d: Deps, ref: SessionRef, events: DutyEvent[]): Promise<void> {
+  const lead = d.store.roles().lead;
+  if (lead === undefined || !sameSession(lead, ref)) return;
+  const queued = d.store.queued(ref);
+  const oldest = queued.reduce((min, m) => Math.min(min, m.at), Number.POSITIVE_INFINITY);
+  const waited = d.now() - oldest;
+  if (queued.length === 0 || waited < INBOX_WAIT_WARN_MS) return;
+  const key = `${d.store.root}|${refText(ref)}|${oldest}`;
+  if (warnedLeadWaits.has(key)) return;
+  warnedLeadWaits.add(key);
+  const minutes = Math.floor(waited / 60_000);
+  const status = await d.runtimes
+    .for(ref)
+    .probe(ref)
+    .then((p) => p.status)
+    .catch(() => "unknown" as const);
+  await tellLead(
+    d,
+    `[INBOX-WAIT lead] ${queued.length} message(s) waiting ${minutes}m (pane ${status}); see the duty log for the hold reason`,
+    "duty",
+  );
+  events.push({
+    pane: refText(ref),
+    action: "inbox-wait",
+    detail: `${queued.length} message(s) waiting ${minutes}m; pane ${status}; lead warned once`,
+  });
 }
 
 /**

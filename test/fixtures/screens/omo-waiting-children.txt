@@ -1,0 +1,13 @@
+ Now: the lane p1 is running; the reviewer child is running. End the turn with a short status.
+
+ TPS 157.6 tok/s. Cache hit 99.2%, 58.0s
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ⠧ Gate review for design PR #31 (CTA restore + pattern-docs) · agent:omo-native-gate-reviewer(opencode-go/deepseek-v4.1-flash) · turn 10 (22 tools) · $0.0090 · 226 tok/s · running · 18m 52s
+~ • Review runner single first lane • CH99.0% • $1.169 (+1.154) • 107K/1M (10.7%) (auto)
+                  (opencode-go@login-2) deepseek-v4.1-flash • effort max (shift+tab)
+(😺 OmO Native by Q Kim) mem:user-55e58147 8m ago (+7) waiting_children · children: 1 · senpi-task: 1 · Gate review for design PR #31 (CTA restore + pattern-docs)

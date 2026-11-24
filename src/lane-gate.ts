@@ -42,7 +42,8 @@ export async function laneGate(d: Deps, lane: Lane): Promise<LaneGate> {
       ok: false,
       reason:
         `lane ${lane.key} at ${tip.slice(0, 12)}: a review request is queued (${job.state}, requested ${when}); ` +
-        `the lead reviews it as a subagent, then records the verdict with dori review ${lane.key} --attest --verdict CLEAR|BLOCK ` +
+        `run the review in its own session with dori review <owner/repo#N>, then record the verdict with ` +
+        `dori review ${lane.key} --attest --verdict CLEAR|BLOCK ` +
         `--reviewer <name> --evidence <report>; run dori done ${lane.key} again once the receipt exists ` +
         `(or dori done --drop ${lane.key} --reason <text>)`,
     };
