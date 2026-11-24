@@ -75,10 +75,10 @@ describe("dori up", () => {
     expect(out).toBe(
       `UP runtime=herdr lead=w1:p2 duty=w1:p3 loop=w1:p4 hourly=w1:p5 home=${root}\nENSURE-UP off (ensure-up.off)`,
     );
-    expect(w.superviseCalls).toEqual([{ supervisors: false }]);
+    expect(w.superviseCalls).toEqual([{ startMissing: false }]);
   });
 
-  test("a live registered lead is kept: no new workspace or duty, only the units are ensured", async () => {
+  test("a live registered lead with the supervisor down starts it: no new workspace or duty", async () => {
     const w = new World();
     w.addPane("w1:p1", "idle");
     const d = w.deps();
@@ -90,7 +90,24 @@ describe("dori up", () => {
     expect(w.calls.filter((c) => c.cmd === "herdr" && (c.argv[1] === "create" || c.argv[1] === "split"))).toEqual([]);
     expect(w.calls.filter((c) => c.cmd === "herdr" && c.argv[0] === "pane" && c.argv[1] === "run")).toHaveLength(0);
     expect(d.store.roles()).toEqual({ lead: href("w1:p1") });
-    expect(w.superviseCalls).toEqual([{ supervisors: false }]);
+    // startMissing is the one argument that makes superviseHome call ensureSupervisors; a dead supervisor needs it.
+    expect(w.superviseCalls).toEqual([{ startMissing: true }]);
+    expect(out).toBe("UP lead alive; ensuring units only (lead=w1:p1)");
+  });
+
+  test("a live registered lead with the supervisor up is left as is: ensure is not asked", async () => {
+    const w = new World();
+    w.addPane("w1:p1", "idle");
+    const d = w.deps();
+    const root = d.store.root;
+    mkdirSync(join(root, "state"), { recursive: true });
+    writeFileSync(join(root, "state", "supervisor-heartbeat"), new Date().toISOString());
+    d.store.setRole("lead", href("w1:p1"));
+    const { out } = await captureIo(async () => {
+      await up(d, "/w");
+      return 0;
+    });
+    expect(w.superviseCalls).toEqual([{ startMissing: false }]);
     expect(out).toBe("UP lead alive; ensuring units only (lead=w1:p1)");
   });
 
@@ -171,7 +188,7 @@ describe("dori up", () => {
     });
     expect(w.calls.filter((c) => c.cmd === "herdr" && c.argv[0] === "pane" && c.argv[1] === "split")).toHaveLength(0);
     expect(JSON.parse(readFileSync(join(root, "roles.json"), "utf8"))).toEqual({ lead: "w1:p2", duty: "w1:p3" });
-    expect(w.superviseCalls).toEqual([{ supervisors: true }]);
+    expect(w.superviseCalls).toEqual([{ startMissing: false }]);
     expect(out).toStartWith("UP loops are supervised; skipping the loop panes (lead+duty only)\n");
     expect(out).toContain("ensure-up=off");
   });

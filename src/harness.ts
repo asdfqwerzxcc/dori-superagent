@@ -30,8 +30,8 @@ export type Deps = {
   readonly doriCmd: string;
   readonly host: () => HostLoad;
   readonly usage: Usage;
-  /** Starts the supervisors and the ensure-up loop that are not running (`dori up`); a fake Deps replaces it. */
-  readonly supervise?: (home: string, opts?: { readonly supervisors?: boolean }) => Promise<SupervisedState>;
+  /** Starts the supervisors that are missing (`dori up`) or only reads their health; a fake Deps replaces it. */
+  readonly supervise?: (home: string, opts?: { readonly startMissing?: boolean }) => Promise<SupervisedState>;
 };
 
 /** The runtime is chosen on first use, so commands that open or reach no session work without one installed. */
@@ -64,7 +64,7 @@ export const defaultDeps = (): Deps => {
     doriCmd: process.env["DORI_CMD"] ?? `DORI_HOME=${shq(home)} bun ${shq(CLI)}`,
     host: () => ({ load1: loadavg()[0] ?? 0, cores: cpus().length, memFreePct: memFreePct(), memFreeMb: memFreeMb() }),
     usage: new Telemetry(home),
-    supervise: (homePath, opts) => superviseHome(homePath, opts),
+    supervise: (homePath, opts) => superviseHome(homePath, { startMissing: opts?.startMissing ?? false }),
   };
 };
 

@@ -92,6 +92,15 @@ export function ageMs(path: string, now: number = Date.now()): number | undefine
   }
 }
 
+/** True when the file was written at or after `since` (one second of slack for coarse filesystem timestamps). */
+export function freshSince(path: string, since: number): boolean {
+  try {
+    return statSync(path).mtimeMs >= since - 1000;
+  } catch {
+    return false;
+  }
+}
+
 /** A pid the OS says exists. On Windows a live process owned by someone else answers EPERM, which is still alive. */
 export const pidAlive = (pid: number): boolean => {
   if (!(pid > 0)) return false;
@@ -193,4 +202,39 @@ export function formatSupervised(health: readonly SupervisorHealth[]): string[] 
 export function formatEnsureUp(h: EnsureUpHealth, off: boolean): string {
   if (off) return `ENSURE-UP off (${ENSURE_UP_OFF})`;
   return `ENSURE-UP ${h.alive ? "up" : "DOWN"} pid=${h.pid ?? "?"} hb=${secs(h.heartbeatAgeMs)}`;
+}
+
+const beatState = (age: number | undefined): string =>
+  age === undefined ? "missing" : `stale ${Math.max(0, Math.round(age / 1000))}s`;
+
+/**
+ * What `dori restart` left missing, each piece named with its reason: the supervisor beat, the ws beat, the supervisor
+ * itself, a unit, or the ensure-up beat. Empty when the restart settled.
+ */
+export function restartMissing(opts: {
+  readonly home: string;
+  readonly since: number;
+  readonly expected: readonly string[];
+  readonly wanted: boolean;
+  readonly health: readonly SupervisorHealth[];
+  readonly ensureUp: EnsureUpHealth;
+  readonly now: number;
+}): string[] {
+  const sup = heartbeatPath(opts.home, "supervisor");
+  const ws = join(stateDir(opts.home), WS_HEARTBEAT);
+  const missing: string[] = [];
+  if (!freshSince(sup, opts.since)) missing.push(`supervisor heartbeat ${beatState(ageMs(sup, opts.now))}`);
+  if (!freshSince(ws, opts.since)) missing.push(`gateway-ws heartbeat ${beatState(ageMs(ws, opts.now))}`);
+  const supervisor = opts.health.find((h) => h.name === "supervisor");
+  if (supervisor?.alive !== true)
+    missing.push(`supervisor ${supervisor === undefined ? "not running" : `pid=${supervisor.pid ?? "?"} down`}`);
+  for (const name of opts.expected) {
+    const unit = supervisor?.units.find((u) => u.name === name);
+    if (unit === undefined) missing.push(`unit ${name} missing`);
+    else if (!unit.alive) missing.push(`unit ${name} pid=${unit.pid ?? "?"} dead`);
+  }
+  if (opts.wanted && !opts.ensureUp.alive) {
+    missing.push(`ensure-up heartbeat ${beatState(opts.ensureUp.heartbeatAgeMs)}`);
+  }
+  return missing;
 }
