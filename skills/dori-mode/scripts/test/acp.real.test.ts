@@ -46,7 +46,8 @@ test.skipIf(!real)("a spawned dori acp answers a real model prompt with DORI_ACP
     await harness.waitFor((message) => message.id === 4, 20_000);
     await harness.close();
     expect(isPidAlive(pid)).toBe(false);
-    expect((await processList(pid)).toLowerCase()).toContain("no tasks");
+    // A dead pid is "no tasks" to Windows tasklist and a nonzero ps exit on POSIX.
+    expect((await processList(pid)).toLowerCase()).toContain(process.platform === "win32" ? "no tasks" : "exit=1");
   } finally {
     await harness.close();
     state.done();

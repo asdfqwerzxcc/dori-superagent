@@ -47,7 +47,8 @@ test("dori acp speaks ACP end to end through a spawned process and reaps its chi
     expect(closed.result).toEqual({});
     await harness.close();
     expect(isPidAlive(pid)).toBe(false);
-    expect((await processList(pid)).toLowerCase()).toContain("no tasks");
+    // A dead pid is "no tasks" to Windows tasklist and a nonzero ps exit on POSIX.
+    expect((await processList(pid)).toLowerCase()).toContain(process.platform === "win32" ? "no tasks" : "exit=1");
   } finally {
     await harness.close();
     state.done();
