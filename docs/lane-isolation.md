@@ -8,10 +8,11 @@ the main checkout, another lane cannot add commits to its range, and a review ca
 
 A lane's receipt range is exactly its own commits: `base..tip`, where `base` is the merge-base of the lane's recorded
 start commit and its current tip, measured in the lane's own checkout. `dori start` records the landing repository
-(`repo`) and its HEAD as `baseSha`; the lane record also carries the current `tipSha`, refreshed at every review.
-`dori review --lane <key>` diffs `merge-base(baseSha, tip)..tip`, so a main branch that moved after the start adds
-nothing to the reviewed range. The receipt is written per lane key and per tip commit, so a new commit invalidates it:
-review again, or drop the lane.
+(`repo`) and its HEAD as `baseSha`; the lane record also carries the current `tipSha`, refreshed when a review request is
+queued. `dori review --lane <key>` diffs `merge-base(baseSha, tip)..tip`, saves the diff under `lane-reviews/` and
+records a request; the lead reviews it as a subagent and writes the receipt with `dori review <key> --attest`. A main
+branch that moved after the start adds nothing to the reviewed range. The receipt is written per lane key and per tip
+commit, so a new commit invalidates it: review again, or drop the lane.
 
 ## What `dori start` sets up
 
@@ -52,7 +53,7 @@ lost lane, whose worktree and branch are kept for inspection until it is dropped
 
 | Failure mode | What would happen | What dori does instead |
 | --- | --- | --- |
-| Shared checkout | A lane commits into the lead's or another lane's checkout, so its "diff" contains work it never did and the lane gate cannot land it cleanly | Each lane gets its own tree on `lane/<key>` and its pane opens there; `dori status` prints `MISMATCH <key>: pane cwd ... is not its worktree ...` when a pane runs elsewhere, and the lane review still reads the lane's tree |
+| Shared checkout | A lane commits into the lead's or another lane's checkout, so its "diff" contains work it never did and the lane gate cannot land it cleanly | Each lane gets its own tree on `lane/<key>` and its pane opens there; `dori status` prints `MISMATCH <key>: pane cwd ... is not its worktree ...` when a pane runs elsewhere, and the queued diff and the lead's reviewer still read the lane's tree |
 | Moved base | Reviewing or landing `main..lane` attributes other lanes' new commits to this lane, or overwrites them | Review starts at the merge-base of the recorded base and the tip; the lane gate lands the PR, and `done` accepts a main that contains the lane branch but refuses a main that moved without it instead of forcing |
 | Orphan worktree | A crashed start or a closed lane leaves a registered tree and branch behind, consuming disk invisibly | `dori worktrees list` names every tree with its lane status and orphan reason (`lane done`, `lane dropped`, `lane lost`, `no lane record`, `path missing`, `not registered`, `stale lock`); `dori worktrees prune` removes clean orphans and their branches, and `dori status` adds one `WORKTREES <n> orphan` line while any exist |
 | Silent fallback | A lane whose worktree could not be created quietly commits into the shared checkout while the isolation guarantee is believed | A failed add, lock or ancestry check refuses the start with `worktree_unavailable: <git reason>` before any pane opens; a branch the failed add created is deleted, and no lane record is written. There is no fallback to the shared checkout |
@@ -70,7 +71,7 @@ orphan, so a running lane cannot be pruned out from under its pane.
 | Command | What it does |
 | --- | --- |
 | `dori start <key> --brief FILE [--cwd DIR]` | records the base, creates and locks `worktrees/<key>` on `lane/<key>`, and opens the pane there |
-| `dori review --lane <key> [--model M]` | diffs `merge-base(baseSha, tip)..tip` in the lane's tree and writes `receipts/lane_<key>@<tip>.json` |
+| `dori review --lane <key> [--model M]` | diffs `merge-base(baseSha, tip)..tip` in the lane's tree, saves the diff, and records a request (`QUEUED`); the lead runs one reviewer subagent and attests the receipt |
 | `dori merge <key>` | lane gate: pushes `lane/<key>`, opens/updates the PR, gates on checks, merges with a merge commit, deletes the remote branch |
 | `dori done <key>` | requires a CLEAR receipt at the current tip and a clean tree; verifies `main` contains the lane branch from the PR merge (or fast-forwards from the recorded base), then removes the tree and local branch |
 | `dori done <key> --rebase` | moves the lane onto the current `main` first and re-records its base; the old receipt no longer applies, so review again before `dori merge <key>` lands it |

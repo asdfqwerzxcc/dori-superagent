@@ -13,14 +13,14 @@ import { leadRestart } from "./cli-lead-restart.ts";
 import { runLabels } from "./labels.ts";
 import { runStale } from "./stale.ts";
 import { listWorktrees, pruneWorktrees } from "./worktrees.ts";
-import { attest, isPrId, mergeGate, review } from "./gate.ts";
+import { isPrId, mergeGate } from "./gate.ts";
 import { mergeLane } from "./lane-land.ts";
 import { runDoctor } from "./doctor.ts";
-import { runReviewLane } from "./review-lane-cli.ts";
+import { runReviewCommand } from "./review-lane-cli.ts";
 import { COMMANDS, deliveryOutcome, need, one, parse, textOf, USAGE } from "./cli-args.ts";
 import { runRole } from "./cli-role.ts";
 import { defaultDeps, type Deps } from "./harness.ts";
-import { ConfigError, hooksSettled, loadReviewSettings } from "./hooks.ts";
+import { ConfigError, hooksSettled } from "./hooks.ts";
 import { send } from "./inbox.ts";
 import { inboxList, releaseHeld, sendToShell } from "./inbox-held.ts";
 import { Refusal } from "./refusal.ts";
@@ -106,30 +106,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       return runLabels(d, a);
     case "stale":
       return runStale(d, a);
-    case "review": {
-      const lane = one(a, "lane");
-      if (lane !== undefined) {
-        if (x !== undefined) throw new Refusal("give a PR or --lane, not both");
-        return runReviewLane(d, lane, one(a, "model"), a.flags.has("restart"));
-      }
-      const prId = need(x, "PR");
-      if (a.flags.has("attest")) {
-        const verdict = one(a, "verdict");
-        if (verdict !== "CLEAR" && verdict !== "BLOCK") throw new Refusal("--attest needs --verdict CLEAR|BLOCK");
-        const summary = one(a, "summary");
-        const r = await attest(d, prId, {
-          verdict,
-          reviewer: need(one(a, "reviewer"), "--reviewer"),
-          ...(summary === undefined ? {} : { summary }),
-          evidence: a.flags.get("evidence") ?? [],
-        });
-        console.log(`ATTESTED ${prId} head=${r.sha} verdict=${r.verdict}`);
-        return r.verdict === "CLEAR" ? 0 : 1;
-      }
-      const r = await review(d, prId, one(a, "model") ?? loadReviewSettings(d.store.root).model);
-      console.log(`REVIEW ${prId} head=${r.sha} verdict=${r.verdict}`);
-      return r.verdict === "CLEAR" ? 0 : 1;
-    }
+    case "review":
+      return runReviewCommand(d, a, x);
     case "merge": {
       const bundle = one(a, "bundle");
       const lane = one(a, "lane");
