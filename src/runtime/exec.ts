@@ -7,7 +7,8 @@ export type SpawnedProcess = { readonly pid?: number; kill(): void };
 /**
  * `onSpawn` gets the running process, so a caller that gives up on it can kill it. `onStdout`/`onStderr` receive output
  * as it arrives; the final result still carries the whole text. `group` starts the child as its own process group, so
- * killing the tree cannot reach this process.
+ * killing the tree cannot reach this process. On Windows the child is also hidden, because a detached console opens a
+ * terminal window that outlives it.
  */
 export type ExecOptions = {
   readonly onSpawn?: (proc: SpawnedProcess) => void;
@@ -42,6 +43,8 @@ export const spawnExec: Exec = async (cmd, argv, options) => {
     stdout: "pipe",
     stderr: "pipe",
     stdin: "ignore",
+    // A detached console child would otherwise get a Windows Terminal window of its own; hiding it keeps behavior.
+    windowsHide: true,
     ...(options?.group === true ? { detached: true } : {}),
   });
   options?.onSpawn?.(proc);

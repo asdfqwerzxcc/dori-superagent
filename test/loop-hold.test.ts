@@ -66,6 +66,7 @@ describe("loop holds", () => {
     const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], {
       detached: true,
       stdio: "ignore",
+      windowsHide: true,
     });
     child.unref();
     const pid = child.pid;
