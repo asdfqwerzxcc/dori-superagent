@@ -23,6 +23,8 @@ import { groupId } from "./runtime/group.ts";
 import { openSession, type SessionRef } from "./runtime/types.ts";
 import { KEY_RE, reservedKey, type Lane } from "./store-types.ts";
 
+/** @public The type pruneLaneRecords returns; kept at its pre-split import path. */
+export type { PruneResult } from "./lane-prune.ts";
 export { pruneLaneRecords } from "./lane-prune.ts";
 
 export async function startLane(
