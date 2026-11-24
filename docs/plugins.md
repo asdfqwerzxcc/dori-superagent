@@ -35,7 +35,7 @@ type PluginCtx = {
 
 | Plugin | Tick | What it does |
 | --- | --- | --- |
-| `ensure-up` | 20 s | `dori up` when no dori workspace holds two live agent panes. Reuses `src/supervisors/ensure-up.ts` and its `state/ensure-up.lock`, so the pane-mode and plugin paths share one lock. Honours `state/ensure-up.off`. |
+| `ensure-up` | 20 s | `dori up` when `roles.json`'s lead is missing or its pane is `gone`. Reuses `src/supervisors/ensure-up.ts` and its `state/ensure-up.lock`, so the pane-mode and plugin paths share one lock. Honours `state/ensure-up.off`. |
 | `update-check` | 5 min | Checks git and the omo/senpi packages once a day at 04:00 local (`UPDATECHECK_AT_HOUR`); notifies the lead. The 5 min tick exists so a restart cannot skip or drift the 04:00 slot (the next slot is persisted in `state/update-check-next`). |
 | `gateway-catchup` | 60 s | Delivers what Discord holds past `state/gateway-last.json` that no inbound file covers. Channels = the keys of `gateway-last.json` (or `DORI_WATCH_CHANNELS` on a cold start). |
 | `silence-check` | 60 s | Alerts the lead when a human Discord message stays unanswered: rungs at 5 min, 15 min and every 30 min after that, one per message per rung, keyed by message id in `state/silence-check.json`. Any newer bot message clears it. The alert names the message and the four causes to check: a blocked turn, a stuck child, a prompt that never arrived, a missed catch-up. |

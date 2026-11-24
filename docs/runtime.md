@@ -78,7 +78,7 @@ Set `notes = false` in `~/.config/herdr-core/config.toml`. With notes on, hc typ
 
 ## Grouping
 
-On herdr, `dori up` creates a workspace named `dori`: the lead is its root pane, duty a tab, and the two loops are splits below duty. A lane opened from a pane in that workspace becomes a tab there.
+On herdr, `dori up` creates a workspace named `dori` unless `roles.json` registers a live lead: then it opens nothing and only ensures the supervised units. `--retire-old true` opens the new workspace and closes the old lead. The lead is the workspace's root pane, duty a tab, and the two loops are splits below duty. A lane opened from a pane in that workspace becomes a tab there.
 
 hc has no workspaces, tabs or layout. Dori opens one terminal per session and labels it:
 

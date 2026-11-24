@@ -168,6 +168,8 @@ describe("reviewCommand and DORI_PROMPTS_DIR", () => {
     process.env["DORI_PROMPTS_DIR"] = dir;
     expect(prompt("nudge.md", { key: "k" })).toBe("custom nudge for k");
     const log = spyOn(console, "log").mockImplementation(() => {});
+    // A live lead is kept by the new contract, so this home must have none for `up` to open and render the panes.
+    d.store.clearRole("lead");
     try {
       await up(d, d.store.root);
     } finally {
