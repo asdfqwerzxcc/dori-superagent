@@ -125,6 +125,10 @@
 - 출력 예: `STALE nudge pr#8 age=9d (Fix login)`, `STALE needs-info issue#4 age=20d (Docs)`,
   `STALE asdfqwerzxcc/dori-superagent prs=6 issues=9 actions=2 dry-run`.
 
+## 7. 리드 턴: 조사는 explore, 인바운드는 막지 않는다 (2026-11-24)
+
+- 조사·탐색은 `explore` 서브에이전트가 하고 리드는 결과만 판단하며(한 줄 확인·결정적 읽기는 예외), 긴 작업은 `run_in_background: true`로 돌려 리드 턴을 짧게 끊고 턴 사이에 `dori inbox list lead`로 큐를 확인하며, 인바운드가 늦으면 `dori status`의 게이트웨이·슈퍼바이저 줄과 리드 인박스부터 본다.
+
 ## 운영 순서
 
 1. 이슈가 들어오면 `dori labels` 드라이런으로 상태 라벨 공백·충돌을 확인하고, 확인 후 `--apply`.
