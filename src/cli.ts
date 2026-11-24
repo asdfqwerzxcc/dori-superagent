@@ -29,7 +29,7 @@ import { refText } from "./refs.ts";
 import { ConfigError as RuntimeConfigError, RuntimeChoiceError } from "./runtime/select.ts";
 import { formatEnsureUp, formatSupervised } from "./supervisors.ts";
 import { unitMode } from "./supervisors/unit-mode.ts";
-import { restartSupervisors } from "./supervisor-run.ts";
+import { restartSupervisors } from "./supervisor-restart.ts";
 
 export async function main(argv: readonly string[], d: Deps = defaultDeps()): Promise<number> {
   const a = parse(argv);
