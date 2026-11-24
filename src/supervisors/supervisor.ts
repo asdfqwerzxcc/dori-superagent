@@ -8,7 +8,7 @@ import { pluginRunEntry } from "../plugins/plugin.ts";
 import { isPluginEnabled, removePluginRecord, writePluginRecord } from "../plugins/state.ts";
 import { killTree, listProcesses, matchPids } from "../supervisor-run.ts";
 import { pidAlive, stateDir, UNIT_PATTERNS, writeSupervisorRecord, type UnitRecord } from "../supervisors.ts";
-import { openUnitPanes } from "./ops-panes.ts";
+import { unitPaneLayer } from "./unit-mode.ts";
 import type { PaneUnit } from "./panes.ts";
 import { runPluginUnit } from "./plugins.ts";
 import { paneCommand, runUnitInPane } from "./units.ts";
@@ -102,7 +102,7 @@ export async function runSupervisor(): Promise<never> {
     );
   }
 
-  const panes = await openUnitPanes({ home, env: process.env, log, sleep });
+  const panes = await unitPaneLayer({ home, env: process.env, log, sleep });
   const paneUnit = (name: string, entry: string, args: readonly string[]): PaneUnit => ({
     name,
     command: paneCommand(process.execPath, [entry, ...args], panes?.shell ?? "sh"),
@@ -235,7 +235,7 @@ export async function runSupervisor(): Promise<never> {
     });
   };
 
-  log(`SUPERVISED ready units=${ORDER.join(",")} cli=${cli}`);
+  log(`SUPERVISED ready units=${ORDER.join(",")} cli=${cli} ppid=${process.ppid}`);
   for (const spec of specs) startCore(spec);
   await new Promise<never>(() => {});
   throw new Error("unreachable");

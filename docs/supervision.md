@@ -15,6 +15,9 @@ exists to resurrect the supervisor and cannot resurrect itself. The timed side-j
 | `plugins/run.ts <name>` | supervisor (one per enabled plugin) | `state/plugins/<name>.json`/`.tick`/`.lock`, plus its own `state/` files | pane output, else `state/loops.log` |
 | `gateway-watchdog.ts` | launcher | `state/gateway-watchdog-heartbeat`, `state/watchdog-supervisor.json` | `state/gateway-watchdog.log` |
 
+The watchdog treats a stale supervisor heartbeat as a whole-stack failure, but a stale Discord socket alone costs only
+the gateway child: the supervisor restarts that unit in place, so a socket reconnect does not churn the stack.
+
 ## Unit panes
 
 When the chosen runtime answers (`herdr`, or `hc` when it is the selected kind), each supervisor child runs as a plain
@@ -37,6 +40,13 @@ command in its own pane instead of a headless pipe, so `herdr pane list` shows t
   retrying placement instead of starting a second copy.
 - **Restart**: killing a unit process is noticed within a second and the unit is started again in its pane after the
   usual 5 s delay; `dori restart` kills and restarts the supervisor, and the panes are reused, not duplicated.
+
+**Headless option**: `supervisors.panes: false` in `$DORI_HOME/config.json` turns the pane layer off. No `dori-ops`
+workspace or unit pane is created; the same core and plugin children run as the headless processes they already fall
+back to, with their output in `state/gateway.log` and `state/loops.log`. `dori status` and `state/supervisor.json` read
+the same in either mode (the units simply carry no `@pane`), and `dori up` / `dori restart` print the mode as
+`units=headless` instead of `units=panes`. The default, `true`, keeps pane mode; a supervisor that cannot reach the
+runtime still logs one `panes_unavailable ... headless=1` line and keeps the headless children.
 
 The pane command line is quoted for the pane's shell (PowerShell on Windows herdr, `sh` for hc), and the unit pid is
 read back from the process command line on herdr (herdr's `process-info` reports only the pane's shell on Windows) or
