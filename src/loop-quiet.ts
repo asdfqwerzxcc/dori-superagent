@@ -12,7 +12,14 @@ const quietKey = (s: LoopStatus) =>
 
 /** An unchanged hourly status reaches the lead at most once every QUIET_HOURS; anything new goes straight through. */
 export async function worthTelling(d: Deps, run: LoopRun): Promise<boolean> {
-  if (run.synced.length || run.findings.length || run.started.length || run.held.length || run.asked.length)
+  if (
+    run.synced.length ||
+    run.findings.length ||
+    run.started.length ||
+    run.held.length ||
+    run.asked.length ||
+    (run.reclaimed?.length ?? 0) > 0
+  )
     return true;
   const key = quietKey(run.status as LoopStatus);
   const prev = (await Bun.file(quietPath(d))

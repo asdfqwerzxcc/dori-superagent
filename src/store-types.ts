@@ -173,6 +173,8 @@ export type LoopRun = {
   started: string[];
   held: string[];
   asked: string[];
+  /** What a memory hold closed or cleaned, with the memory recovered; absent on records written before this existed. */
+  reclaimed?: string[];
 };
 
 export const KEEP_RUNS = 168;

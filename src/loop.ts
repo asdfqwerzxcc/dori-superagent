@@ -1,65 +1,25 @@
 // The hourly loop: sync the backlog with live lanes, audit for missed work, start the next item
 // that needs no decision, ask the lead the open questions, and record the run. It never merges,
-// never pushes, never closes a pane and never edits a lane record. See docs/hourly-loop.md.
-import { laneForItem, log, MAX_ATTEMPTS, reconcileRunningItems, type ReconcileEvent } from "./backlog.ts";
+// never pushes and never edits a lane record; under a memory hold it may close an idle landed lane's
+// session (see loop-hold.ts). See docs/hourly-loop.md.
+import { log, MAX_ATTEMPTS } from "./backlog.ts";
 import type { Deps } from "./harness.ts";
 import { tellLead } from "./inbox.ts";
 import { startLane } from "./lanes.ts";
 import { audit, HOUR } from "./loop-audit.ts";
 import { DEFAULT_MAX_LANES, DEFAULT_MAX_STARTS } from "./loop-caps.ts";
+import { clearHold, holdNotice, memoryLow, notifyHold, reclaimMemory, type PullOutcome } from "./loop-hold.ts";
 import { acquire, holds, release } from "./loop-lock.ts";
 import { rememberQuiet, worthTelling } from "./loop-quiet.ts";
+import { sync } from "./loop-sync.ts";
 import { refText } from "./refs.ts";
 import type { LoopRun } from "./store-types.ts";
 
 export { HOUR };
 export { MAX_ATTEMPTS };
 export const REMIND_HOURS = 6;
-export const MEM_FREE_MIN_PCT = 10;
-/** Absolute floor too: 10% of 7.7 GB is 770 MB, less than one agent's private memory; 700 MB is what this host can actually keep free beside a lead. */
-export const MEM_FREE_MIN_MB = 700;
 
 export type LoopOpts = { interval?: number; maxLanes?: number; maxStarts?: number; maxLoad?: number; force?: boolean };
-
-const PR_RE = /github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/;
-
-async function ghState(d: Deps, kind: "pr" | "issue", repo: string, n: string): Promise<string> {
-  const r = await d.exec("gh", [kind, "view", n, "--repo", repo, "--json", "state"]);
-  if (r.code !== 0)
-    throw new Error(`gh ${kind} view ${repo}#${n}: ${(r.stderr || r.stdout).trim() || `exit ${r.code}`}`);
-  return String((JSON.parse(r.stdout) as { state?: string }).state);
-}
-
-async function sync(d: Deps, run: LoopRun): Promise<ReconcileEvent[]> {
-  const reconciled = reconcileRunningItems(d, { countAttempts: true });
-  for (const event of reconciled) run.synced.push(event.text);
-  for (const item of d.store.items()) {
-    try {
-      if (item.status === "running") {
-        const lane = laneForItem(d, item.id);
-        if (lane?.status === "ready") {
-          const m = lane.final?.evidence.map((e) => PR_RE.exec(e)).find(Boolean);
-          if (m && (await ghState(d, "pr", m[1]!, m[2]!)) === "MERGED") {
-            item.status = "done";
-            log(d, item, "done", "PR merged");
-            run.synced.push(`${item.id} done (PR merged)`);
-            run.findings.push(`${item.id} READY and its PR merged: dori done ${item.id}`);
-          }
-        }
-      } else if (item.status === "open" && item.source) {
-        const [repo, n] = item.source.split("#");
-        if ((await ghState(d, "issue", repo!, n!)) === "CLOSED") {
-          item.status = "dropped";
-          log(d, item, "drop", "source issue closed");
-          run.synced.push(`${item.id} dropped (${item.source} closed)`);
-        }
-      }
-    } catch (e) {
-      run.findings.push(`gh: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-  return reconciled;
-}
 
 const isOpenLane = (status: string): boolean => status !== "done" && status !== "lost" && status !== "dropped";
 
@@ -70,40 +30,54 @@ async function pull(
   maxStarts: number,
   maxLoad: number | undefined,
   nonce: string,
-): Promise<void> {
-  if (!d.store.roles().lead) {
-    run.held.push("no lead pane registered");
-    return;
-  }
+): Promise<PullOutcome> {
   const host = d.host();
-  const open = d.store.lanes().filter((l) => isOpenLane(l.status)).length;
-  let starts = Math.max(0, Math.min(maxLanes - open, maxStarts));
-  const served = new Set(
-    d.store
-      .lanes()
-      .filter((l) => isOpenLane(l.status))
-      .map((l) => l.item ?? l.key),
-  );
+  const lanes = d.store.lanes().filter((l) => isOpenLane(l.status));
+  const open = lanes.length;
+  const served = new Set(lanes.map((l) => l.item ?? l.key));
   const candidates = d.store
     .items()
     .filter((i) => i.status === "open" && !i.decision && !served.has(i.id))
     .sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt || a.id.localeCompare(b.id));
-  if (
-    candidates.length > 0 &&
-    (host.load1 > (maxLoad ?? host.cores) || host.memFreePct < MEM_FREE_MIN_PCT || host.memFreeMb < MEM_FREE_MIN_MB)
-  ) {
-    run.held.push(
-      `host busy: load ${host.load1.toFixed(1)} (limit ${maxLoad ?? host.cores}), mem free ${host.memFreePct}% (${host.memFreeMb} MB)`,
-    );
-    starts = 0;
+  const base: PullOutcome = {
+    candidates: candidates.length,
+    waiting: candidates.length,
+    load: false,
+    mem: false,
+    lockLost: false,
+    host,
+  };
+  if (!d.store.roles().lead) {
+    run.held.push("no lead pane registered");
+    return base;
+  }
+  let starts = Math.max(0, Math.min(maxLanes - open, maxStarts));
+  let current = host;
+  let mem = false;
+  let load = false;
+  if (candidates.length > 0 && starts > 0) {
+    if (memoryLow(current)) {
+      await reclaimMemory(d, run);
+      current = d.host();
+    }
+    mem = memoryLow(current);
+    load = current.load1 > (maxLoad ?? current.cores);
+    if (load || mem) {
+      run.held.push(
+        `host busy: load ${current.load1.toFixed(1)} (limit ${maxLoad ?? current.cores}), mem free ${current.memFreePct}% (${current.memFreeMb} MB)`,
+      );
+      starts = 0;
+    }
   }
   // Each start attempt uses one of this run's slots, so a broken host costs at most `starts` failures per run.
   // A failed item counts toward MAX_ATTEMPTS and then becomes a question, so it never blocks the items behind it.
   let tried = 0;
+  let lockLost = false;
   for (; tried < Math.min(starts, candidates.length); tried++) {
     const item = candidates[tried]!;
     if (!holds(d, nonce)) {
       run.held.push("lock lost to another loop; no more starts this run");
+      lockLost = true;
       break;
     }
     try {
@@ -131,6 +105,7 @@ async function pull(
       `${waiting} item(s) waiting: ${Math.max(0, maxLanes - open - run.started.length)} free of ${maxLanes} lanes, max ${maxStarts}/run`,
     );
   }
+  return { ...base, waiting, load, mem, lockLost, host: current };
 }
 
 function ask(d: Deps, run: LoopRun): void {
@@ -160,6 +135,7 @@ export function summary(run: LoopRun): string {
   ];
   for (const k of ["synced", "findings", "started", "held"] as const)
     if (run[k].length) lines.push(`${k}: ${run[k].join("; ")}`);
+  if (run.reclaimed?.length) lines.push(`reclaimed: ${run.reclaimed.join("; ")}`);
   lines.push(...run.asked);
   return lines.join("\n");
 }
@@ -179,10 +155,10 @@ export async function loopTick(d: Deps, opts: LoopOpts = {}): Promise<LoopRun> {
     if (last && !opts.force && d.now() - last.at < interval) {
       return { at: d.now(), skipped: `ran ${Math.floor((d.now() - last.at) / 60_000)}m ago`, ...empty };
     }
-    const run: LoopRun = { at: d.now(), synced: [], findings: [], started: [], held: [], asked: [] };
+    const run: LoopRun = { at: d.now(), synced: [], findings: [], started: [], held: [], asked: [], reclaimed: [] };
     const reconciled = await sync(d, run);
     await audit(d, run);
-    await pull(d, run, maxLanes, maxStarts, opts.maxLoad, lock.nonce);
+    const pulled = await pull(d, run, maxLanes, maxStarts, opts.maxLoad, lock.nonce);
     ask(d, run);
     // A stale running item resolved by sync is reported, not just listed: the operator may need to fix why the lane
     // vanished. Appended after pull so a start failure keeps its place as the run's first finding.
@@ -201,6 +177,14 @@ export async function loopTick(d: Deps, opts: LoopOpts = {}): Promise<LoopRun> {
       },
       host: d.host(),
     };
+    const hold = holdNotice(run, pulled, interval);
+    if (hold === undefined) clearHold(d);
+    else {
+      const sent = await notifyHold(d, hold);
+      if (sent.state === "sent") run.findings.push(`hold notified: ${hold.key}`);
+      else if (sent.state === "failed")
+        run.findings.push(`hold notification failed: ${hold.key} (${sent.why ?? "unknown"})`);
+    }
     const record = d.store.saveRun(run);
     try {
       if (await worthTelling(d, run)) {
