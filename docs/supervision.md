@@ -36,7 +36,7 @@ command in its own pane instead of a headless pipe, so `herdr pane list` shows t
   the headless child, and unknown liveness waits and retries placement.
 - **Fallback**: a missing runtime, no runtime on PATH, or a runtime that does not answer at startup logs one
   `SUPERVISED panes_unavailable ... headless=1` line and keeps the headless children. A pane that fails later logs
-  `SUPERVISED <unit>_pane_fallback ...` and falls back; an unreadable process list logs `_pane_unknown` once and keeps
+  `SUPERVISED <unit>_pane_fallback ...` and falls back; an unreadable process tree logs `_pane_unknown` once and keeps
   retrying placement instead of starting a second copy.
 - **Restart**: killing a unit process is noticed within a second and the unit is started again in its pane after the
   usual 5 s delay; `dori restart` kills and restarts the supervisor, and the panes are reused, not duplicated.
@@ -48,9 +48,15 @@ the same in either mode (the units simply carry no `@pane`), and `dori up` / `do
 `units=headless` instead of `units=panes`. The default, `true`, keeps pane mode; a supervisor that cannot reach the
 runtime still logs one `panes_unavailable ... headless=1` line and keeps the headless children.
 
-The pane command line is quoted for the pane's shell (PowerShell on Windows herdr, `sh` for hc), and the unit pid is
-read back from the process command line on herdr (herdr's `process-info` reports only the pane's shell on Windows) or
-from `hc get`'s foreground process. The supervisor records `name:pid@pane`; `dori status` prints it.
+The pane command line is quoted for the pane's shell (PowerShell on Windows herdr, `sh` for hc). On herdr the unit is
+the direct `bun` child of the pane's shell in the OS process tree, so `process-info`'s shell pid plus the parent links
+identify it without a command-line query; hc reads its terminal's foreground process. The supervisor records
+`name:pid@pane`; `dori status` prints it.
+
+The supervisor never asks PowerShell for process status. A recorded pid is checked with `kernel32!OpenProcess` on
+Windows, or `kill(pid, 0)` on POSIX, and the process tree is a Toolhelp32 snapshot on Windows (one hidden `ps` on POSIX).
+The only `Get-CimInstance` left runs on an explicit lead restart, hidden, because the lead stack is identified by command
+lines the kernel does not expose; a supervisor status read or a restart never spawns it.
 
 Measured cost on this host (Windows 11, herdr 0.9.5, 2026-11-23, 8 empty unit panes): each PowerShell pane host is
 ~55 MB private / ~72 MB working set, and the herdr server grows ~2.6 MB private (terminal state) per pane. At 8 units
@@ -82,7 +88,8 @@ PLUGIN update-check up pid=3140 hb=3s (next 04:00)
 PLUGIN gateway-catchup up pid=9977 hb=4s
 ```
 
-The supervisor is `up` only when its recorded pid is alive **and** its heartbeat is inside the 90 s window. The watchdog
+The supervisor is `up` only when its recorded pid is alive **and** its heartbeat is inside the 90 s window; the liveness
+read is kernel32 `OpenProcess` on Windows, so a status command never opens a console window. The watchdog
 line is separate: its own heartbeat and record, one stale threshold, one grace window. Plugin lines come from
 `state/plugins/<name>.json` plus the child's own `.tick` beat; a disabled plugin leaves no line, and
 `PLUGIN ensure-up ... (off)` means `state/ensure-up.off` is present. A role whose pane is gone is printed as `STALE`, and
@@ -90,8 +97,10 @@ line is separate: its own heartbeat and record, one stale threshold, one grace w
 
 ## `dori restart`
 
-Kills the supervisor and every child process by command line (core units and plugin children alike), so a supervisor
-killed on its own does not leave orphans behind. It starts one supervisor again and returns only when the supervisor
+Kills the supervisor and every child its records name (`state/supervisor.json` units, `state/plugins/<name>.json` and
+`state/ensure-up.json`), so a supervisor killed on its own does not leave orphans behind. A recorded pid is taken only
+when it is alive and its OS start time matches the record, so a pid Windows reused for another process is left alone.
+It starts one supervisor again and returns only when the supervisor
 heartbeat, `gateway-ws-heartbeat` (the Discord socket actually acked) and the units — the three core children plus every
 enabled plugin — are newer than the moment the restart began. `RESTART INCOMPLETE` (exit 1) means one of them did not
 come back, and the lines above the verdict say which. An attempt that comes back short is retried once with the same
@@ -152,9 +161,8 @@ roles; registering still accepts only lead and duty).
 `gateway-supervisor.ts` and `loops-supervisor.ts` no longer exist. `state/loops-heartbeat`, `state/gateway-supervisor.json`
 and `state/loops-supervisor.json` are neither read nor written; `state/gateway-heartbeat` stays as the compatibility
 write for the Windows boot guard, and `gateway.log` / `loops.log` remain the child-output logs of headless units (pane
-units log to their pane). A `dori restart` still
-matches the old supervisor command lines once, so a host that is still running the pre-merge pair can be swapped with
-one command.
+units log to their pane). `dori restart` reads records now, not command lines, so a host still running the pre-merge
+pair must have those old processes stopped once by hand (or by the boot guard) before the merged supervisor takes the slot.
 
 ## Tests on Windows
 

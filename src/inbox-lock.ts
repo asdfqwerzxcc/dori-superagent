@@ -1,5 +1,6 @@
 import { linkSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
+import { pidAlive } from "./process-liveness.ts";
 import { INBOX_LOCK_STALE_MS } from "./store-types.ts";
 
 const readOrUndefined = (path: string): string | undefined => {
@@ -7,15 +8,6 @@ const readOrUndefined = (path: string): string | undefined => {
     return readFileSync(path, "utf8");
   } catch {
     return undefined;
-  }
-};
-
-const pidAlive = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === "EPERM";
   }
 };
 

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { LeadSwapOptions } from "../src/lead-swap.ts";
 import type { Probe } from "../src/runtime/types.ts";
-import type { Proc } from "../src/supervisor-run.ts";
+import type { Proc } from "../src/lead-process-list.ts";
 import { href } from "./fake.ts";
 
 export const promptText = "You are the LEAD session of a dori harness.";

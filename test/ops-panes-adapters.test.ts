@@ -4,7 +4,7 @@ import { PaneUnits, PaneUnknown, type PaneUnit } from "../src/supervisors/panes.
 import { HcPanes } from "../src/supervisors/panes-hc.ts";
 import { HerdrPanes } from "../src/supervisors/panes-herdr.ts";
 import { openUnitPanes } from "../src/supervisors/ops-panes.ts";
-import type { Proc } from "../src/supervisor-run.ts";
+import type { ProcNode } from "../src/process-tree.ts";
 import { FakeHc } from "./fake-hc.ts";
 
 type Row = Record<string, unknown>;
@@ -15,10 +15,10 @@ type World = {
   workspaces: Row[];
   calls: string[][];
   shells: Map<string, number>;
-  procs: Proc[] | undefined;
+  tree: ProcNode[] | undefined;
   next: number;
 };
-const world = (): World => ({ panes: [], workspaces: [], calls: [], shells: new Map(), procs: [], next: 1 });
+const world = (): World => ({ panes: [], workspaces: [], calls: [], shells: new Map(), tree: [], next: 1 });
 
 function herdr(w: World): Exec {
   return async (cmd, argv) => {
@@ -61,13 +61,13 @@ function herdr(w: World): Exec {
 }
 
 const adapter = (w: World): HerdrPanes =>
-  new HerdrPanes({ home: "C:/home", env: { DORI_HOME: "C:/home" }, exec: herdr(w), procs: async () => w.procs });
+  new HerdrPanes({ home: "C:/home", env: { DORI_HOME: "C:/home" }, exec: herdr(w), tree: async () => w.tree });
 const duty: PaneUnit = { name: "duty", command: "run duty", marker: ["cli.ts", "duty"] };
 
 describe("herdr unit panes", () => {
   test("the ops workspace is created once and its first shell becomes the first unit's pane", async () => {
     const w = world();
-    w.procs = [{ pid: 40, parent: 101, command: '"bun.exe" C:/repo/src/cli.ts duty --interval 60' }];
+    w.tree = [{ pid: 40, parent: 101, exe: "bun.exe" }];
     const panes = adapter(w);
     await panes.ready();
     expect(w.calls.filter((c) => c[0] === "workspace" && c[1] === "create")).toHaveLength(1);
@@ -115,7 +115,7 @@ describe("herdr unit panes", () => {
     w.panes.push({ pane_id: "w2:p1", workspace_id: "w2", tab_id: "w2:t1", label: "duty" });
     w.shells.set("w1:p1", 101);
     w.shells.set("w1:p2", 202);
-    w.procs = [{ pid: 3132, parent: 202, command: '"bun" C:/repo/src/cli.ts duty --interval 60' }];
+    w.tree = [{ pid: 3132, parent: 202, exe: "bun" }];
     const panes = adapter(w);
     await panes.ready();
     const found = await panes.panes("duty");
@@ -137,12 +137,12 @@ describe("herdr unit panes", () => {
     w.workspaces.push({ workspace_id: "w1", label: "dori-ops" });
     w.panes.push({ pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", label: "duty" });
     w.shells.set("w1:p1", 101);
-    w.procs = undefined;
+    w.tree = undefined;
     const panes = adapter(w);
     await panes.ready();
     expect(await panes.pid((await panes.panes("duty"))[0]!, ["cli.ts", "duty"])).toEqual({
       kind: "unknown",
-      why: "process list unavailable",
+      why: "process tree unavailable",
     });
     const failure: unknown = await new PaneUnits({
       adapter: panes,
@@ -157,6 +157,23 @@ describe("herdr unit panes", () => {
       );
     expect(failure).toBeInstanceOf(PaneUnknown);
     expect(w.calls.filter((c) => c[0] === "pane" && c[1] === "run")).toHaveLength(0);
+  });
+
+  test("only a lone bun child is the unit: another executable is stopped and two bun children are unknown", async () => {
+    const w = world();
+    w.workspaces.push({ workspace_id: "w1", label: "dori-ops" });
+    w.panes.push({ pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", label: "duty" });
+    w.shells.set("w1:p1", 101);
+    w.tree = [{ pid: 31, parent: 101, exe: "omo.exe" }];
+    const panes = adapter(w);
+    await panes.ready();
+    const pane = (await panes.panes("duty"))[0]!;
+    expect(await panes.pid(pane, ["cli.ts", "duty"])).toEqual({ kind: "stopped" });
+    w.tree = [
+      { pid: 31, parent: 101, exe: "bun.exe" },
+      { pid: 32, parent: 101, exe: "bun.exe" },
+    ];
+    expect(await panes.pid(pane, ["cli.ts", "duty"])).toMatchObject({ kind: "unknown" });
   });
 });
 
