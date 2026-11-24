@@ -73,7 +73,7 @@ orphan, so a running lane cannot be pruned out from under its pane.
 | `dori start <key> --brief FILE [--cwd DIR]` | records the base, creates and locks `worktrees/<key>` on `lane/<key>`, and opens the pane there |
 | `dori review --lane <key> [--model M]` | diffs `merge-base(baseSha, tip)..tip` in the lane's tree, saves the diff, and records a request (`QUEUED`); the lead runs one reviewer subagent and attests the receipt |
 | `dori merge <key>` | lane gate: pushes `lane/<key>`, opens/updates the PR, gates on checks, merges with a merge commit, deletes the remote branch |
-| `dori done <key>` | requires a CLEAR receipt at the current tip and a clean tree; verifies `main` contains the lane branch from the PR merge (or fast-forwards from the recorded base), then removes the tree and local branch |
+| `dori done <key>` | requires a CLEAR receipt at the current tip and a clean tree; verifies `main` contains the lane branch from the PR merge (or fast-forwards from the recorded base), then removes the tree and local branch. A lane whose tree is already gone closes as landed when its recorded tip is on `main`; otherwise `--drop` is the explicit exit |
 | `dori done <key> --rebase` | moves the lane onto the current `main` first and re-records its base; the old receipt no longer applies, so review again before `dori merge <key>` lands it |
 | `dori done --drop <key> --reason TEXT` | closes the lane without landing: removes the tree and `lane/<key>`, records `dropped` with the reason |
 | `dori worktrees list` | prints `WORKTREES root=...`, one `TREE <key>` line per tree with status, path, repo, dirty count, locks and orphan reason, then `WORKTREES <n> orphan` |

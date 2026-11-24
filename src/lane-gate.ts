@@ -3,7 +3,9 @@ import { laneHead, laneRepo } from "./lane-repo.ts";
 import { reviewJobFor } from "./review-queue.ts";
 import type { Lane } from "./store-types.ts";
 
-export type LaneGate = { readonly ok: true; readonly note?: string } | { readonly ok: false; readonly reason: string };
+export type LaneGate =
+  | { readonly ok: true; readonly note?: string }
+  | { readonly ok: false; readonly reason: string; readonly headUnreadable?: true };
 
 /**
  * What `dori done` asks before closing: the current tip has a CLEAR receipt, or the lane committed nothing (base ===
@@ -17,6 +19,7 @@ export async function laneGate(d: Deps, lane: Lane): Promise<LaneGate> {
   if (tip === undefined)
     return {
       ok: false,
+      headUnreadable: true,
       reason: `lane ${lane.key}: cannot read HEAD in ${laneRepo(lane)}; fix the checkout, then run: dori review --lane ${lane.key} (or dori done --drop ${lane.key} --reason <text>)`,
     };
   if (tip === lane.baseSha) return { ok: true };

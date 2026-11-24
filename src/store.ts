@@ -15,6 +15,7 @@ import { writeJson, readJson } from "./json-file.ts";
 import { takeInboxLock } from "./inbox-lock.ts";
 import { Receipts } from "./receipts.ts";
 import { refFromText, refText, sameSession } from "./refs.ts";
+import { Refusal } from "./refusal.ts";
 import type { SessionRef } from "./runtime/types.ts";
 import { StoreRecords } from "./store-records.ts";
 import type { Lane, LaneReceipt, QueuedMessage, ReviewReceipt, Role } from "./store-types.ts";
@@ -29,6 +30,9 @@ const upgrade = (raw: StoredLane): Lane =>
   raw.sessionRef !== undefined
     ? (raw as Lane)
     : { ...raw, sessionRef: { runtime: "herdr", id: raw.paneId, ...(raw.tabId ? { container: raw.tabId } : {}) } };
+
+/** A lane record that is closed for good: `done` (landed) or `dropped` (abandoned). */
+const closed = (status: Lane["status"]): boolean => status === "done" || status === "dropped";
 
 export class Store extends StoreRecords {
   readonly receipts: Receipts;
@@ -48,8 +52,19 @@ export class Store extends StoreRecords {
     return raw && upgrade(raw);
   }
 
-  /** Writes `paneId`/`tabId` from `sessionRef` beside it, so an older binary still reads the record. */
-  saveLane(lane: Lane): void {
+  /**
+   * Writes a lane record, with `paneId`/`tabId` from `sessionRef` beside it so an older binary still reads it. A record
+   * that is already closed on disk never goes back to an open status: a `ready`, a `report` or any stale snapshot that
+   * read the record before the close is refused instead of silently dropping the close from the log. Only `revive`
+   * writes over it — `dori start` reusing a finished key is a new lane.
+   */
+  saveLane(lane: Lane, opts: { revive?: boolean } = {}): void {
+    const current = this.lane(lane.key);
+    if (opts.revive !== true && current !== undefined && closed(current.status) && !closed(lane.status))
+      throw new Refusal(
+        `lane ${lane.key} is already ${current.status}; a closed lane cannot go back to ${lane.status}. ` +
+          `Start a new lane with dori start ${lane.key}.`,
+      );
     const { id, container } = lane.sessionRef;
     writeJson(join(this.root, "lanes", `${lane.key}.json`), { ...lane, paneId: id, tabId: container ?? "" });
   }
