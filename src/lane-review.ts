@@ -1,55 +1,45 @@
 import { appendFileSync, writeFileSync } from "node:fs";
 import { prompt, type Deps } from "./harness.ts";
 import { loadReviewSettings, substitute } from "./hooks.ts";
-import { asSha, gitOut, laneGit, laneHead, laneRepo } from "./lane-repo.ts";
+import { reviewChunks } from "./lane-review-chunks.ts";
+import { reviewSingle } from "./lane-review-single.ts";
+import { laneReviewTarget } from "./lane-review-target.ts";
+import { laneGit } from "./lane-repo.ts";
 import { Refusal } from "./refusal.ts";
-import { type DiffChunk, planReview, resplitChunk } from "./review-chunks.ts";
-import { diagnosticLine, type ReviewDiagnostic, reviewDiagnostic, writeReviewDiagnostic } from "./review-diagnostic.ts";
-import { failed, failureKind, failureSummary, type LaneResult, type LaneRun, successSummary } from "./review-report.ts";
-import { reviewLogPath, reviewTimeoutFromEnv, reviewVerdict, type ReviewVerdict, runReviewer } from "./review-run.ts";
-import { KEY_RE, type Lane, type LaneVerdict } from "./store-types.ts";
-
+import { messageOf } from "./review-attempt.ts";
+import { type DiffChunk, planReview } from "./review-chunks.ts";
+import {
+  diagnosticLine,
+  type RetryFacts,
+  type ReviewDiagnostic,
+  reviewDiagnostic,
+  writeReviewDiagnostic,
+} from "./review-diagnostic.ts";
+import { progressPath, saveFinalReceipt } from "./review-progress.ts";
+import { failureCause, type LaneResult, type LaneRun } from "./review-report.ts";
+import {
+  REVIEW_ATTEMPT_MS,
+  reviewBudgetFromEnv,
+  reviewLogPath,
+  reviewTimeoutFromEnv,
+  reviewVerdict,
+  type ReviewVerdict,
+  runReviewer,
+} from "./review-run.ts";
+import type { LaneVerdict } from "./store-types.ts";
+import type { KillTree } from "./review-kill.ts";
 export type LaneReview = { readonly verdict: ReviewVerdict; readonly base: string; readonly tip: string };
 export type LaneReviewOptions = {
   readonly timeoutMs?: number;
+  readonly budgetMs?: number;
   readonly progressMs?: number;
   readonly verdictGraceMs?: number;
+  /** Throws when this run's queue job was replaced or cancelled; checked around every reviewer attempt. */
+  readonly checkLive?: () => void;
+  readonly onReviewerPid?: (pid: number | undefined) => void;
+  readonly killTree?: KillTree;
 };
-
-/** The lane, its checkout, its current tip and the merge-base a review of it covers. */
-export type LaneReviewTarget = { lane: Lane; repo: string; tip: string; base: string };
-
-/**
- * Resolves what `dori review --lane` would review, refusing exactly like `reviewLane` does. The queued path needs the
- * tip and base for its job record without running the reviewer, so both paths read them here.
- */
-export async function laneReviewTarget(d: Deps, key: string): Promise<LaneReviewTarget> {
-  if (!KEY_RE.test(key)) throw new Refusal(`lane key must match ${KEY_RE}`);
-  const lane = d.store.lane(key);
-  if (!lane) throw new Refusal(`no lane ${key}`);
-  if (lane.baseSha === undefined)
-    throw new Refusal(
-      `lane ${key} has no recorded base commit (it started before the review gate); dori review --lane covers lanes started by this version`,
-    );
-  const repo = laneRepo(lane);
-  const tip = await laneHead(d, lane);
-  if (tip === undefined)
-    throw new Refusal(`cannot read HEAD in ${repo}: the lane's checkout is gone or not a git repository`);
-  const base = asSha(await gitOut(d, repo, ["merge-base", lane.baseSha, tip]));
-  if (base === undefined)
-    throw new Refusal(`cannot find the merge-base of ${lane.baseSha.slice(0, 12)} and ${tip.slice(0, 12)} in ${repo}`);
-  if (base === tip) throw new Refusal(`lane ${key} has no commits since ${base.slice(0, 12)}; nothing to review`);
-  return { lane, repo, tip, base };
-}
-
-/**
- * Reviews one lane's own commits: the merge-base of its recorded start commit and the current tip, diffed at that tip.
- * Writes `receipts/lane_<key>@<tip>.json`. The reviewer runs under a deadline, its output streams to
- * `state/reviews/<key>.log`, a diff over the size caps is split by path, a failed attempt is retried once with
- * `reviewFallbackModel`, and a timeout or an empty answer becomes a non-CLEAR receipt (`reviewer_timeout` /
- * `reviewer_empty`) instead of a silent no-receipt. Every failure also writes a JSON diagnostic with argv, model, exit
- * code, duration and both output tails.
- */
+/** Reviews one lane's commits into `receipts/lane_<key>@<tip>.json`; a large diff is split into `reviewChunks`. */
 export async function reviewLane(
   d: Deps,
   key: string,
@@ -57,7 +47,6 @@ export async function reviewLane(
   opts: LaneReviewOptions = {},
 ): Promise<LaneReview> {
   const { lane, repo, tip, base } = await laneReviewTarget(d, key);
-
   const diff = await laneGit(d, repo, ["--no-pager", "diff", "--no-color", "--no-ext-diff", `${base}..${tip}`]);
   if (diff.code !== 0)
     throw new Refusal(
@@ -65,7 +54,6 @@ export async function reviewLane(
     );
   const diffPath = d.store.laneDiffPath(key, tip);
   writeFileSync(diffPath, diff.stdout);
-
   const logPath = reviewLogPath(d.store.root, key);
   const settings = loadReviewSettings(d.store.root);
   const hook = settings.hooks.reviewCommand;
@@ -74,6 +62,10 @@ export async function reviewLane(
   // agent default that the provider may refuse.
   const chosen = model ?? settings.model;
   const timeoutMs = opts.timeoutMs ?? reviewTimeoutFromEnv();
+  const budgetMs = opts.budgetMs ?? reviewBudgetFromEnv();
+  // Each attempt is soft-capped at half the chunk window, so a stalled primary cannot eat the fallback's turn.
+  const attemptMs = Math.max(1, Math.min(REVIEW_ATTEMPT_MS, Math.floor(timeoutMs / 2)));
+  const checkLive = opts.checkLive ?? ((): void => undefined);
   const vars = { lane: key, key, base, tip, sha: tip, brief: lane.brief, diff: diffPath, repo };
   const argsFor = (text: string, m: string | undefined): readonly string[] => {
     const argv = hook
@@ -85,11 +77,16 @@ export async function reviewLane(
     hook === undefined
       ? `${d.agentCmd} -p --no-session${m === undefined ? "" : ` --model ${m}`}`
       : `hook: ${hook.join(" ")}`;
-
   const plan = hook === undefined ? planReview(diff.stdout) : undefined;
-  const chunks = plan?.chunked ? plan.chunks : undefined;
+  const chunked = plan?.chunked === true;
+  const chunks = chunked ? plan!.chunks : undefined;
   let chunkSlot = 0;
-  const chunkRun = (chunk: DiffChunk, total: number, resplit = false): LaneRun => {
+  const chunkRun = (
+    chunk: DiffChunk,
+    total: number,
+    resplit = false,
+    parent?: { readonly index: number; readonly total: number },
+  ): LaneRun => {
     const chunkPath = d.store.receipts.laneChunkDiffPath(key, tip, ++chunkSlot);
     writeFileSync(chunkPath, chunk.text);
     const text = prompt("review-lane-chunk.md", {
@@ -109,6 +106,7 @@ export async function reviewLane(
       chunk,
       chunkTotal: total,
       ...(resplit ? { resplit: true as const } : {}),
+      ...(parent === undefined ? {} : { parent }),
     };
   };
   const runs: LaneRun[] = [];
@@ -118,126 +116,132 @@ export async function reviewLane(
   } else {
     for (const chunk of chunks) runs.push(chunkRun(chunk, chunks.length));
   }
-
   appendFileSync(logPath, `review lane ${key} at ${tip} (base ${base})\n`);
-  const reviewerField = (): string => {
-    const retried = results.some((r) => r.retried !== undefined);
+  const reviewerField = (rs: readonly LaneResult[]): string => {
+    const retried = rs.some((r) => r.retried !== undefined);
     return `${reviewerFor(chosen)}${retried && fallback !== undefined ? `; retried with --model ${fallback}` : ""}`;
   };
-  const results: LaneResult[] = [];
-  const diagnose = (r: LaneResult): { diagnostic: ReviewDiagnostic; path: string } => {
+  const diagnose = (r: LaneResult, retry?: RetryFacts): { diagnostic: ReviewDiagnostic; path: string } => {
     const diagnostic = reviewDiagnostic(
-      r.argv,
+      r.argv.length === 0 ? null : r.argv,
       r.outcome,
       hook === undefined ? (r.model ?? null) : null,
       r.run.chunk === undefined || r.run.chunkTotal === undefined
         ? undefined
-        : `${r.run.chunk.index}/${r.run.chunkTotal}`,
+        : `${r.run.parent?.index ?? r.run.chunk.index}/${r.run.parent?.total ?? r.run.chunkTotal}`,
+      { cause: failureCause(r), ...retry, ...(r.retried === undefined ? {} : { retried: true as const }) },
     );
     return { diagnostic, path: writeReviewDiagnostic(d.store.root, key, tip, diagnostic) };
   };
-  const fail = (
-    verdict: Extract<LaneVerdict, "reviewer_timeout" | "reviewer_empty">,
+  const fail = async (
+    verdict: Extract<LaneVerdict, "reviewer_timeout" | "reviewer_empty" | "review_partial">,
     summary: string,
     why: string,
     diagnostic: ReviewDiagnostic,
     diagPath: string,
-  ): never => {
-    d.store.saveLaneReceipt({
-      lane: key,
-      verdict,
+    rs: readonly LaneResult[],
+  ): Promise<never> => {
+    const saved = await saveFinalReceipt({
+      d,
+      key,
+      tip,
+      checkLive,
+      receipt: {
+        lane: key,
+        verdict,
+        base,
+        tip,
+        brief: lane.brief,
+        reviewer: reviewerField(rs),
+        at: d.now(),
+        summary,
+      },
+    });
+    const where =
+      saved.where === "sidecar"
+        ? `; this job's verdict is ${verdict}, the canonical receipt stays ${saved.kept}, and it is in ${progressPath(d.store.root, key, tip)}`
+        : `; receipt lane_${key}@${tip} says ${verdict}`;
+    throw new Refusal(
+      `${why}${where}; diagnostic ${diagnosticLine(diagnostic)}; output saved to ${logPath}; ${diagPath}`,
+    );
+  };
+  const attempt = async (run: LaneRun, m: string | undefined, limitMs: number): Promise<LaneResult> => {
+    const started = Date.now();
+    let argv: readonly string[] = [];
+    try {
+      argv = argsFor(run.text, m);
+      const outcome = await runReviewer({
+        exec: d.exec,
+        cmd: argv[0] ?? d.agentCmd,
+        argv: argv.slice(1),
+        log: logPath,
+        label: run.label,
+        timeoutMs: Math.max(1, limitMs),
+        ...(opts.onReviewerPid ? { onPid: opts.onReviewerPid } : {}),
+        ...(opts.killTree === undefined ? {} : { killTree: opts.killTree }),
+        ...(opts.progressMs === undefined ? {} : { progressMs: opts.progressMs }),
+        ...(opts.verdictGraceMs === undefined ? {} : { verdictGraceMs: opts.verdictGraceMs }),
+      });
+      const verdict = reviewVerdict(outcome.stdout);
+      return {
+        run,
+        argv,
+        outcome,
+        ...(verdict === undefined ? {} : { verdict }),
+        ...(m === undefined ? {} : { model: m }),
+      };
+    } catch (e) {
+      return {
+        run,
+        argv,
+        outcome: { kind: "error", message: messageOf(e), durationMs: Date.now() - started },
+        ...(m === undefined ? {} : { model: m }),
+      };
+    }
+  };
+  if (chunked) {
+    const verdict = await reviewChunks({
+      d,
+      key,
+      brief: lane.brief,
       base,
       tip,
-      brief: lane.brief,
-      reviewer: reviewerField(),
-      at: d.now(),
-      summary,
-    });
-    throw new Refusal(
-      `${why}; receipt lane_${key}@${tip} says ${verdict}; diagnostic ${diagnosticLine(diagnostic)}; output saved to ${logPath}; ${diagPath}`,
-    );
-  };
-  const attempt = async (run: LaneRun, m: string | undefined): Promise<LaneResult> => {
-    const argv = argsFor(run.text, m);
-    const outcome = await runReviewer({
-      exec: d.exec,
-      cmd: argv[0] ?? d.agentCmd,
-      argv: argv.slice(1),
-      log: logPath,
-      label: run.label,
+      logPath,
+      chosen,
       timeoutMs,
-      ...(opts.progressMs === undefined ? {} : { progressMs: opts.progressMs }),
-      ...(opts.verdictGraceMs === undefined ? {} : { verdictGraceMs: opts.verdictGraceMs }),
+      attemptMs,
+      budgetMs,
+      fallback,
+      reviewer: reviewerFor(chosen),
+      runs,
+      chunkRun,
+      attempt,
+      diagnose,
+      reviewerField,
+      checkLive,
     });
-    const verdict = reviewVerdict(outcome.stdout);
-    return {
-      run,
-      argv,
-      outcome,
-      ...(verdict === undefined ? {} : { verdict }),
-      ...(m === undefined ? {} : { model: m }),
-    };
-  };
-
-  const notes: string[] = [];
-  const queue = [...runs];
-  for (let i = 0; i < queue.length; i++) {
-    const run = queue[i]!;
-    let result = await attempt(run, chosen);
-    const empty = result.outcome.kind === "exit" && result.outcome.stdout.trim() === "";
-    if (empty && run.chunk !== undefined && run.resplit !== true) {
-      const subChunks = resplitChunk(run.chunk);
-      if (subChunks.length > 1) {
-        const parent = diagnose(result);
-        notes.push(
-          `--- re-split ${run.label} [${run.chunk.label ?? run.chunk.paths.join(", ")}] after empty output; ${subChunks.length} sub-chunks; diagnostic ${parent.path}`,
-        );
-        queue.splice(i + 1, 0, ...subChunks.map((chunk) => chunkRun(chunk, subChunks.length, true)));
-        continue;
-      }
-    }
-    if (failed(result) && fallback !== undefined && fallback !== chosen) {
-      const primary = result;
-      const primaryDiag = diagnose(primary);
-      result = await attempt(run, fallback);
-      result.retried = `${primary.model ?? "default"} ${failureKind(primary)}`;
-      result.retryDiagnostic = primaryDiag.path;
-    }
-    results.push(result);
-    if (!failed(result)) continue;
-    const outcome = result.outcome;
-    const { diagnostic, path: diagPath } = diagnose(result);
-    const summary = failureSummary(results, diagPath, notes);
-    if (outcome.kind === "timeout")
-      fail("reviewer_timeout", summary, `reviewer for lane ${key} timed out`, diagnostic, diagPath);
-    if (outcome.stdout.trim() === "")
-      fail(
-        "reviewer_empty",
-        summary,
-        `reviewer for lane ${key} printed no output (exit ${outcome.code})`,
-        diagnostic,
-        diagPath,
-      );
-    const why =
-      outcome.code === 0
-        ? "reviewer printed no VERDICT line"
-        : `reviewer exited ${outcome.code}: ${outcome.stderr.trim() || "no reason on stderr"}`;
-    throw new Refusal(
-      `${why}; no receipt written; diagnostic ${diagnosticLine(diagnostic)}; output saved to ${logPath}; ${diagPath}`,
-    );
+    lane.tipSha = tip;
+    d.store.saveLane(lane);
+    d.usage.record({ name: "dori.review_completed", verdict });
+    return { verdict, base, tip };
   }
-
-  const verdict: ReviewVerdict = results.some((r) => r.verdict === "BLOCK") ? "BLOCK" : "CLEAR";
-  const summary = successSummary(results, notes);
-  d.store.saveLaneReceipt({
-    lane: key,
-    verdict,
+  const verdict = await reviewSingle({
+    d,
+    key,
+    brief: lane.brief,
     base,
     tip,
-    brief: lane.brief,
-    reviewer: reviewerField(),
-    at: d.now(),
-    summary,
+    logPath,
+    chosen,
+    fallback,
+    timeoutMs,
+    budgetMs,
+    run: runs[0]!,
+    attempt,
+    diagnose,
+    reviewerField,
+    checkLive,
+    fail,
   });
   lane.tipSha = tip;
   d.store.saveLane(lane);

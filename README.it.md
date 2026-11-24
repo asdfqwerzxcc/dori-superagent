@@ -132,7 +132,7 @@ dori backlog add new-billing --brief briefs/billing.md --decision 'charge per se
 dori backlog import owner/repo --label dori     # label p1..p9 sets the priority, needs-decision marks a question
 ```
 
-Un'esecuzione che supera il suo gate (non fermata, non bloccata da un altro loop, almeno un intervallo dall'ultima esecuzione) prima sincronizza gli elementi con lo stato delle lane e delle PR. Poi controlla il lavoro trascurato: una lane in silenzio da 3 ore, una lane READY che nessuno ha chiuso da 2, un pane sparito. Poi prende i prossimi elementi aperti, entro `--max-lanes` (predefinito 3) lane aperte e `--max-starts` (predefinito 2) per esecuzione, finché l'host ha carico e memoria disponibili. Ogni domanda aperta arriva al lead una volta come `[DECIDE <id>]`, con un solo promemoria dopo 6 ore, e l'esecuzione termina con un unico rapporto `[LOOP ...]` al lead.
+Un'esecuzione che supera il suo gate (non fermata, non bloccata da un altro loop, almeno un intervallo dall'ultima esecuzione) prima sincronizza gli elementi con lo stato delle lane e delle PR. Poi controlla il lavoro trascurato: una lane in silenzio da 3 ore, una lane READY che nessuno ha chiuso da 2, un pane sparito. Poi prende i prossimi elementi aperti, entro `--max-lanes` (predefinito 5) lane aperte e `--max-starts` (predefinito 2) per esecuzione, finché l'host ha carico e memoria disponibili. Ogni domanda aperta arriva al lead una volta come `[DECIDE <id>]`, con un solo promemoria dopo 6 ore, e l'esecuzione termina con un unico rapporto `[LOOP ...]` al lead.
 
 Il loop apre solo lane e invia messaggi; non fa mai merge, push né chiude un pane. Il design completo è in [`docs/hourly-loop.md`](docs/hourly-loop.md).
 
@@ -254,7 +254,7 @@ Ambiente dell'harness:
 | `DORI_RUNTIME` | il runtime in cui ti trovi, altrimenti `hc` se è nel PATH, altrimenti `herdr` | su quale runtime si aprono le nuove sessioni: `herdr`, oppure `hc` (herdr-core, il runtime di sessione senza interfaccia dello stesso progetto); la chiave `runtime` in `$DORI_HOME/config.json` fa lo stesso, e con nessuno dei due binari nel PATH, niente impostato e nessun pane o terminale dei due intorno a te, `dori` rifiuta con una correzione in una riga |
 | `DORI_CMD` | percorso completo di `src/cli.ts` | come viene detto agli agenti di chiamare dori |
 | `DORI_PROMPTS_DIR` | i `prompts/` del repository | i tuoi file di prompt |
-| `DORI_MAX_LANES`, `DORI_MAX_STARTS`, `DORI_MAX_LOAD` | 3, 2, numero di core | budget dell'hourly loop |
+| `DORI_MAX_LANES`, `DORI_MAX_STARTS`, `DORI_MAX_LOAD` | 5, 2, numero di core | budget dell'hourly loop |
 | `DORI_TELEMETRY`, `DORI_TELEMETRY_ENDPOINT` | attivo, `https://t.omo.dev` | `0` disattiva la telemetria |
 
 Dori mode legge `~/.dori/config.json` (o `DORI_CONFIG`); ogni campo è facoltativo e [`config.example.json`](skills/dori-mode/references/config.example.json) li mostra tutti. Quelli che imposterai per primi: `leadPane`, `laneWorkspace`, `defaultCwd`, `agentCommand` e `defaultModel`, `repoIdentities` (il nome e l'email Git che `verify-pr` si aspetta per ogni repository), `hooks.threadReply` e `hooks.threadDone` (la tua CLI di messaggistica, come template di argv con `{thread}` e `{text}`), `hooks.transcribe` e `guard` (carico, memoria libera, disco libero e numero di pane). Tempi predefiniti: un sollecito dopo 15 minuti di silenzio, l'ultimo rapporto pubblicato nel thread dopo 20, una dichiarazione di conclusione risolta dopo 5.

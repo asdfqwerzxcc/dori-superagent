@@ -10,13 +10,54 @@ exists to resurrect the supervisor and cannot resurrect itself. The timed side-j
 | Process | Parent | Writes | Log |
 | --- | --- | --- | --- |
 | `supervisor.ts` | launched by `dori up`, `dori restart`, or the watchdog | `state/supervisor-heartbeat`, `state/supervisor.json`, `state/gateway-heartbeat` (compatibility) | `state/supervisor.log` |
-| `discord-gateway.ts` | supervisor | `state/gateway-ws-heartbeat` (each Discord heartbeat ack) | `state/gateway.log` |
-| `duty`, `loop` | supervisor | their own files under `state/`, `duty/`, `loop/` | `state/loops.log` |
-| `plugins/run.ts <name>` | supervisor (one per enabled plugin) | `state/plugins/<name>.json`/`.tick`/`.lock`, plus its own `state/` files | `state/loops.log` |
+| `discord-gateway.ts` | supervisor | `state/gateway-ws-heartbeat` (each Discord heartbeat ack) | pane output, else `state/gateway.log` |
+| `duty`, `loop` | supervisor | their own files under `state/`, `duty/`, `loop/` | pane output, else `state/loops.log` |
+| `plugins/run.ts <name>` | supervisor (one per enabled plugin) | `state/plugins/<name>.json`/`.tick`/`.lock`, plus its own `state/` files | pane output, else `state/loops.log` |
 | `gateway-watchdog.ts` | launcher | `state/gateway-watchdog-heartbeat`, `state/watchdog-supervisor.json` | `state/gateway-watchdog.log` |
+
+## Unit panes
+
+When the chosen runtime answers (`herdr`, or `hc` when it is the selected kind), each supervisor child runs as a plain
+command in its own pane instead of a headless pipe, so `herdr pane list` shows the always-on half:
+
+- **Where**: one workspace labelled `dori-ops` on herdr, or one `dori.group=dori-ops` label group on hc. Every unit gets
+  its own tab/pane; herdr's workspace root shell becomes the first unit's pane, later units use `tab create --no-focus`.
+- **Title**: the pane label is the unit name (`discord-gateway`, `duty`, `loop`, and every enabled plugin).
+- **Log**: `herdr pane read <pane> --lines 200` (or `hc read <terminal>`) is the unit's log in this mode; headless
+  children keep writing `state/gateway.log` / `state/loops.log`.
+- **No duplicates**: before opening a pane, the supervisor looks for every pane with the unit's title in the ops
+  workspace and adopts the one whose own shell subtree holds the unit process (herdr: the process's parent chain reaches
+  the pane's `shell_pid`; hc: the terminal's foreground). Two same-titled panes cannot be confused. A dead unit restarts
+  in that same pane; a pane that refuses the command is closed (retried) and only a confirmed close is replaced. A close
+  that keeps failing, or a process list that cannot be read, never starts a second copy: the close failure falls back to
+  the headless child, and unknown liveness waits and retries placement.
+- **Fallback**: a missing runtime, no runtime on PATH, or a runtime that does not answer at startup logs one
+  `SUPERVISED panes_unavailable ... headless=1` line and keeps the headless children. A pane that fails later logs
+  `SUPERVISED <unit>_pane_fallback ...` and falls back; an unreadable process list logs `_pane_unknown` once and keeps
+  retrying placement instead of starting a second copy.
+- **Restart**: killing a unit process is noticed within a second and the unit is started again in its pane after the
+  usual 5 s delay; `dori restart` kills and restarts the supervisor, and the panes are reused, not duplicated.
+
+The pane command line is quoted for the pane's shell (PowerShell on Windows herdr, `sh` for hc), and the unit pid is
+read back from the process command line on herdr (herdr's `process-info` reports only the pane's shell on Windows) or
+from `hc get`'s foreground process. The supervisor records `name:pid@pane`; `dori status` prints it.
+
+Measured cost on this host (Windows 11, herdr 0.9.5, 2026-11-23, 8 empty unit panes): each PowerShell pane host is
+~55 MB private / ~72 MB working set, and the herdr server grows ~2.6 MB private (terminal state) per pane. At 8 units
+that is ~460 MB private / ~585 MB working set, far above the +10 MB/pane Linux budget; on a POSIX host with `sh` the
+per-pane cost is a few MB plus the same terminal state. The unit process itself costs the same either way; pane mode adds
+the shell.
 
 The repo owns each program under `src/supervisors/`; `~/.dori/bin/*.ts` is a two-line shim into the installed checkout, so a
 launcher or the watchdog keeps spawning the same path it always did.
+
+## Loop budget
+
+The hourly loop's caps come from `$DORI_HOME/config.json`: `maxLanes` (default 5) and `maxStarts` (default 2). When
+either key is present the supervisor starts the loop unit with `--max-lanes <n> --max-starts <m>` (the missing key is
+filled from the default); when neither is present the unit is started as plain `loop`, so its own defaults apply.
+`dori up` passes the same flags to the hourly pane when the loops are not supervised. The loop's host guard is unchanged:
+nothing starts while free memory is under 10% or the 1-minute load is above the core count, whatever the caps say.
 
 ## `dori status`
 
@@ -24,7 +65,7 @@ launcher or the watchdog keeps spawning the same path it always did.
 RUNTIME herdr (from config)
 lead=w9:p1 duty=- home=C:\Users\USER\.dori
 STALE <role>=<ref>: pane not found          # only when roles.json names a dead pane
-SUPERVISED supervisor up pid=12836 hb=1s units=discord-gateway:4528,duty:18000,loop:19416,ensure-up:8368,update-check:3140,gateway-catchup:9977
+SUPERVISED supervisor up pid=12836 hb=1s units=discord-gateway:4528@w9:p3,duty:18000@w9:p4,loop:19416@w9:p5,ensure-up:8368@w9:p6
 WATCHDOG up pid=5204 hb=0s
 PLUGIN ensure-up up pid=8368 hb=2s
 PLUGIN update-check up pid=3140 hb=3s (next 04:00)
@@ -86,15 +127,17 @@ the same plugin child itself.
 
 ## Roles under supervision
 
-The duty and hourly loops are supervisor children, not panes. `dori up` under a live supervisor opens only the lead and
-duty panes and drops `duty-loop` / `hourly-loop` from `roles.json`; a stale role left by an older layout is removed with
-`dori role <role> -` (clearing accepts the loop roles; registering still accepts only lead and duty).
+The duty and hourly loops are supervisor children; on a runtime they are shown in the `dori-ops` panes described above,
+which is why `dori up` under a live supervisor opens only the lead and duty panes and drops `duty-loop` / `hourly-loop`
+from `roles.json`; a stale role left by an older layout is removed with `dori role <role> -` (clearing accepts the loop
+roles; registering still accepts only lead and duty).
 
 ## What the merge removed
 
 `gateway-supervisor.ts` and `loops-supervisor.ts` no longer exist. `state/loops-heartbeat`, `state/gateway-supervisor.json`
 and `state/loops-supervisor.json` are neither read nor written; `state/gateway-heartbeat` stays as the compatibility
-write for the Windows boot guard, and `gateway.log` / `loops.log` remain the child-output logs. A `dori restart` still
+write for the Windows boot guard, and `gateway.log` / `loops.log` remain the child-output logs of headless units (pane
+units log to their pane). A `dori restart` still
 matches the old supervisor command lines once, so a host that is still running the pre-merge pair can be swapped with
 one command.
 

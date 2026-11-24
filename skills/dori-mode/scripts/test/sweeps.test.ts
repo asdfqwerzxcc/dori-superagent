@@ -181,14 +181,16 @@ test("a [REPORT] template with an unfilled placeholder is source, not a report: 
   const screen = [
     emitted,
     'print(f"[REPORT] demo-lane | milestone | {message}")',
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell placeholder is the fixture, not an interpolation
     'echo "[REPORT] demo-lane | milestone | ${message}"',
   ].join("\n");
   expect(lastReportLine(screen, "demo-lane")).toBe(emitted);
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell placeholder is the fixture, not an interpolation
   expect(lastReportLine('echo "[REPORT] demo-lane | done | ${message}"', "demo-lane")).toBeNull();
   expect(lastReportLine("[REPORT] demo-lane | done | PR #12 merged", "demo-lane")).toBe(
     "[REPORT] demo-lane | done | PR #12 merged",
   );
-  expect(lastReportLine("[REPORT] demo-lane | milestone | added getUser({id}) and ${HOME} docs", "demo-lane")).toBe(
-    "[REPORT] demo-lane | milestone | added getUser({id}) and ${HOME} docs",
-  );
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: report text that merely mentions ${HOME} is not a template
+  const mentionsHome = "[REPORT] demo-lane | milestone | added getUser({id}) and ${HOME} docs";
+  expect(lastReportLine(mentionsHome, "demo-lane")).toBe(mentionsHome);
 });

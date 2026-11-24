@@ -54,7 +54,6 @@ export const sampleHost = async (
   return { load1, memFreePct, diskFreeGb, swapFreeGb, panes };
 };
 
-
 // Windows has none of the POSIX probes above (`sysctl`, `memory_pressure`, `/proc`): read memory and disk from node.
 const sampleWindows = async (dataPath: string, rts: ChosenRuntimes): Promise<HostSample> => {
   const { statfsSync } = await import("node:fs");

@@ -4,6 +4,7 @@ import type { Deps } from "./harness.ts";
 import { repoHead } from "./lane-repo.ts";
 import { Refusal } from "./refusal.ts";
 import type { ExecResult } from "./runtime/exec.ts";
+import { cancelLaneReviews } from "./review-job.ts";
 import type { Lane } from "./store-types.ts";
 
 export const branchOf = (key: string): string => `lane/${key}`;
@@ -149,7 +150,9 @@ export async function rebaseLaneWorktree(d: Deps, lane: Lane): Promise<string | 
   const rb = await d.exec("git", ["-C", path, "rebase", "main"]);
   if (rb.code !== 0) {
     await d.exec("git", ["-C", path, "rebase", "--abort"]);
-    throw new Refusal(`cannot rebase lane ${lane.key} onto main: ${gitWhy(rb)}; the lane is unchanged (rebase aborted)`);
+    throw new Refusal(
+      `cannot rebase lane ${lane.key} onto main: ${gitWhy(rb)}; the lane is unchanged (rebase aborted)`,
+    );
   }
   lane.baseSha = main;
   return main;
@@ -200,6 +203,9 @@ export async function landWorktree(d: Deps, lane: Lane): Promise<string> {
 export async function dropLane(d: Deps, lane: Lane, reason: string): Promise<string> {
   if (lane.status === "done") throw new Refusal(`lane ${lane.key} is already done`);
   if (!reason.trim()) throw new Refusal("done --drop needs a non-empty --reason");
+  const failures = cancelLaneReviews(d.store.root, lane.key);
+  if (failures.length > 0)
+    process.stderr.write(`dori: lane ${lane.key}: could not kill reviewer tree(s): ${failures.join("; ")}\n`);
   const rt = d.runtimes.for(lane.sessionRef);
   const { status: st } = await rt.probe(lane.sessionRef);
   if (st !== "gone") await rt.close(lane.sessionRef);

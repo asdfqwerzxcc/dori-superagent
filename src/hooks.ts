@@ -46,10 +46,10 @@ export type ReviewSettings = {
   readonly fallbackModel?: string;
 };
 
-/** Reads `config.json` once: hooks plus the review fallback model. No file = no hooks, no fallback. */
-function readConfig(root: string): ReviewSettings {
+/** The parsed `<root>/config.json`, or undefined when absent; invalid JSON or a non-object is a `ConfigError`. */
+export function readConfigFile(root: string): Record<string, unknown> | undefined {
   const path = join(root, "config.json");
-  if (!existsSync(path)) return { hooks: {} };
+  if (!existsSync(path)) return undefined;
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(path, "utf8"));
@@ -58,6 +58,13 @@ function readConfig(root: string): ReviewSettings {
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
     throw new ConfigError("config.json must be a JSON object");
+  return parsed as Record<string, unknown>;
+}
+
+/** Reads `config.json` once: hooks plus the review fallback model. No file = no hooks, no fallback. */
+function readConfig(root: string): ReviewSettings {
+  const parsed = readConfigFile(root);
+  if (parsed === undefined) return { hooks: {} };
   const raw: unknown = Reflect.get(parsed, "hooks");
   if (raw !== undefined && (typeof raw !== "object" || raw === null || Array.isArray(raw)))
     throw new ConfigError("config.json: hooks must be an object");

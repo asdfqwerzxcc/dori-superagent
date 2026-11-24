@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,18 +16,8 @@ import { takeInboxLock } from "./inbox-lock.ts";
 import { Receipts } from "./receipts.ts";
 import { refFromText, refText, sameSession } from "./refs.ts";
 import type { SessionRef } from "./runtime/types.ts";
-import {
-  KEEP_RUNS,
-  KEY_RE,
-  type Bundle,
-  type Item,
-  type Lane,
-  type LaneReceipt,
-  type LoopRun,
-  type QueuedMessage,
-  type ReviewReceipt,
-  type Role,
-} from "./store-types.ts";
+import { StoreRecords } from "./store-records.ts";
+import type { Lane, LaneReceipt, QueuedMessage, ReviewReceipt, Role } from "./store-types.ts";
 
 export type { HostLoad } from "./store-types.ts";
 
@@ -40,15 +30,11 @@ const upgrade = (raw: StoredLane): Lane =>
     ? (raw as Lane)
     : { ...raw, sessionRef: { runtime: "herdr", id: raw.paneId, ...(raw.tabId ? { container: raw.tabId } : {}) } };
 
-const checkedId = (id: string): string => {
-  if (!KEY_RE.test(id)) throw new Error(`invalid id ${JSON.stringify(id)}: must match ${KEY_RE}`);
-  return id;
-};
-
-export class Store {
+export class Store extends StoreRecords {
   readonly receipts: Receipts;
 
-  constructor(readonly root: string = process.env["DORI_HOME"] ?? join(homedir(), ".dori")) {
+  constructor(root: string = process.env["DORI_HOME"] ?? join(homedir(), ".dori")) {
+    super(root);
     this.receipts = new Receipts(root);
     for (const d of ["lanes", "inbox", "briefs", "receipts", "lane-reviews", "backlog", "duty"])
       mkdirSync(join(root, d), { recursive: true });
@@ -75,6 +61,11 @@ export class Store {
       .filter((l): l is StoredLane => l !== undefined)
       .map(upgrade)
       .sort((a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key));
+  }
+
+  /** Deletes a lane record. Only `dori lanes prune` calls this, and only for a finished lane with no worktree. */
+  removeLane(key: string): void {
+    rmSync(join(this.root, "lanes", `${key}.json`), { force: true });
   }
 
   laneBySession(ref: SessionRef): Lane | undefined {
@@ -169,101 +160,5 @@ export class Store {
 
   laneDiffPath(key: string, tip: string): string {
     return this.receipts.laneDiffPath(key, tip);
-  }
-
-  // ---------- bundles ----------
-
-  bundlePath(id: string): string {
-    return join(this.root, "state", "bundles", `${checkedId(id)}.json`);
-  }
-
-  bundle(id: string): Bundle | undefined {
-    return readJson<Bundle>(this.bundlePath(id));
-  }
-
-  saveBundle(bundle: Bundle): void {
-    writeJson(this.bundlePath(bundle.id), bundle);
-  }
-
-  bundles(): Bundle[] {
-    const dir = join(this.root, "state", "bundles");
-    return readdirSync(dir)
-      .filter((f) => f.endsWith(".json"))
-      .map((f) => readJson<Bundle>(join(dir, f)))
-      .filter((b): b is Bundle => b !== undefined)
-      .sort((a, b) => a.id.localeCompare(b.id));
-  }
-
-  // ---------- backlog ----------
-
-  itemBrief(id: string): string {
-    return join(this.root, "backlog", `${checkedId(id)}.md`);
-  }
-
-  item(id: string): Item | undefined {
-    return readJson<Item>(join(this.root, "backlog", `${checkedId(id)}.json`));
-  }
-
-  saveItem(item: Item): void {
-    writeJson(join(this.root, "backlog", `${checkedId(item.id)}.json`), item);
-  }
-
-  items(): Item[] {
-    return readdirSync(join(this.root, "backlog"))
-      .filter((f) => f.endsWith(".json"))
-      .map((f) => readJson<Item>(join(this.root, "backlog", f)))
-      .filter((i): i is Item => i !== undefined)
-      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
-  }
-
-  // ---------- hourly loop ----------
-
-  loopPath(name: string): string {
-    return join(this.root, "loop", name);
-  }
-
-  /** The single-instance lock of the hourly loop (`loop/lock`) or of the duty loop (`duty/lock`). */
-  lockPath(of: "loop" | "duty"): string {
-    return join(this.root, of, "lock");
-  }
-
-  /** The kill switch of the hourly loop (`loop/stop`) or of the duty loop (`duty/stop`). */
-  stop(of: "loop" | "duty" = "loop"): { at: number; reason: string } | undefined {
-    return readJson(join(this.root, of, "stop"));
-  }
-
-  setStop(at: number, reason: string, of: "loop" | "duty" = "loop"): void {
-    writeJson(join(this.root, of, "stop"), { at, reason });
-  }
-
-  clearStop(of: "loop" | "duty" = "loop"): void {
-    rmSync(join(this.root, of, "stop"), { force: true });
-  }
-
-  lastRun(): LoopRun | undefined {
-    return readJson(this.loopPath("last-run.json"));
-  }
-
-  /** Writes the run record and the last-run stamp, keeping the newest KEEP_RUNS records. Pass `name` to rewrite a record. */
-  saveRun(run: LoopRun, name?: string): string {
-    const dir = this.loopPath("runs");
-    if (name === undefined) {
-      const stem = new Date(run.at).toISOString().replaceAll(":", "-");
-      name = `${stem}.json`;
-      for (let n = 2; existsSync(join(dir, name)); n++) name = `${stem}-${n}.json`;
-    }
-    writeJson(join(dir, name), run);
-    writeJson(this.loopPath("last-run.json"), run);
-    const files = readdirSync(dir)
-      .filter((f) => f.endsWith(".json"))
-      .sort();
-    for (const f of files.slice(0, Math.max(0, files.length - KEEP_RUNS))) rmSync(join(dir, f), { force: true });
-    return name;
-  }
-
-  runs(): string[] {
-    return readdirSync(this.loopPath("runs"))
-      .filter((f) => f.endsWith(".json"))
-      .sort();
   }
 }

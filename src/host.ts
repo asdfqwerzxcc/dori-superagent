@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
 import { freemem, totalmem } from "node:os";
-
 const sysctlMemoryLevel = (): string =>
   execFileSync("sysctl", ["-n", "kern.memorystatus_level"], { encoding: "utf8", timeout: 2000 });
 
@@ -23,4 +22,12 @@ export function memFreePct(
     }
   }
   return freePct();
+}
+
+/**
+ * Free memory in whole megabytes. A percentage alone is misleading on a small machine: 10% of 7.7 GB was under a
+ * gigabyte while four agents each hold a gigabyte private, so the loop also needs an absolute floor.
+ */
+export function memFreeMb(free: () => number = freemem): number {
+  return Math.max(0, Math.round(free() / (1024 * 1024)));
 }

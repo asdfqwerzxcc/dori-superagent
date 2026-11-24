@@ -22,9 +22,10 @@ export async function laneGate(d: Deps, lane: Lane): Promise<LaneGate> {
     };
   if (tip === lane.baseSha) return { ok: true };
   const receipt = d.store.laneReceipt(lane.key, tip);
-  if (!receipt) {
-    // A queued review is already running somewhere else: done says so instead of sending the lead to review it again.
-    const job = reviewJobFor(d.store.root, lane.key, tip);
+  const job = reviewJobFor(d.store.root, lane.key, tip);
+  // A queued review is already running somewhere else: done says so instead of sending the lead to review it again.
+  // A chunked review also writes a receipt while it runs (`review_partial`), so that receipt must not hide its job.
+  if ((!receipt || receipt.verdict === "review_partial") && job !== undefined) {
     if (job === "corrupt")
       return {
         ok: false,
@@ -32,29 +33,32 @@ export async function laneGate(d: Deps, lane: Lane): Promise<LaneGate> {
           `lane ${lane.key} at ${tip.slice(0, 12)}: a review record is in flight but unreadable (the next duty pass drops it, so no verdict is coming for it); ` +
           `run dori review --lane ${lane.key} to queue it again, or dori done --drop ${lane.key} --reason <text>`,
       };
-    if (job !== undefined) {
-      // A record can outlive its writer with a time no Date can render; the refusal must still print, never throw.
-      const at = new Date(job.requestedAt);
-      const when = Number.isNaN(at.getTime()) ? String(job.requestedAt) : at.toISOString();
-      return {
-        ok: false,
-        reason:
-          `lane ${lane.key} at ${tip.slice(0, 12)}: a review is in flight (${job.state}, requested ${when}); ` +
-          `its verdict will arrive as an inbox message from duty. Run dori done ${lane.key} again once the receipt exists ` +
-          `(or dori done --drop ${lane.key} --reason <text>)`,
-      };
-    }
+    // A record can outlive its writer with a time no Date can render; the refusal must still print, never throw.
+    const at = new Date(job.requestedAt);
+    const when = Number.isNaN(at.getTime()) ? String(job.requestedAt) : at.toISOString();
+    return {
+      ok: false,
+      reason:
+        `lane ${lane.key} at ${tip.slice(0, 12)}: a review is in flight (${job.state}, requested ${when}); ` +
+        `its verdict will arrive as an inbox message from duty. Run dori done ${lane.key} again once the receipt exists ` +
+        `(or dori done --drop ${lane.key} --reason <text>)`,
+    };
+  }
+  if (!receipt)
     return {
       ok: false,
       reason: `lane ${lane.key} at ${tip.slice(0, 12)} has no review receipt; run: dori review --lane ${lane.key} (or dori done --drop ${lane.key} --reason <text>)`,
     };
-  }
   if (receipt.verdict !== "CLEAR") {
-    const failed = receipt.verdict === "reviewer_timeout" || receipt.verdict === "reviewer_empty";
+    const failed =
+      receipt.verdict === "reviewer_timeout" ||
+      receipt.verdict === "reviewer_empty" ||
+      receipt.verdict === "review_partial";
     const log = failed ? `; log: ${reviewLogPath(d.store.root, lane.key)}` : "";
+    const pending = receipt.verdict === "review_partial" ? " (the last review did not finish every chunk)" : "";
     return {
       ok: false,
-      reason: `lane ${lane.key} at ${tip.slice(0, 12)} is ${receipt.verdict}${log}; run: dori review --lane ${lane.key} (or dori done --drop ${lane.key} --reason <text>)`,
+      reason: `lane ${lane.key} at ${tip.slice(0, 12)} is ${receipt.verdict}${pending}${log}; run: dori review --lane ${lane.key} (or dori done --drop ${lane.key} --reason <text>)`,
     };
   }
   return { ok: true };

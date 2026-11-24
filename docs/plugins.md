@@ -48,7 +48,7 @@ versioned plugin as a supervised backstop for the failure the timer cannot cover
 cannot push one message twice: the plugin skips any message whose `state/inbound/<id>.json` already exists, and skips
 messages younger than 10 s (the socket owns those). The residual race is a message older than 10 s that the gateway's own
 timer is delivering in the same second; both paths then write the same inbound file and push the lead once each, which is
-visible in `loops.log` as two `LEAD_PUSH` lines.
+visible in the gateway's log (its pane, or `loops.log` when running headless) as two `LEAD_PUSH` lines.
 
 ## Process model and files
 

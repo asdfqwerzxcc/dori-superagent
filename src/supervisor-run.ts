@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import { spawnExec, type Exec } from "./runtime/exec.ts";
+import { spawnExec } from "./runtime/exec.ts";
+import { listProcesses, matchPids, type Proc } from "./process-list.ts";
 import {
   ageMs,
   entryFor,
@@ -21,8 +22,7 @@ import {
 import { pluginRunEntry } from "./plugins/plugin.ts";
 import { enabledPluginNames, isPluginEnabled } from "./plugins/state.ts";
 
-/** A process the OS reports, with the command line `dori restart` matches against. */
-export type Proc = { readonly pid: number; readonly command: string };
+export { listProcesses, matchPids, parseCim, parsePs, type Proc } from "./process-list.ts";
 
 const SHIM: Readonly<Record<SupervisorName, string>> = {
   supervisor: "supervisor.ts",
@@ -38,45 +38,6 @@ const entryPatterns = (name: SupervisorName): readonly string[] =>
   name === "supervisor"
     ? [SHIM[name], `supervisors/${SOURCE[name]}`]
     : [SHIM[name], `supervisors/${SOURCE[name]}`, "supervisors\\watchdog.ts"];
-export const matchPids = (procs: readonly Proc[], ...patterns: readonly string[]): number[] =>
-  procs.filter((p) => patterns.some((s) => p.command.includes(s))).map((p) => p.pid);
-
-const WINDOWS_LIST =
-  "Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'bun.exe' } | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress";
-
-/** `ConvertTo-Json` output: one object when the OS found one bun, an array otherwise. */
-export function parseCim(text: string): Proc[] {
-  try {
-    const parsed = JSON.parse(text.trim() || "[]") as unknown;
-    const rows = Array.isArray(parsed) ? parsed : [parsed];
-    return rows.flatMap((row) => {
-      const r = (row ?? {}) as { ProcessId?: unknown; CommandLine?: unknown };
-      const pid = Number(r.ProcessId);
-      return Number.isInteger(pid) && pid > 0 ? [{ pid, command: String(r.CommandLine ?? "") }] : [];
-    });
-  } catch {
-    return [];
-  }
-}
-
-/** `ps -A -o pid=,args=`: the pid, then the whole command line. */
-export function parsePs(text: string): Proc[] {
-  return text.split("\n").flatMap((line) => {
-    const m = /^\s*(\d+)\s+(.*)$/.exec(line);
-    return m ? [{ pid: Number(m[1]), command: m[2] ?? "" }] : [];
-  });
-}
-
-/** Every bun process with its command line; no list rather than a wrong one when the OS query fails. */
-export async function listProcesses(exec: Exec = spawnExec): Promise<Proc[]> {
-  const windows = process.platform === "win32";
-  const r = windows
-    ? await exec("powershell", ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_LIST])
-    : await exec("ps", ["-A", "-o", "pid=,args="]);
-  if (r.code !== 0) return [];
-  return windows ? parseCim(r.stdout) : parsePs(r.stdout);
-}
-
 /** Spawns a detached supervisor or plugin child that outlives this call; undefined when it could not start. */
 export function spawnDetached(entry: string, cwd: string, args: readonly string[] = []): number | undefined {
   const child = spawn(process.execPath, [entry, ...args], {
@@ -105,8 +66,8 @@ export async function killTree(pid: number): Promise<void> {
  * by the recorded pid, is what makes this safe after the supervisor itself has been dead long enough for Windows to
  * reuse a pid.
  */
-export async function killSupervisorTree(procs: readonly Proc[] = []): Promise<number[]> {
-  const listed = procs.length > 0 ? procs : await listProcesses();
+export async function killSupervisorTree(procs?: readonly Proc[]): Promise<number[]> {
+  const listed = procs ?? (await listProcesses()) ?? [];
   const pids = [...matchPids(listed, ...entryPatterns("supervisor")), ...matchPids(listed, ...UNIT_PATTERNS)];
   const killed = [...new Set(pids)].filter((pid) => pid !== process.pid);
   for (const pid of killed) await killTree(pid);
@@ -220,11 +181,18 @@ export async function restartSupervisors(home: string, timeoutMs = 120_000): Pro
   });
   const wanted = !ensureUpOff(home) && isPluginEnabled(home, "ensure-up");
   const ensureUp = await waitEnsureUp(home, wanted, ok ? 15_000 : 0);
-  const health = supervisorHealth(home);
-  const supervisor = health.find((h) => h.name === "supervisor");
-  const units = supervisor?.units ?? [];
   const expected = ["discord-gateway", "duty", "loop", ...enabledPluginNames(home)];
-  const unitsUp = expected.every((name) => units.some((u) => u.name === name && u.alive));
+  // Units started through panes register a moment after the supervisor's own heartbeat, so poll instead of reading once.
+  const deadline = started + timeoutMs;
+  let health = supervisorHealth(home);
+  let supervisor = health.find((h) => h.name === "supervisor");
+  let unitsUp = expected.every((name) => (supervisor?.units ?? []).some((u) => u.name === name && u.alive));
+  while (!unitsUp && Date.now() < deadline) {
+    await Bun.sleep(500);
+    health = supervisorHealth(home);
+    supervisor = health.find((h) => h.name === "supervisor");
+    unitsUp = expected.every((name) => (supervisor?.units ?? []).some((u) => u.name === name && u.alive));
+  }
   const all = ok && supervisor?.alive === true && unitsUp && (!wanted || ensureUp.alive);
   const wsAge = ageMs(join(stateDir(home), WS_HEARTBEAT));
   return {

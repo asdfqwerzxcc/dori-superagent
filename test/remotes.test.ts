@@ -1,11 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { startRemote } from "../src/remote-run.ts";
 import {
   RemoteError,
-  type RemoteMachine,
   addRemoteMachine,
   appendRemoteRow,
   parseRemoteConfig,
@@ -18,52 +16,9 @@ import {
   remoteStatePath,
   writeRemoteConfig,
 } from "../src/remotes.ts";
-import type { Exec } from "../src/runtime/exec.ts";
+import { cleanupHomes, fake, home, linux, sinks, windows } from "./remotes-setup.ts";
 
-const homes: string[] = [];
-const home = (): string => {
-  const dir = mkdtempSync(join(tmpdir(), "dori-remotes-"));
-  homes.push(dir);
-  return dir;
-};
-afterEach(() => {
-  for (const dir of homes.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
-
-const linux: RemoteMachine = {
-  name: "box2",
-  ssh: "user@192.168.0.12",
-  repo: "~/.dori/src",
-  os: "linux",
-  temp: "/tmp",
-};
-const windows: RemoteMachine = {
-  name: "win",
-  ssh: "lee@192.168.0.20",
-  repo: "C:\\work\\dori repo",
-  os: "windows",
-  temp: "C:\\Users\\Public\\dori",
-};
-
-const fake = (answers: (cmd: string) => { code: number; stdout: string; stderr: string }) => {
-  const calls: { cmd: string; argv: readonly string[] }[] = [];
-  const exec: Exec = async (cmd, argv) => {
-    calls.push({ cmd, argv });
-    return answers(cmd);
-  };
-  return { exec, calls };
-};
-
-const sinks = () => {
-  const out: string[] = [];
-  const err: string[] = [];
-  return {
-    out: (text: string) => out.push(text),
-    err: (text: string) => err.push(text),
-    printed: () => out.join(""),
-    errors: () => err.join(""),
-  };
-};
+afterEach(cleanupHomes);
 
 describe("config", () => {
   test("parsing fills the documented defaults and rejects malformed machines", () => {
@@ -150,9 +105,7 @@ describe("argv", () => {
     const plan = planRemoteStart({ ...windows, temp: "D:\\builds\\tmp" }, "fix-login", "brief.md");
     const b64 = plan.command.slice("powershell -NoProfile -EncodedCommand ".length);
     expect(Buffer.from(b64, "base64").toString("utf16le")).toContain('--brief "D:\\builds\\tmp\\dori-fix-login.md"');
-    expect(() =>
-      parseRemoteConfig({ machines: [{ name: "w", ssh: "u@h", os: "windows" }] }),
-    ).toThrow("windows path");
+    expect(() => parseRemoteConfig({ machines: [{ name: "w", ssh: "u@h", os: "windows" }] })).toThrow("windows path");
   });
 
   test("a key that is not a lane key never reaches ssh", () => {

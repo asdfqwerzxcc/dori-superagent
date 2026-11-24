@@ -85,6 +85,8 @@ describe("lint ratchet", () => {
 // ignorePatterns resolve inside its own directory, so the hidden file sits in scripts/ next to it.
 describe("lint ratchet ignore files", () => {
   const scratch = mkdtempSync(join(tmpdir(), "lint-ratchet-ignore-"));
+  // A Windows symlink needs a privilege the test runner may not hold; a junction needs none.
+  const linkType = process.platform === "win32" ? "junction" : undefined;
   const config = join(scratch, "scripts/lint-ratchet.oxlintrc.json");
   let listedInEslintignore: ReturnType<typeof lint>;
   let hiddenByIgnorePatterns: ReturnType<typeof lint>;
@@ -92,15 +94,18 @@ describe("lint ratchet ignore files", () => {
   beforeAll(() => {
     const repo = join(import.meta.dir, "..");
     const shipped = JSON.parse(readFileSync(join(repo, "scripts/lint-ratchet.oxlintrc.json"), "utf8"));
-    symlinkSync(join(repo, "node_modules"), join(scratch, "node_modules"));
+    symlinkSync(join(repo, "node_modules"), join(scratch, "node_modules"), linkType);
     mkdirSync(join(scratch, "scripts"));
-    symlinkSync(join(repo, "scripts/oxlint"), join(scratch, "scripts/oxlint"));
+    symlinkSync(join(repo, "scripts/oxlint"), join(scratch, "scripts/oxlint"), linkType);
     writeFileSync(config, JSON.stringify(shipped));
     writeFileSync(
       join(scratch, "scripts/hidden.test.ts"),
       'import { mock } from "bun:test";\nmock.module("./dep", () => ({}));\n',
     );
     writeFileSync(join(scratch, "clean.ts"), "export const clean = 1;\n");
+    // On Windows a junction is a real directory to Git, which would commit the shared node_modules and plugin
+    // sources; a POSIX symlink is stored as a link and walked no further, so the entries are inert there.
+    writeFileSync(join(scratch, ".gitignore"), "node_modules/\nscripts/oxlint/\n");
     writeFileSync(join(scratch, ".eslintignore"), "scripts/hidden.test.ts\n");
     execFileSync("git", ["init", "-q"], { cwd: scratch });
     execFileSync("git", ["add", "."], { cwd: scratch });

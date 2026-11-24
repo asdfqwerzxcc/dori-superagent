@@ -1,26 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { join } from "node:path";
 import { status } from "../src/cli-up.ts";
 import { laneRepo } from "../src/lane-repo.ts";
 import { reviewLane } from "../src/lane-review.ts";
 import { done, ready, startLane } from "../src/lanes.ts";
-import { fakeGit, type Repo } from "./fake-git.ts";
-import type { World } from "./fake.ts";
-import { setup } from "./harness-setup.ts";
+import { base, diff, gitCalls, laneWorld, tip, wtPath } from "./lane-worktree-setup.ts";
 import { captureIo } from "./inbox-setup.ts";
 
-const base = "a".repeat(40);
-const tip = "b".repeat(40);
-const diff = "diff --git a/src/x.ts b/src/x.ts\n+export const x = 1;\n";
-
 describe("lane worktrees", () => {
-  const wtPath = (d: ReturnType<typeof setup>["d"], key: string) => join(d.store.root, "worktrees", key);
-  const gitCalls = (w: World) => w.calls.filter((c) => c.cmd === "git").map((c) => c.argv.join(" "));
-
   test("start records the worktree, review reads it, and done lands then removes it", async () => {
-    const { w, d, brief } = setup();
-    const repo: Repo = { head: base, worktreeHead: base, mergeBase: base, diff };
-    fakeGit(w, repo);
+    const { w, d, brief, repo } = laneWorld();
     const lane = await startLane(d, "own-tree", brief, { group: "w1" });
     const wt = wtPath(d, "own-tree");
     expect(lane.worktree).toBe(wt);
@@ -43,9 +31,7 @@ describe("lane worktrees", () => {
   });
 
   test("done refuses a dirty worktree before it closes the pane or touches main", async () => {
-    const { w, d, brief } = setup();
-    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff, dirty: " M src/x.ts\n" };
-    fakeGit(w, repo);
+    const { w, d, brief } = laneWorld({ worktreeHead: tip, dirty: " M src/x.ts\n" });
     const lane = await startLane(d, "dirty", brief, { group: "w1" });
     await ready(d, "dirty", "done", ["file:///x"]);
     w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
@@ -60,9 +46,7 @@ describe("lane worktrees", () => {
   });
 
   test("done refuses when main moved and keeps the branch and worktree", async () => {
-    const { w, d, brief } = setup();
-    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
-    fakeGit(w, repo);
+    const { w, d, brief, repo } = laneWorld({ worktreeHead: tip });
     const lane = await startLane(d, "moved", brief, { group: "w1" });
     await ready(d, "moved", "done", ["file:///x"]);
     w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
@@ -80,9 +64,7 @@ describe("lane worktrees", () => {
   });
 
   test("done lands a squash-merged lane by content and removes its worktree", async () => {
-    const { w, d, brief } = setup();
-    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
-    fakeGit(w, repo);
+    const { w, d, brief, repo } = laneWorld({ worktreeHead: tip });
     const lane = await startLane(d, "squashed", brief, { group: "w1" });
     await ready(d, "squashed", "done", ["file:///x"]);
     w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
@@ -105,9 +87,7 @@ describe("lane worktrees", () => {
   });
 
   test("done still refuses a moved main whose content differs", async () => {
-    const { w, d, brief } = setup();
-    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
-    fakeGit(w, repo);
+    const { w, d, brief, repo } = laneWorld({ worktreeHead: tip });
     await startLane(d, "not-squashed", brief, { group: "w1" });
     await ready(d, "not-squashed", "done", ["file:///x"]);
     w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
@@ -126,9 +106,7 @@ describe("lane worktrees", () => {
   });
 
   test("done refuses a git diff error instead of reading it as a moved main", async () => {
-    const { w, d, brief } = setup();
-    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
-    fakeGit(w, repo);
+    const { w, d, brief, repo } = laneWorld({ worktreeHead: tip });
     await startLane(d, "diff-error", brief, { group: "w1" });
     await ready(d, "diff-error", "done", ["file:///x"]);
     w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
@@ -147,9 +125,7 @@ describe("lane worktrees", () => {
   });
 
   test("done keeps the ancestor path and never probes content", async () => {
-    const { w, d, brief } = setup();
-    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
-    fakeGit(w, repo);
+    const { w, d, brief, repo } = laneWorld({ worktreeHead: tip });
     await startLane(d, "ancestor", brief, { group: "w1" });
     await ready(d, "ancestor", "done", ["file:///x"]);
     w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
@@ -166,9 +142,7 @@ describe("lane worktrees", () => {
   });
 
   test("done refuses a lane whose pane runs outside its own worktree", async () => {
-    const { w, d, brief } = setup();
-    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
-    fakeGit(w, repo);
+    const { w, d, brief } = laneWorld({ worktreeHead: tip });
     const lane = await startLane(d, "elsewhere", brief, { group: "w1" });
     await ready(d, "elsewhere", "done", ["file:///x"]);
     w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
@@ -182,9 +156,7 @@ describe("lane worktrees", () => {
   });
 
   test("done --rebase moves the lane onto main, re-records the base, then demands a fresh receipt", async () => {
-    const { w, d, brief } = setup();
-    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
-    fakeGit(w, repo);
+    const { w, d, brief, repo } = laneWorld({ worktreeHead: tip });
     await startLane(d, "rebound", brief, { group: "w1" });
     await ready(d, "rebound", "done", ["file:///x"]);
     w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
@@ -207,9 +179,7 @@ describe("lane worktrees", () => {
   });
 
   test("a retried done removes a branch main already contains without merging twice", async () => {
-    const { w, d, brief } = setup();
-    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
-    fakeGit(w, repo);
+    const { w, d, brief, repo } = laneWorld({ worktreeHead: tip });
     await startLane(d, "retry", brief, { group: "w1" });
     await ready(d, "retry", "done", ["file:///x"]);
     w.reviewer = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
@@ -223,9 +193,7 @@ describe("lane worktrees", () => {
   });
 
   test("done --drop removes the worktree and branch without merging", async () => {
-    const { w, d, brief } = setup();
-    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
-    fakeGit(w, repo);
+    const { w, d, brief } = laneWorld({ worktreeHead: tip });
     const lane = await startLane(d, "drop-me", brief, { group: "w1" });
 
     expect(await done(d, "drop-me", { drop: "abandoned" })).toBe("dropped: abandoned");
@@ -239,9 +207,7 @@ describe("lane worktrees", () => {
   });
 
   test("status names a pane whose cwd is not its worktree", async () => {
-    const { w, d, brief } = setup();
-    const repo: Repo = { head: base, worktreeHead: base, mergeBase: base, diff };
-    fakeGit(w, repo);
+    const { w, d, brief } = laneWorld();
     const lane = await startLane(d, "wrong-cwd", brief, { group: "w1" });
     w.panes.get(lane.paneId)!.cwd = "/shared";
 
@@ -253,9 +219,7 @@ describe("lane worktrees", () => {
   });
 
   test("a BLOCK receipt cannot land; --drop removes it and main stays put", async () => {
-    const { w, d, brief } = setup();
-    const repo: Repo = { head: base, worktreeHead: tip, mergeBase: base, diff };
-    fakeGit(w, repo);
+    const { w, d, brief } = laneWorld({ worktreeHead: tip });
     await startLane(d, "blocked", brief, { group: "w1" });
     await ready(d, "blocked", "done", ["file:///x"]);
     w.reviewer = () => ({ code: 0, stdout: "HIGH src/x.ts:1 bug\nVERDICT: BLOCK" });

@@ -3,10 +3,20 @@
 
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Exec } from "./runtime/exec.ts";
+import type { Exec, SpawnedProcess } from "./runtime/exec.ts";
+import { type KillTree, killReviewTree } from "./review-kill.ts";
 
-/** The default reviewer deadline: long enough for a real review, short enough that a hung provider fails the lane. */
-export const REVIEW_TIMEOUT_MS = 600_000;
+/** The default chunk window: the most one chunk may take across its primary and fallback attempts. */
+export const REVIEW_TIMEOUT_MS = 1_800_000;
+/** One attempt's soft slice of the chunk window; half the default window leaves the fallback a turn. */
+export const REVIEW_ATTEMPT_MS = REVIEW_TIMEOUT_MS / 2;
+/**
+ * The job-wide budget for one lane review: per-chunk deadlines add up, so a 26-chunk diff could otherwise hold the queue
+ * for thirteen hours. When the budget runs out the remaining chunks are recorded as `not run` and a retry resumes them.
+ * The largest completed chunked run on this host was 6 chunks in 37 minutes; 60 minutes leaves room for one more slow
+ * chunk without turning one hung provider into a whole afternoon.
+ */
+export const REVIEW_JOB_BUDGET_MS = 3_600_000;
 /** How often a still-running reviewer says so, so a lead can tell "slow" from "dead". */
 export const REVIEW_PROGRESS_MS = 30_000;
 /** After the kill, how long to wait for the process to report an exit code; the timeout stands either way. */
@@ -35,7 +45,18 @@ export type ReviewOutcome =
       readonly durationMs: number;
       /** True when a complete `VERDICT:` line was printed before the kill; the caller may accept it. */
       readonly verdictSeen: boolean;
+      /** Set when the process tree could not be killed; a failed kill is a fatal attempt, never a verdict. */
+      readonly killFailed?: string;
+    }
+  | {
+      /** The reviewer could not be started at all (the exec rejected): a failed chunk, never a pass. */
+      readonly kind: "error";
+      readonly message: string;
+      readonly durationMs: number;
     };
+
+/** The outcomes a spawned reviewer can produce; `error` is synthesized by the caller when the exec rejects. */
+export type ReviewProcessOutcome = Exclude<ReviewOutcome, { readonly kind: "error" }>;
 
 export type ReviewerRun = {
   readonly exec: Exec;
@@ -52,6 +73,10 @@ export type ReviewerRun = {
   readonly progressMs?: number;
   /** Progress sink; defaults to one stderr line per tick. Tests collect these instead of capturing stderr. */
   readonly onProgress?: (line: string) => void;
+  /** The spawned reviewer's pid while it runs (and undefined once it exits), so the job record can name the tree. */
+  readonly onPid?: (pid: number | undefined) => void;
+  /** Test seam: replace the process-tree killer so a failed kill can be exercised end to end. */
+  readonly killTree?: KillTree;
   readonly now?: () => number;
 };
 
@@ -65,10 +90,16 @@ export function reviewVerdict(stdout: string): ReviewVerdict | undefined {
   return last?.[1] as ReviewVerdict | undefined;
 }
 
-/** `DORI_REVIEW_TIMEOUT_MS` when set to a positive number, else the 10-minute default. */
+/** `DORI_REVIEW_TIMEOUT_MS` when set to a positive number, else the 30-minute chunk window. */
 export function reviewTimeoutFromEnv(env: NodeJS.ProcessEnv = process.env): number {
   const ms = Number(env["DORI_REVIEW_TIMEOUT_MS"]);
   return Number.isFinite(ms) && ms >= 1 ? ms : REVIEW_TIMEOUT_MS;
+}
+
+/** `DORI_REVIEW_BUDGET_MS` when set to a positive number, else the 60-minute job budget. */
+export function reviewBudgetFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const ms = Number(env["DORI_REVIEW_BUDGET_MS"]);
+  return Number.isFinite(ms) && ms >= 1 ? ms : REVIEW_JOB_BUDGET_MS;
 }
 
 const append = (log: string, text: string): void => {
@@ -83,17 +114,19 @@ const append = (log: string, text: string): void => {
  * Runs one reviewer and returns its exit or timeout. Output is appended to `log` as it arrives, and the same text is
  * kept in memory so a killed process still leaves a diagnosable tail.
  */
-export async function runReviewer(run: ReviewerRun): Promise<ReviewOutcome> {
+export async function runReviewer(run: ReviewerRun): Promise<ReviewProcessOutcome> {
   const startedAt = Date.now();
   const now = run.now ?? Date.now;
   const started = now();
   const progressMs = run.progressMs ?? REVIEW_PROGRESS_MS;
   const progress = run.onProgress ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const kill = run.killTree ?? killReviewTree;
   let stdout = "";
   let stderr = "";
-  let proc: { kill(): void } | undefined;
+  let proc: SpawnedProcess | undefined;
   let timedOut = false;
   let killedAfterVerdict = false;
+  let killWhy: string | undefined;
   let verdictTimer: ReturnType<typeof setTimeout> | undefined;
   let fireTimeout: (() => void) | undefined;
   let fireVerdict: (() => void) | undefined;
@@ -103,13 +136,20 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewOutcome> {
   const verdictSettledAt = new Promise<void>((resolve) => {
     fireVerdict = resolve;
   });
+  const terminate = (): void => {
+    const outcome = kill(proc?.pid, proc);
+    if (outcome.ok) {
+      killWhy = undefined;
+      return;
+    }
+    killWhy = outcome.why;
+    progress(`dori: ${run.label}: the reviewer tree could not be killed (${outcome.why}); the marker is kept`);
+  };
   if (run.timeoutMs < 1)
     return { kind: "timeout", stdout, stderr, durationMs: Date.now() - startedAt, verdictSeen: false };
   const deadline = setTimeout(() => {
     timedOut = true;
-    try {
-      proc?.kill();
-    } catch {}
+    terminate();
     fireTimeout?.();
   }, run.timeoutMs);
   const beat = setInterval(
@@ -123,13 +163,11 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewOutcome> {
   );
   beat.unref();
   const pending = run.exec(run.cmd, run.argv, {
+    group: true,
     onSpawn: (p) => {
       proc = p;
-      if (timedOut) {
-        try {
-          p.kill();
-        } catch {}
-      }
+      run.onPid?.(p.pid);
+      if (timedOut) terminate();
     },
     onStdout: (chunk) => {
       stdout += chunk;
@@ -138,9 +176,7 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewOutcome> {
       verdictTimer = setTimeout(
         () => {
           killedAfterVerdict = true;
-          try {
-            proc?.kill();
-          } catch {}
+          terminate();
           fireVerdict?.();
         },
         Math.max(1, run.verdictGraceMs ?? VERDICT_GRACE_MS),
@@ -161,6 +197,7 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewOutcome> {
     clearTimeout(deadline);
     clearTimeout(verdictTimer);
     clearInterval(beat);
+    if (killWhy === undefined) run.onPid?.(undefined);
   });
   if (outcome.kind === "exit" && !timedOut && !killedAfterVerdict)
     return { kind: "exit", ...outcome.res, durationMs: Date.now() - startedAt };
@@ -182,6 +219,7 @@ export async function runReviewer(run: ReviewerRun): Promise<ReviewOutcome> {
     stderr,
     durationMs: Date.now() - startedAt,
     verdictSeen: reviewVerdict(stdout) !== undefined,
+    ...(killWhy === undefined ? {} : { killFailed: killWhy }),
     ...(settled === undefined ? {} : { code: settled.code }),
   };
 }

@@ -28,11 +28,18 @@ export const assistantText = (message: SenpiMessage): string | null => {
   return text || null;
 };
 
-export const agentEndState = (message: SenpiMessage): { readonly aborted: boolean; readonly failure: string | null } => {
+export const agentEndState = (
+  message: SenpiMessage,
+): { readonly aborted: boolean; readonly failure: string | null } => {
   const failure = message.failure as SenpiFailure | undefined;
   let reason: string | null = null;
   if (isRecord(failure)) {
-    reason = typeof failure.reason === "string" ? failure.reason : typeof failure.category === "string" ? failure.category : "unknown";
+    reason =
+      typeof failure.reason === "string"
+        ? failure.reason
+        : typeof failure.category === "string"
+          ? failure.category
+          : "unknown";
   }
   return { aborted: message.aborted === true, failure: reason };
 };

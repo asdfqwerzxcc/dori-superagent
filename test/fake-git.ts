@@ -29,6 +29,8 @@ export type Repo = {
   /** `diff --name-only --diff-filter=U` output after a conflicted merge. */
   conflictFiles?: string;
   pushFails?: string;
+  /** Only fail `git push --delete` with this stderr; the branch push still succeeds. */
+  deleteFails?: string;
 };
 
 const defaultDiff = "diff --git a/src/x.ts b/src/x.ts\n+export const x = 1;\n";
@@ -59,10 +61,15 @@ export function fakeGit(w: World, repo: Repo): void {
         ? { code: 2, stdout: "", stderr: `No such remote '${args[2] ?? ""}'\n` }
         : { code: 0, stdout: `${url}\n` };
     }
-    if (cmd === "push")
+    if (cmd === "push") {
+      if (args.includes("--delete"))
+        return repo.deleteFails === undefined
+          ? { code: 0, stdout: "", stderr: "" }
+          : { code: 1, stdout: "", stderr: repo.deleteFails };
       return repo.pushFails === undefined
         ? { code: 0, stdout: "", stderr: "" }
         : { code: 1, stdout: "", stderr: repo.pushFails };
+    }
     if (cmd === "config") return { code: 0, stdout: `${repo.longpaths ?? "true"}\n` };
     if (cmd === "status") return { code: 0, stdout: repo.dirty ?? "" };
     if (cmd === "worktree" && sub === "add") return repo.worktreeAdd ?? { code: 0, stdout: "", stderr: "" };

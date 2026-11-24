@@ -24,21 +24,19 @@ test("a narrow pane that cuts the goal footer short reads STARTUP_OK when the la
   const session = (at: string, lane: string, status: string | null) => {
     const id = `01a1b6d8-0000-7000-8000-${String(++n).padStart(12, "0")}`;
     const prompt = `ulw set goal and work. Read and execute the lane brief at ${brief} in full. You are the ${lane} lane; report as the brief's footer says.`;
-    writeFileSync(
-      join(store, `${at.replace(/:/g, "-").replace(".", "-")}_${id}.jsonl`),
-      [
-        { type: "session", version: 3, id, timestamp: at, cwd: "/repo" },
-        {
-          type: "message",
-          id: "m1",
-          parentId: null,
-          timestamp: at,
-          message: { role: "user", content: [{ type: "text", text: prompt }] },
-        },
-      ]
-        .map((line) => JSON.stringify(line))
-        .join("\n") + "\n",
-    );
+    const lines = [
+      { type: "session", version: 3, id, timestamp: at, cwd: "/repo" },
+      {
+        type: "message",
+        id: "m1",
+        parentId: null,
+        timestamp: at,
+        message: { role: "user", content: [{ type: "text", text: prompt }] },
+      },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n");
+    writeFileSync(join(store, `${at.replace(/:/g, "-").replace(".", "-")}_${id}.jsonl`), `${lines}\n`);
     if (status)
       writeFileSync(
         join(store, "extensions", "goal", `${id}.json`),

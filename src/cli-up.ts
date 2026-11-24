@@ -4,6 +4,7 @@ import { shq } from "./delivery.ts";
 import { promptsDir, type Deps } from "./harness.ts";
 import { reviewLabel } from "./lane-gate.ts";
 import { paneWorktreeMismatch } from "./lane-worktree.ts";
+import { loopArgs, readLoopCaps } from "./loop-caps.ts";
 import { refText } from "./refs.ts";
 import { groupId } from "./runtime/group.ts";
 import { openSession, type SessionRef } from "./runtime/types.ts";
@@ -46,6 +47,7 @@ const ensureLine = (state: SupervisedState): string =>
  * this home's group. When the loops are supervised, their panes are not opened and the stale loop roles are dropped.
  */
 export async function up(d: Deps, cwd: string, retireOld = false): Promise<void> {
+  const caps = readLoopCaps(d.store.root);
   const rt = d.runtimes.default;
   const previous = d.store.roles().lead;
   const env = { DORI_HOME: d.store.root };
@@ -94,10 +96,11 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
   );
   d.store.setRole("duty-loop", loop);
   const hourlyEnv = rt.kind === "herdr" && group !== undefined ? { ...env, HERDR_WORKSPACE_ID: group } : env;
+  const loopCommand = [d.doriCmd, ...loopArgs(caps, ["loop"])].join(" ");
   const hourly = await openSession(
     rt,
     { name: "hourly-loop", role: "hourly-loop", container: "split-below", near: loop, cwd, env: hourlyEnv, ...inGroup },
-    `${d.doriCmd} loop`,
+    loopCommand,
   );
   d.store.setRole("hourly-loop", hourly);
   const state = await supervise(d, false);

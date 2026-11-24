@@ -10,7 +10,7 @@ import { join } from "node:path";
 export type SupervisorName = "supervisor" | "watchdog";
 export const SUPERVISORS: readonly SupervisorName[] = ["supervisor", "watchdog"];
 
-export type UnitRecord = { readonly name: string; readonly pid: number; readonly at: number };
+export type UnitRecord = { readonly name: string; readonly pid: number; readonly at: number; readonly pane?: string };
 export type SupervisorRecord = {
   readonly name: SupervisorName;
   readonly pid: number;
@@ -20,7 +20,12 @@ export type SupervisorRecord = {
 };
 export type EnsureUpRecord = { readonly pid: number; readonly startedAt: number; readonly at: number };
 
-export type UnitHealth = { readonly name: string; readonly pid?: number; readonly alive: boolean };
+export type UnitHealth = {
+  readonly name: string;
+  readonly pid?: number;
+  readonly pane?: string;
+  readonly alive: boolean;
+};
 export type SupervisorHealth = {
   readonly name: SupervisorName;
   readonly pid?: number;
@@ -142,7 +147,12 @@ export function supervisorHealth(
       ...(record !== undefined ? { pid: record.pid } : {}),
       alive: live,
       ...(beat !== undefined ? { heartbeatAgeMs: beat } : {}),
-      units: (record?.units ?? []).map((u) => ({ name: u.name, pid: u.pid, alive: alive(u.pid) })),
+      units: (record?.units ?? []).map((u) => ({
+        name: u.name,
+        pid: u.pid,
+        ...(u.pane === undefined ? {} : { pane: u.pane }),
+        alive: alive(u.pid),
+      })),
     };
   });
 }
@@ -166,9 +176,11 @@ export function ensureUpHealth(
 const secs = (ms: number | undefined): string =>
   ms === undefined || !Number.isFinite(ms) ? "missing" : `${Math.max(0, Math.round(ms / 1000))}s`;
 
-/** `SUPERVISED supervisor up pid=N hb=Ks units=a:1,b:2(dead)` for `dori status` and `dori restart`. */
+/** `SUPERVISED supervisor up pid=N hb=Ks units=a:1@pane,b:2(dead)` for `dori status` and `dori restart`. */
 export function formatSupervisor(h: SupervisorHealth): string {
-  const units = h.units.map((u) => `${u.name}:${u.pid ?? "?"}${u.alive ? "" : "(dead)"}`).join(",");
+  const units = h.units
+    .map((u) => `${u.name}:${u.pid ?? "?"}${u.pane === undefined ? "" : `@${u.pane}`}${u.alive ? "" : "(dead)"}`)
+    .join(",");
   return `SUPERVISED ${h.name.padEnd(10)} ${h.alive ? "up" : "DOWN"} pid=${h.pid ?? "?"} hb=${secs(h.heartbeatAgeMs)}${units ? ` units=${units}` : ""}`;
 }
 export function formatWatchdog(h: SupervisorHealth): string {

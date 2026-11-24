@@ -3,7 +3,8 @@ import { resolve } from "node:path";
 import { shq } from "./delivery.ts";
 import { prompt, type Deps } from "./harness.ts";
 import { laneGate } from "./lane-gate.ts";
-import { repoHead, resolveLaneRepo } from "./lane-repo.ts";
+import { closeItemForLane } from "./backlog.ts";
+import { laneHead, repoHead, resolveLaneRepo } from "./lane-repo.ts";
 import {
   assertCleanWorktree,
   createLaneWorktree,
@@ -22,11 +23,15 @@ import { groupId } from "./runtime/group.ts";
 import { openSession, type SessionRef } from "./runtime/types.ts";
 import { KEY_RE, reservedKey, type Lane } from "./store-types.ts";
 
+/** @public The type pruneLaneRecords returns; kept at its pre-split import path. */
+export type { PruneResult } from "./lane-prune.ts";
+export { pruneLaneRecords } from "./lane-prune.ts";
+
 export async function startLane(
   d: Deps,
   key: string,
   briefFile: string,
-  opts: { cwd?: string; group?: string } = {},
+  opts: { cwd?: string; group?: string; item?: string } = {},
 ): Promise<Lane> {
   if (!KEY_RE.test(key)) throw new Refusal(`lane key must match ${KEY_RE}`);
   const reserved = reservedKey(key);
@@ -36,6 +41,14 @@ export async function startLane(
     throw new Refusal(`lane ${key} is lost; its worktree and branch are kept: dori done --drop ${key} --reason <text>`);
   if (existing && existing.status !== "done" && existing.status !== "dropped")
     throw new Refusal(`lane ${key} is already open in ${refText(existing.sessionRef)}`);
+  // A lane opened for a backlog item records the link, so closing it closes the item even when the keys differ. Only a
+  // live item is linked: a lane reusing the key of a finished item is ordinary ad-hoc work.
+  const linkedId = opts.item ?? key;
+  const linkedItem = d.store.item(linkedId);
+  const item =
+    linkedItem !== undefined && (linkedItem.status === "open" || linkedItem.status === "running")
+      ? linkedId
+      : undefined;
   const cwd = resolve(opts.cwd ?? process.cwd());
   const repo = await resolveLaneRepo(d, cwd);
   const baseSha = repo === undefined ? undefined : await repoHead(d, repo);
@@ -103,6 +116,7 @@ export async function startLane(
     tabId: ref.container ?? "",
     brief: briefPath,
     cwd,
+    ...(item !== undefined ? { item } : {}),
     ...(worktree !== undefined ? { worktree } : {}),
     ...(repo !== undefined && baseSha !== undefined ? { repo, baseSha, tipSha: baseSha } : {}),
     status: "working",
@@ -180,7 +194,14 @@ export type DoneOptions = {
 export async function done(d: Deps, key: string, opts: DoneOptions = {}): Promise<string | undefined> {
   const lane = d.store.lane(key);
   if (!lane) throw new Refusal(`no lane ${key}`);
-  if (opts.drop !== undefined) return dropLane(d, lane, opts.drop);
+  if (opts.drop !== undefined) {
+    // Dropping a live lane abandons its work, so the item it served is dropped too. A lost lane is only a record the
+    // loop already reopened: dropping it clears the key for a retry and must leave that open item alone.
+    const live = lane.status === "working" || lane.status === "waiting" || lane.status === "ready";
+    const result = await dropLane(d, lane, opts.drop);
+    if (live) closeItemForLane(d, lane, "dropped", `lane ${key} dropped: ${opts.drop.trim()}`);
+    return result;
+  }
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
   // A pane that runs outside its own worktree commits into the shared checkout; landing it would publish exactly the
   // commits isolation cannot vouch for.
@@ -205,11 +226,23 @@ export async function done(d: Deps, key: string, opts: DoneOptions = {}): Promis
     throw new Refusal(`lane ${key} pane is ${st}; let it finish first`);
   // Windows refuses `worktree remove` while the pane holds the directory, so close it first.
   if (st !== "gone") await rt.close(lane.sessionRef);
+  // The gate proved this tip carries the CLEAR receipt (or that the lane committed nothing); read it before landing
+  // removes the worktree, so the item's log can name the commit and receipt that closed it.
+  const tip = lane.baseSha === undefined ? undefined : ((await laneHead(d, lane)) ?? lane.tipSha);
   const landing = lane.worktree === undefined ? undefined : await landWorktree(d, lane);
   const note = gate.note;
   const closed = note === undefined ? "closed by lead" : `closed by lead (${note})`;
   lane.status = "done";
   lane.log.push({ at: d.now(), kind: "done", text: landing === undefined ? closed : `${closed}; ${landing}` });
   d.store.saveLane(lane);
+  if (tip !== undefined) {
+    const receipt = d.store.laneReceipt(key, tip);
+    closeItemForLane(
+      d,
+      lane,
+      "done",
+      `lane ${key} done at ${tip.slice(0, 12)}${receipt === undefined ? "" : ` (${receipt.verdict} receipt lane_${key}@${tip})`}`,
+    );
+  } else closeItemForLane(d, lane, "done", `lane ${key} done`);
   return note;
 }

@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Refusal } from "../src/refusal.ts";
 import { done, ready, startLane } from "../src/lanes.ts";
+import { Refusal } from "../src/refusal.ts";
 import { href } from "./fake.ts";
 import { setup } from "./harness-setup.ts";
 import { captureIo } from "./inbox-setup.ts";
+import { base, clearGroupEnv, gitCalls, repoGit, repoWorld, withEnv } from "./lanes-setup.ts";
 
 describe("lanes", () => {
   test("start opens a tab, launches omo with the brief, and tells the lead", async () => {
@@ -48,24 +49,9 @@ describe("lanes", () => {
 });
 
 describe("startLane group fallback", () => {
-  const withEnv = async (vars: Record<string, string | undefined>, run: () => Promise<void>) => {
-    const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
-    for (const [k, v] of Object.entries(vars))
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    try {
-      await run();
-    } finally {
-      for (const [k, v] of Object.entries(saved))
-        if (v === undefined) delete process.env[k];
-        else process.env[k] = v;
-    }
-  };
-  const clear = { HERDR_PANE_ID: undefined, HERDR_WORKSPACE_ID: undefined, HC_TERMINAL_ID: undefined };
-
   test("herdr with no group and no caller session: workspace create, tab create in it, pane run", async () => {
     const { w, d, brief } = setup();
-    await withEnv(clear, async () => {
+    await withEnv(clearGroupEnv, async () => {
       await startLane(d, "no-group", brief);
     });
     const opening = ["workspace create", "tab create", "pane run"];
@@ -77,7 +63,7 @@ describe("startLane group fallback", () => {
 
   test("an hc lane gets this home's group label, never the caller's herdr workspace id", async () => {
     const { w, d, brief } = setup({ runtime: "hc" });
-    await withEnv({ ...clear, HERDR_PANE_ID: "w9:p9", HERDR_WORKSPACE_ID: "w9" }, async () => {
+    await withEnv({ ...clearGroupEnv, HERDR_PANE_ID: "w9:p9", HERDR_WORKSPACE_ID: "w9" }, async () => {
       await startLane(d, "hc-lane", brief);
     });
     const run = w.hc.calls.find((args) => args[0] === "run")!;
@@ -89,31 +75,8 @@ describe("startLane group fallback", () => {
 });
 
 describe("lane worktree at start", () => {
-  const base = "a".repeat(40);
-  const gitCalls = (w: ReturnType<typeof setup>["w"]) =>
-    w.calls.filter((c) => c.cmd === "git").map((c) => c.argv.join(" "));
-
-  function repoGit(repo: string, opts: { addFails?: string; branchExists?: boolean; longpaths?: string } = {}) {
-    return (argv: readonly string[]) => {
-      const args = argv[0] === "-C" ? argv.slice(2) : argv;
-      const [cmd, sub] = args;
-      if (cmd === "rev-parse" && args.includes("--show-toplevel")) return { code: 0, stdout: `${repo}\n` };
-      if (cmd === "rev-parse" && args.includes("--verify"))
-        return opts.branchExists === true ? { code: 0, stdout: `${base}\n` } : { code: 1, stdout: "", stderr: "" };
-      if (cmd === "rev-parse") return { code: 0, stdout: `${base}\n` };
-      if (cmd === "config") return { code: 0, stdout: `${opts.longpaths ?? "true"}\n` };
-      if (cmd === "worktree" && sub === "add")
-        return opts.addFails === undefined
-          ? { code: 0, stdout: "", stderr: "" }
-          : { code: 128, stdout: "", stderr: opts.addFails };
-      return { code: 0, stdout: "", stderr: "" };
-    };
-  }
-
   test("start creates, locks and asserts the worktree, and the pane opens in it", async () => {
-    const { w, d, brief } = setup();
-    const repo = join(d.store.root, "main");
-    w.git = repoGit(repo);
+    const { w, d, brief, repo } = repoWorld();
     const lane = await startLane(d, "own-tree", brief, { group: "w1" });
     const wt = join(d.store.root, "worktrees", "own-tree");
 
@@ -182,9 +145,7 @@ describe("lane worktree at start", () => {
   });
 
   test("a worktree root that cannot be created refuses the start loudly and writes nothing", async () => {
-    const { w, d, brief } = setup();
-    const repo = join(d.store.root, "main");
-    w.git = repoGit(repo);
+    const { w, d, brief, repo } = repoWorld();
     const blocked = join(d.store.root, "blocked-root");
     writeFileSync(blocked, "a file where the worktree root must be a directory");
     const panes = w.panes.size;
@@ -266,10 +227,8 @@ describe("lane worktree at start", () => {
   });
 
   test("DORI_WORKTREES_DIR overrides the worktree root", async () => {
-    const { w, d, brief } = setup();
-    const repo = join(d.store.root, "main");
+    const { w, d, brief, repo } = repoWorld();
     const elsewhere = join(d.store.root, "elsewhere");
-    w.git = repoGit(repo);
     const saved = process.env["DORI_WORKTREES_DIR"];
     process.env["DORI_WORKTREES_DIR"] = elsewhere;
     try {

@@ -2,14 +2,18 @@
 // and end-to-end tests point it at an isolated session.
 
 export type ExecResult = { readonly code: number; readonly stdout: string; readonly stderr: string };
+/** The running child as `onSpawn` reports it: `pid` lets a later process kill its whole tree. */
+export type SpawnedProcess = { readonly pid?: number; kill(): void };
 /**
  * `onSpawn` gets the running process, so a caller that gives up on it can kill it. `onStdout`/`onStderr` receive output
- * as it arrives; the final result still carries the whole text.
+ * as it arrives; the final result still carries the whole text. `group` starts the child as its own process group, so
+ * killing the tree cannot reach this process.
  */
 export type ExecOptions = {
-  readonly onSpawn?: (proc: { kill(): void }) => void;
+  readonly onSpawn?: (proc: SpawnedProcess) => void;
   readonly onStdout?: (chunk: string) => void;
   readonly onStderr?: (chunk: string) => void;
+  readonly group?: boolean;
 };
 export type Exec = (cmd: string, argv: readonly string[], options?: ExecOptions) => Promise<ExecResult>;
 
@@ -34,7 +38,12 @@ async function pump(stream: ReadableStream<Uint8Array>, sink?: (chunk: string) =
 }
 
 export const spawnExec: Exec = async (cmd, argv, options) => {
-  const proc = Bun.spawn([cmd, ...argv], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+  const proc = Bun.spawn([cmd, ...argv], {
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "ignore",
+    ...(options?.group === true ? { detached: true } : {}),
+  });
   options?.onSpawn?.(proc);
   const [stdout, stderr, code] = await Promise.all([
     pump(proc.stdout, options?.onStdout),

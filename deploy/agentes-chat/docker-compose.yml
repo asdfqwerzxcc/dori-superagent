@@ -104,7 +104,13 @@ services:
       - /tmp
     healthcheck:
       # 200 only while the app and its database are up.
-      test: ["CMD", "bun", "-e", "fetch('http://127.0.0.1:' + (process.env.PORT || 3000) + '/api/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "bun",
+          "-e",
+          "fetch('http://127.0.0.1:' + (process.env.PORT || 3000) + '/api/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))",
+        ]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -132,7 +138,13 @@ services:
     restart: unless-stopped
     healthcheck:
       # 200 once the models are loaded.
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)",
+        ]
       interval: 15s
       timeout: 5s
       retries: 3

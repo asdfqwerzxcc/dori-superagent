@@ -1,5 +1,7 @@
 {
   "runtime": "herdr",
+  "maxLanes": 5,
+  "maxStarts": 2,
   "stateDir": "~/.dori/state",
   "laneWorkspace": "lanes",
   "workspaces": ["lanes"],

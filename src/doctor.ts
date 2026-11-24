@@ -18,6 +18,7 @@ export type DoctorOptions = { readonly json: boolean; readonly online: boolean }
 export type DoctorProbes = {
   readonly runtime: () => Promise<ProbeResult>;
   readonly git: () => Promise<ProbeResult>;
+  readonly mergeGuard: () => Promise<ProbeResult>;
   readonly home: () => Promise<ProbeResult>;
   readonly session: () => Promise<ProbeResult>;
   readonly agent: () => Promise<ProbeResult>;
@@ -38,6 +39,7 @@ export type DoctorReport = {
 const CHECKS = [
   ["runtime", "runtime"],
   ["git", "git"],
+  ["mergeGuard", "merge guard"],
   ["home", "dori home"],
   ["session", "session runtime"],
   ["agent", "agent engine"],

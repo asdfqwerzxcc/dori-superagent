@@ -1,14 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { Exec } from "../src/runtime/exec.ts";
 import {
   ensureUpHealth,
   formatEnsureUp,
   formatSupervised,
   formatSupervisor,
   supervisorHealth,
+  writeSupervisorRecord,
 } from "../src/supervisors.ts";
-import { matchPids, parseCim, parsePs } from "../src/supervisor-run.ts";
+import { listProcesses, matchPids, parseCim, parsePs } from "../src/supervisor-run.ts";
 import { FIVE_UNITS, NOW, beat, homeWithState, supervisorRecord, watchdogRecord } from "./supervisor-fixtures.ts";
 
 describe("supervisor records and heartbeats", () => {
@@ -38,6 +40,21 @@ describe("supervisor records and heartbeats", () => {
     expect(formatSupervisor(dead!)).toContain("(dead)");
   });
 
+  test("a unit's pane id is shown beside its pid and liveness", () => {
+    const home = homeWithState();
+    beat(home, "supervisor-heartbeat");
+    writeSupervisorRecord(home, {
+      name: "supervisor",
+      pid: process.pid,
+      startedAt: NOW,
+      units: [{ name: "duty", pid: process.pid, at: NOW, pane: "w9:p3" }],
+      at: NOW,
+    });
+    expect(formatSupervisor(supervisorHealth(home, NOW)[0]!)).toBe(
+      `SUPERVISED supervisor up pid=${process.pid} hb=0s units=duty:${process.pid}@w9:p3`,
+    );
+  });
+
   test("old per-half heartbeats no longer make a supervisor, and the watchdog prints separately", () => {
     const home = homeWithState();
     beat(home, "loops-heartbeat");
@@ -56,6 +73,21 @@ describe("supervisor records and heartbeats", () => {
     expect(ensureUpHealth(home, NOW)).toMatchObject({ pid: process.pid, alive: true, heartbeatAgeMs: 0 });
     expect(formatEnsureUp(ensureUpHealth(home, NOW), false)).toContain("ENSURE-UP up pid=");
     expect(formatEnsureUp({ alive: false }, true)).toBe("ENSURE-UP off (ensure-up.off)");
+  });
+
+  test("a failed process query is unavailable, and the parsers keep parent pids", async () => {
+    const failing: Exec = async () => ({ code: 1, stdout: "", stderr: "no powershell" });
+    expect(await listProcesses(failing)).toBeUndefined();
+    const empty: Exec = async () => ({ code: 0, stdout: "[]", stderr: "" });
+    expect(await listProcesses(empty)).toEqual([]);
+    expect(matchPids(undefined, "x")).toEqual([]);
+    expect(parseCim(JSON.stringify({ ProcessId: 7, ParentProcessId: 3, CommandLine: "bun x" }))).toEqual([
+      { pid: 7, command: "bun x", parent: 3 },
+    ]);
+    expect(parsePs("  10  5 bun a.ts\n  11 bun b.ts\n")).toEqual([
+      { pid: 10, command: "bun a.ts", parent: 5 },
+      { pid: 11, command: "bun b.ts" },
+    ]);
   });
 
   test("process lists parse on both shapes and match the merged entry plus a pre-merge shim", () => {

@@ -1,3 +1,4 @@
+import type { SendResult } from "./inbox.ts";
 import { Refusal } from "./refusal.ts";
 
 export const USAGE = `dori - a proactive multi-session harness on herdr or hc + omo
@@ -51,14 +52,22 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
                                               stale PRs get a nudge then a close; stale issues get needs-info (never closed)
                                               no --repo = this checkout's github origin; writes need config/repos.json allow
   dori review <owner/repo#N> [--model M]      fresh omo reviewer at the exact head -> receipt
-  dori review --lane <key> [--model M]        queue the lane's own diff for dori duty -> QUEUED <key> <tip> <job>;
-                                              with no duty loop running, review it inline now -> lane receipt
-  dori merge <owner/repo#N> [--dry-run] [--bundle <id>]
-                                              CLEAR receipt at head (or every bundle member CLEAR) + green checks -> squash merge
+  dori review <owner/repo#N> --attest --verdict CLEAR|BLOCK --reviewer R --evidence E
+                                             record a review done elsewhere as the receipt (no child process)
+  dori review --lane <key> [--model M] [--restart]
+                                              queue the lane's own diff for dori duty -> QUEUED <key> <tip> <job>;
+                                              an in-flight request -> already queued <job> (<state>); --restart kills
+                                              that reviewer tree first; with no duty loop, review it inline now
+  dori merge <lane-key|lane/key> [--dry-run]  default gate: CLEAR lane receipt at the head -> push lane/<key> to the
+                                              lane repo's own remote (fork when present, else origin) -> PR against
+                                              main -> checks green (or none) -> merge commit -> delete the remote branch
+  dori merge <owner/repo#N> [--dry-run]       PR form: CLEAR receipt at that head + green checks when configured -> squash merge
+  dori merge <owner/repo#N> --bundle <id>     explicit bundle gate: every recorded member CLEAR at its sha + green
+                                              checks when configured -> squash merge
   dori bundle open <id> --title T [--issue N] [--repo owner/name]
   dori bundle add <id> <lane-key>...          only when the lane receipt is CLEAR at the current lane/<key> head
   dori bundle list [<id>] [--json]            bundles under state/bundles/<id>.json
-  dori bundle land <id> [--dry-run]           bundle/<id> from main (members merged --no-ff) + fork PR
+  dori bundle land <id> [--dry-run]           bundle/<id> from main (members merged --no-ff) + fork PR (explicit mode)
   dori bundle close <id> [--text T]           after the PR merges: verify only issue N is Closes, comment Refs
   dori bundle show <id> [--json]
   dori done <key> [--rebase]                  lead closes a READY lane; needs a CLEAR lane receipt unless it committed nothing
@@ -70,6 +79,9 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
                [--wait-minutes N] [--resume]  hand sessions over to another runtime; MIGRATED, SKIP, DEFERRED,
                                               or MIGRATE_ROLLBACK (exit 3) per session
   dori restart                                restart the supervisor tree; waits for a fresh heartbeat and all five units
+  dori lead-restart [--dry-run] [--force] [--session FILE] [--drain-timeout SECONDS]
+                                              find the lead by the pane's process tree, kill it, and relaunch the same session
+                                              once the pane is a shell; --dry-run prints PID, session and engine only
   dori plugin list | enable <name> | disable <name>
                                               the registry and state/plugins.json; the supervisor re-reads it every 5 s
   dori remote add <name> --ssh <user@host> [--repo PATH] [--os linux|windows]
@@ -89,6 +101,49 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
 send, report and ready exit 3 and print HELD <target> when the delivery may or may not have reached the pane:
 it is held and never resent, so do not send it again: check the pane, then dori inbox ack or dori inbox resend it.
 QUEUED (exit 0) means it waits in the pane's inbox.`;
+
+/** Every subcommand main() knows; an unknown word still prints the usage, and only these touch the usage ping. */
+export const COMMANDS: ReadonlySet<string> = new Set([
+  "up",
+  "role",
+  "start",
+  "report",
+  "ready",
+  "send",
+  "inbox",
+  "duty",
+  "review",
+  "merge",
+  "done",
+  "bundle",
+  "worktrees",
+  "status",
+  "loop",
+  "backlog",
+  "board",
+  "sop",
+  "labels",
+  "stale",
+  "migrate",
+  "restart",
+  "lead-restart",
+  "plugin",
+  "remote",
+  "agent",
+  "link",
+  "devices",
+  "doctor",
+]);
+
+/** Prints the line for a delivery that did not land now and returns the exit code: HELD 3, everything else 0. */
+export function deliveryOutcome(result: SendResult | undefined, target: string): number {
+  if (result === "HELD") {
+    console.log(`HELD ${target}: delivery may or may not have reached the pane; do not resend`);
+    return 3;
+  }
+  if (result === "QUEUED") console.log(`QUEUED ${target}`);
+  return 0;
+}
 
 export type Args = { pos: string[]; flags: Map<string, string[]> };
 
@@ -110,6 +165,8 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "online",
   "ready",
   "post",
+  "attest",
+  "restart",
 ]);
 
 export function parse(argv: readonly string[]): Args {

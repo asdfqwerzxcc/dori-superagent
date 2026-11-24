@@ -206,3 +206,42 @@ test("resources: low disk or low memory WARNs, plenty passes, an unknown disk WA
   expect((await stackChecks(fakeDoctorEnv().env).resources()).status).toBe("PASS");
   expect((await stackChecks(fakeDoctorEnv({ diskFree: "unknown" }).env).resources()).status).toBe("WARN");
 });
+
+test("merge guard: local main commits that did not land through a PR warn", async () => {
+  const refs = {
+    "git rev-parse --is-inside-work-tree": ok("true"),
+    "git rev-parse --verify --quiet refs/heads/main": ok("a".repeat(40)),
+    "git rev-parse --verify --quiet refs/remotes/origin/main": ok("b".repeat(40)),
+  };
+  const ahead = fakeDoctorEnv({
+    commands: {
+      ...refs,
+      "git rev-list --count refs/remotes/origin/main..refs/heads/main": ok("2\n"),
+      "git log --format=%h %s -n 5 refs/remotes/origin/main..refs/heads/main": ok(
+        "abc1234 merge lane alpha\nabc1235 merge lane beta\n",
+      ),
+    },
+  });
+  const result = await machineChecks(ahead.env).mergeGuard();
+  expect(result.status).toBe("WARN");
+  expect(result.detail).toContain("2 commit(s) not landed through a PR");
+  expect(result.detail).toContain("abc1234 merge lane alpha");
+  expect(result.hint).toContain("dori merge");
+
+  const long = fakeDoctorEnv({
+    commands: {
+      ...refs,
+      "git rev-list --count refs/remotes/origin/main..refs/heads/main": ok("1\n"),
+      "git log --format=%h %s -n 5 refs/remotes/origin/main..refs/heads/main": ok(`abc1234 ${"x".repeat(400)}\n`),
+    },
+  });
+  const longResult = await machineChecks(long.env).mergeGuard();
+  expect(longResult.detail.length).toBeLessThan(320);
+  expect(longResult.detail).toContain("...");
+
+  const clean = fakeDoctorEnv({
+    commands: { ...refs, "git rev-list --count refs/remotes/origin/main..refs/heads/main": ok("0\n") },
+  });
+  expect((await machineChecks(clean.env).mergeGuard()).status).toBe("PASS");
+  expect((await machineChecks(fakeDoctorEnv().env).mergeGuard()).status).toBe("PASS");
+});

@@ -1,44 +1,23 @@
 // The hourly loop: sync the backlog with live lanes, audit for missed work, start the next item
 // that needs no decision, ask the lead the open questions, and record the run. It never merges,
 // never pushes, never closes a pane and never edits a lane record. See docs/hourly-loop.md.
-import { log, MAX_ATTEMPTS, reconcileRunningItems } from "./backlog.ts";
+import { laneForItem, log, MAX_ATTEMPTS, reconcileRunningItems, type ReconcileEvent } from "./backlog.ts";
 import type { Deps } from "./harness.ts";
 import { tellLead } from "./inbox.ts";
 import { startLane } from "./lanes.ts";
 import { audit, HOUR } from "./loop-audit.ts";
+import { DEFAULT_MAX_LANES, DEFAULT_MAX_STARTS } from "./loop-caps.ts";
 import { acquire, holds, release } from "./loop-lock.ts";
+import { rememberQuiet, worthTelling } from "./loop-quiet.ts";
 import { refText } from "./refs.ts";
 import type { LoopRun } from "./store-types.ts";
-import { join } from "node:path";
 
 export { HOUR };
 export { MAX_ATTEMPTS };
 export const REMIND_HOURS = 6;
-const QUIET_HOURS = 6;
-
-type LoopStatus = NonNullable<LoopRun["status"]>;
-const quietPath = (d: Deps) => join(d.store.root, "state", "loop-quiet.json");
-const quietKey = (s: LoopStatus) =>
-  `lanes ${s.lanes}/${s.maxLanes} open ${s.items.open} decide ${s.items.decide} running ${s.items.running}`;
-
-/** An unchanged hourly status reaches the lead at most once every QUIET_HOURS; anything new goes straight through. */
-async function worthTelling(d: Deps, run: LoopRun): Promise<boolean> {
-  if (run.synced.length || run.findings.length || run.started.length || run.held.length || run.asked.length)
-    return true;
-  const key = quietKey(run.status as LoopStatus);
-  const prev = (await Bun.file(quietPath(d))
-    .json()
-    .catch(() => undefined)) as { key?: string; at?: number } | undefined;
-  if (prev === undefined || prev.key !== key) return true;
-  return d.now() - (prev.at ?? 0) >= QUIET_HOURS * HOUR;
-}
-
-async function rememberQuiet(d: Deps, run: LoopRun): Promise<void> {
-  try {
-    await Bun.write(quietPath(d), JSON.stringify({ key: quietKey(run.status as LoopStatus), at: d.now() }));
-  } catch {}
-}
 export const MEM_FREE_MIN_PCT = 10;
+/** Absolute floor too: 10% of 7.7 GB is 770 MB, less than one agent's private memory; 700 MB is what this host can actually keep free beside a lead. */
+export const MEM_FREE_MIN_MB = 700;
 
 export type LoopOpts = { interval?: number; maxLanes?: number; maxStarts?: number; maxLoad?: number; force?: boolean };
 
@@ -51,12 +30,13 @@ async function ghState(d: Deps, kind: "pr" | "issue", repo: string, n: string): 
   return String((JSON.parse(r.stdout) as { state?: string }).state);
 }
 
-async function sync(d: Deps, run: LoopRun): Promise<void> {
-  for (const event of reconcileRunningItems(d, { countAttempts: true })) run.synced.push(event.text);
+async function sync(d: Deps, run: LoopRun): Promise<ReconcileEvent[]> {
+  const reconciled = reconcileRunningItems(d, { countAttempts: true });
+  for (const event of reconciled) run.synced.push(event.text);
   for (const item of d.store.items()) {
     try {
       if (item.status === "running") {
-        const lane = d.store.lane(item.id);
+        const lane = laneForItem(d, item.id);
         if (lane?.status === "ready") {
           const m = lane.final?.evidence.map((e) => PR_RE.exec(e)).find(Boolean);
           if (m && (await ghState(d, "pr", m[1]!, m[2]!)) === "MERGED") {
@@ -78,6 +58,7 @@ async function sync(d: Deps, run: LoopRun): Promise<void> {
       run.findings.push(`gh: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
+  return reconciled;
 }
 
 const isOpenLane = (status: string): boolean => status !== "done" && status !== "lost" && status !== "dropped";
@@ -97,13 +78,22 @@ async function pull(
   const host = d.host();
   const open = d.store.lanes().filter((l) => isOpenLane(l.status)).length;
   let starts = Math.max(0, Math.min(maxLanes - open, maxStarts));
+  const served = new Set(
+    d.store
+      .lanes()
+      .filter((l) => isOpenLane(l.status))
+      .map((l) => l.item ?? l.key),
+  );
   const candidates = d.store
     .items()
-    .filter((i) => i.status === "open" && !i.decision && !isOpenLane(d.store.lane(i.id)?.status ?? "done"))
+    .filter((i) => i.status === "open" && !i.decision && !served.has(i.id))
     .sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt || a.id.localeCompare(b.id));
-  if (candidates.length > 0 && (host.load1 > (maxLoad ?? host.cores) || host.memFreePct < MEM_FREE_MIN_PCT)) {
+  if (
+    candidates.length > 0 &&
+    (host.load1 > (maxLoad ?? host.cores) || host.memFreePct < MEM_FREE_MIN_PCT || host.memFreeMb < MEM_FREE_MIN_MB)
+  ) {
     run.held.push(
-      `host busy: load ${host.load1.toFixed(1)} (limit ${maxLoad ?? host.cores}), mem free ${host.memFreePct}%`,
+      `host busy: load ${host.load1.toFixed(1)} (limit ${maxLoad ?? host.cores}), mem free ${host.memFreePct}% (${host.memFreeMb} MB)`,
     );
     starts = 0;
   }
@@ -117,7 +107,7 @@ async function pull(
       break;
     }
     try {
-      await startLane(d, item.id, item.brief, { cwd: item.cwd });
+      await startLane(d, item.id, item.brief, { cwd: item.cwd, item: item.id });
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
       const lane = d.store.lane(item.id);
@@ -177,8 +167,8 @@ export function summary(run: LoopRun): string {
 /** One hourly pass. Skipped runs (stopped, locked, too soon) change nothing and write nothing. */
 export async function loopTick(d: Deps, opts: LoopOpts = {}): Promise<LoopRun> {
   const interval = opts.interval ?? HOUR;
-  const maxLanes = opts.maxLanes ?? 3;
-  const maxStarts = opts.maxStarts ?? 2;
+  const maxLanes = opts.maxLanes ?? DEFAULT_MAX_LANES;
+  const maxStarts = opts.maxStarts ?? DEFAULT_MAX_STARTS;
   const empty = { synced: [], findings: [], started: [], held: [], asked: [] };
   const stop = d.store.stop();
   if (stop) return { at: d.now(), skipped: `stopped: ${stop.reason}`, ...empty };
@@ -190,17 +180,20 @@ export async function loopTick(d: Deps, opts: LoopOpts = {}): Promise<LoopRun> {
       return { at: d.now(), skipped: `ran ${Math.floor((d.now() - last.at) / 60_000)}m ago`, ...empty };
     }
     const run: LoopRun = { at: d.now(), synced: [], findings: [], started: [], held: [], asked: [] };
-    await sync(d, run);
+    const reconciled = await sync(d, run);
     await audit(d, run);
     await pull(d, run, maxLanes, maxStarts, opts.maxLoad, lock.nonce);
     ask(d, run);
+    // A stale running item resolved by sync is reported, not just listed: the operator may need to fix why the lane
+    // vanished. Appended after pull so a start failure keeps its place as the run's first finding.
+    for (const event of reconciled) if (event.kind === "reopen") run.findings.push(event.text);
     const items = d.store.items();
     const running = new Set(items.filter((i) => i.status === "running").map((i) => i.id));
     const lanes = d.store.lanes().filter((l) => isOpenLane(l.status));
     run.status = {
       lanes: lanes.length,
       maxLanes,
-      adhoc: lanes.filter((l) => !running.has(l.key)).map((l) => l.key),
+      adhoc: lanes.filter((l) => !running.has(l.item ?? l.key)).map((l) => l.key),
       items: {
         open: items.filter((i) => i.status === "open").length,
         decide: items.filter((i) => i.status === "open" && i.decision).length,

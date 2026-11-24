@@ -45,7 +45,7 @@ export const startAcp = (env: Record<string, string>) => {
     messages.push(message);
     for (let i = waiters.length - 1; i >= 0; i -= 1) {
       const waiter = waiters[i];
-      if (!waiter || !waiter.predicate(message)) continue;
+      if (!waiter?.predicate(message)) continue;
       clearTimeout(waiter.timer);
       waiters.splice(i, 1);
       waiter.resolve(message);
@@ -98,7 +98,7 @@ export const startAcp = (env: Record<string, string>) => {
         stderrText += decoder.decode(value, { stream: true });
         for (let i = stderrWaiters.length - 1; i >= 0; i -= 1) {
           const waiter = stderrWaiters[i];
-          if (!waiter || !waiter.predicate(stderrText)) continue;
+          if (!waiter?.predicate(stderrText)) continue;
           clearTimeout(waiter.timer);
           stderrWaiters.splice(i, 1);
           waiter.resolve(stderrText);
@@ -121,7 +121,11 @@ export const startAcp = (env: Record<string, string>) => {
       const timer = setTimeout(() => {
         const index = waiters.findIndex((waiter) => waiter.timer === timer);
         if (index >= 0) waiters.splice(index, 1);
-        reject(new Error(`timed out waiting for an ACP message; saw ${JSON.stringify(messages).slice(0, 1200)}; stderr ${stderrText.slice(0, 800)}`));
+        reject(
+          new Error(
+            `timed out waiting for an ACP message; saw ${JSON.stringify(messages).slice(0, 1200)}; stderr ${stderrText.slice(0, 800)}`,
+          ),
+        );
       }, timeoutMs);
       waiters.push({ predicate, resolve, reject, timer });
     });
@@ -157,7 +161,11 @@ export const startAcp = (env: Record<string, string>) => {
 export const processList = async (pid: number): Promise<string> => {
   const argv = process.platform === "win32" ? ["tasklist", "/FI", `PID eq ${pid}`] : ["ps", "-p", String(pid)];
   const result = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
-  const [out, err, code] = await Promise.all([new Response(result.stdout).text(), new Response(result.stderr).text(), result.exited]);
+  const [out, err, code] = await Promise.all([
+    new Response(result.stdout).text(),
+    new Response(result.stderr).text(),
+    result.exited,
+  ]);
   return `exit=${code} ${out}${err}`.trim();
 };
 

@@ -11,10 +11,18 @@ export type ReviewDiagnostic = {
   readonly durationMs: number;
   readonly stdoutTail: string;
   readonly stderrTail: string;
-  readonly argv: readonly string[];
+  readonly argv: readonly string[] | null;
   readonly model: string | null;
   readonly chunk?: string;
+  /** One line naming why the attempt failed, e.g. `exit 1: No API key found for opencode.` */
+  readonly cause?: string;
+  /** True for either attempt of a retry pair; `retryModel` names the fallback the retry used. */
+  readonly retried?: true;
+  readonly retryModel?: string;
 };
+
+/** What a diagnostic records about a retry: the failed attempt that started it, or the retry itself. */
+export type RetryFacts = { readonly retried?: true; readonly retryModel?: string };
 
 const ELIDE = 512;
 const MAX_TAIL = 4000;
@@ -23,19 +31,23 @@ const elide = (arg: string): string => (arg.length > ELIDE ? `<${arg.length} cha
 const tail = (text: string): string => text.split(/\r?\n/).slice(-200).join("\n").slice(-MAX_TAIL);
 
 export function reviewDiagnostic(
-  argv: readonly string[],
+  argv: readonly string[] | null,
   outcome: ReviewOutcome,
   model: string | null,
   chunk?: string,
+  retry?: RetryFacts & { readonly cause?: string },
 ): ReviewDiagnostic {
   return {
-    exitCode: outcome.kind === "exit" ? outcome.code : (outcome.code ?? null),
+    exitCode: outcome.kind === "exit" ? outcome.code : outcome.kind === "timeout" ? (outcome.code ?? null) : null,
     durationMs: outcome.durationMs,
-    stdoutTail: tail(outcome.stdout),
-    stderrTail: tail(outcome.stderr),
-    argv: argv.map(elide),
+    stdoutTail: tail(outcome.kind === "error" ? "" : outcome.stdout),
+    stderrTail: tail(outcome.kind === "error" ? outcome.message : outcome.stderr),
+    argv: argv === null ? null : argv.map(elide),
     model,
     ...(chunk === undefined ? {} : { chunk }),
+    ...(retry?.cause === undefined ? {} : { cause: retry.cause }),
+    ...(retry?.retried === true ? { retried: true as const } : {}),
+    ...(retry?.retryModel === undefined ? {} : { retryModel: retry.retryModel }),
   };
 }
 

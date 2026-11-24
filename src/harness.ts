@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { cpus, homedir, loadavg } from "node:os";
 import { join, resolve } from "node:path";
 import { shq } from "./delivery.ts";
-import { memFreePct } from "./host.ts";
+import { memFreeMb, memFreePct } from "./host.ts";
 import { type Exec, spawnExec } from "./runtime/exec.ts";
 import { HcRuntime } from "./runtime/hc/index.ts";
 import { HerdrRuntime } from "./runtime/herdr/index.ts";
@@ -62,7 +62,7 @@ export const defaultDeps = (): Deps => {
     now: Date.now,
     agentCmd: process.env["DORI_AGENT_CMD"] ?? "omo",
     doriCmd: process.env["DORI_CMD"] ?? `DORI_HOME=${shq(home)} bun ${shq(CLI)}`,
-    host: () => ({ load1: loadavg()[0] ?? 0, cores: cpus().length, memFreePct: memFreePct() }),
+    host: () => ({ load1: loadavg()[0] ?? 0, cores: cpus().length, memFreePct: memFreePct(), memFreeMb: memFreeMb() }),
     usage: new Telemetry(home),
     supervise: (homePath, opts) => superviseHome(homePath, opts),
   };

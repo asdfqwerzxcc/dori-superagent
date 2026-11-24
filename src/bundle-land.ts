@@ -1,5 +1,6 @@
-// The `dori bundle land` half: build the integration branch in a disposable worktree, push it to the fork and create
-// or update the one PR. Nothing here moves `main`; a conflict stops at the failing member and keeps the partial branch.
+// The `dori bundle land` half: build the integration branch in a disposable worktree, push it to the selected remote
+// (fork when present, else origin) and create or update the one PR. Nothing here moves `main`; a conflict stops at the
+// failing member and keeps the partial branch.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -7,8 +8,9 @@ import { checkedBundle, gateMember, repoKey, short } from "./bundles.ts";
 import type { Deps } from "./harness.ts";
 import { asSha, gitOut } from "./lane-repo.ts";
 import { worktreeRoot } from "./lane-worktree.ts";
+import { type OwnRemote, remoteRepo, upstreamRefusal } from "./own-remote.ts";
+import { findPr } from "./pr.ts";
 import { Refusal } from "./refusal.ts";
-import { repoFromRemote } from "./repo-policy.ts";
 import type { ExecResult } from "./runtime/exec.ts";
 import type { Bundle } from "./store-types.ts";
 
@@ -17,23 +19,26 @@ const ghWhy = (r: ExecResult): string => (r.stderr || r.stdout).trim() || `gh ex
 
 export const withoutComments = (text: string): string => text.replace(/<!--[\s\S]*?-->/g, "");
 
-type ForkRemote = { readonly name: string; readonly repo: string };
-
-async function forkRemote(d: Deps, repoPath: string): Promise<ForkRemote | undefined> {
+async function ownRemote(d: Deps, repoPath: string, bundleId: string): Promise<OwnRemote | undefined> {
   for (const name of ["fork", "origin"]) {
-    const r = await d.exec("git", ["-C", repoPath, "remote", "get-url", name]);
-    if (r.code !== 0) continue;
-    const repo = repoFromRemote(r.stdout);
-    if (repo !== undefined) return { name, repo };
+    const repo = await remoteRepo(d, repoPath, name);
+    if (repo === undefined) continue;
+    const remote = { name, repo };
+    const why = await upstreamRefusal(d, repoPath, remote);
+    if (why !== undefined)
+      throw new Refusal(
+        `bundle ${bundleId}: refusing to write to ${name} (${repo}): ${why}; push to your own fork instead`,
+      );
+    return remote;
   }
   return undefined;
 }
 
-type Preflight = { readonly repoPath: string; readonly main: string; readonly fork: ForkRemote };
+type Preflight = { readonly repoPath: string; readonly main: string; readonly fork: OwnRemote };
 
 /**
  * Everything land needs before it touches a branch: one checkout shared by every member, every member still CLEAR at
- * the sha it was admitted on, `main`, and a fork whose repository is the bundle's.
+ * the sha it was admitted on, `main`, and a selected remote (fork, else origin) that is the bundle's and not upstream.
  */
 async function preflight(d: Deps, bundle: Bundle): Promise<Preflight> {
   if (bundle.members.length === 0)
@@ -47,14 +52,14 @@ async function preflight(d: Deps, bundle: Bundle): Promise<Preflight> {
   if (repos.size !== 1)
     throw new Refusal(`bundle ${bundle.id}: members live in different repositories: ${[...repos.values()].join(", ")}`);
   const repoPath = [...repos.values()][0]!;
-  const fork = await forkRemote(d, repoPath);
+  const fork = await ownRemote(d, repoPath, bundle.id);
   if (fork === undefined)
     throw new Refusal(
-      `bundle ${bundle.id}: ${repoPath} has no github fork or origin remote; remote writes go to the fork only`,
+      `bundle ${bundle.id}: ${repoPath} has no github fork or origin remote; remote writes go to the selected remote (fork when present, else origin)`,
     );
   if (fork.repo.toLowerCase() !== bundle.repo.toLowerCase())
     throw new Refusal(
-      `bundle ${bundle.id} targets ${bundle.repo}, but ${repoPath}'s ${fork.name} remote is ${fork.repo}; remote writes go to the fork only`,
+      `bundle ${bundle.id} targets ${bundle.repo}, but ${repoPath}'s ${fork.name} remote is ${fork.repo}; remote writes go to the selected remote (fork when present, else origin)`,
     );
   for (const m of bundle.members) {
     const gate = await gateMember(d, m.lane);
@@ -77,27 +82,6 @@ function prBody(template: string, bundle: Bundle): string {
   for (const m of bundle.members) lines.push(`- lane/${m.lane} @ ${short(m.sha)} - ${m.verdict}, ${m.reviewer}`);
   lines.push("");
   return lines.join("\n");
-}
-
-type PrRef = { readonly number: number; readonly url: string; readonly state: string };
-
-/** The open PR for `head`, or undefined when the fork has none; any other gh failure is named rather than treated as none. */
-async function findPr(d: Deps, repo: string, head: string): Promise<PrRef | undefined> {
-  const r = await d.exec("gh", ["pr", "view", head, "--repo", repo, "--json", "number,url,state"]);
-  if (r.code !== 0) {
-    const why = (r.stderr || r.stdout).trim();
-    if (/no pull requests? found|no open pull requests|not found/i.test(why)) return undefined;
-    throw new Refusal(`gh pr view ${head} failed: ${why || `exit ${r.code}`}`);
-  }
-  let raw: { number?: unknown; url?: unknown; state?: unknown };
-  try {
-    raw = JSON.parse(r.stdout) as typeof raw;
-  } catch {
-    throw new Refusal(`gh pr view ${head} printed no JSON`);
-  }
-  if (typeof raw.number !== "number" || typeof raw.url !== "string" || typeof raw.state !== "string")
-    throw new Refusal(`gh pr view ${head} printed an incomplete PR`);
-  return { number: raw.number, url: raw.url, state: raw.state };
 }
 
 /** Creates the PR, or rewrites the title and body of the open one. A merged or closed PR is never reopened by land. */

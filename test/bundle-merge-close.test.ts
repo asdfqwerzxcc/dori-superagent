@@ -14,10 +14,18 @@ import { captureIo } from "./inbox-setup.ts";
 describe("merge --bundle", () => {
   const head = "e".repeat(40);
 
-  function gh(w: ReturnType<typeof setup>["w"], checks: unknown[] = [{ name: "test", bucket: "pass" }]) {
+  type GhResult = { readonly code: number; readonly stdout: string; readonly stderr?: string };
+  const noChecks: GhResult = { code: 1, stdout: "", stderr: "no checks reported on the 'main' branch" };
+
+  function gh(
+    w: ReturnType<typeof setup>["w"],
+    checks: unknown[] | GhResult = [{ name: "test", bucket: "pass" }],
+    workflows = 1,
+  ) {
     w.gh = (argv) => {
       if (argv[1] === "view") return { code: 0, stdout: JSON.stringify({ headRefOid: head }) };
-      if (argv[1] === "checks") return { code: 0, stdout: JSON.stringify(checks) };
+      if (argv[1] === "checks") return Array.isArray(checks) ? { code: 0, stdout: JSON.stringify(checks) } : checks;
+      if (argv[0] === "api" && argv[1]?.endsWith("/actions/workflows")) return { code: 0, stdout: `${workflows}\n` };
       if (argv[1] === "merge") return { code: 0, stdout: "" };
       return { code: 1, stdout: "" };
     };
@@ -54,15 +62,22 @@ describe("merge --bundle", () => {
     expect(await mergeGate(d, "o/r#7", { bundle: "b1" })).toBe(`MERGED o/r#7 head=${head}`);
   });
 
-  test("refuses when a member is not CLEAR at its recorded sha, and an empty check list is never green", async () => {
+  test("refuses when a member is not CLEAR; zero workflows with no checks still merges", async () => {
     const first = await membersBundle();
     gh(first.w);
     first.repo.refs = { ...(first.repo.refs ?? {}), "lane/beta": tipC };
     await expect(mergeGate(first.d, "o/r#7", { bundle: "b1" })).rejects.toThrow("not all CLEAR");
 
     const second = await membersBundle();
-    gh(second.w, []);
-    await expect(mergeGate(second.d, "o/r#7", { bundle: "b1" })).rejects.toThrow("never green");
+    gh(second.w, noChecks, 0);
+    expect(await mergeGate(second.d, "o/r#7", { bundle: "b1" })).toBe(`MERGED o/r#7 head=${head}`);
+  });
+
+  test("refuses when workflows exist but no checks are reported", async () => {
+    const { w, d } = await membersBundle();
+    gh(w, noChecks, 1);
+    await expect(mergeGate(d, "o/r#7", { bundle: "b1" })).rejects.toThrow("1 workflow");
+    expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(false);
   });
 });
 

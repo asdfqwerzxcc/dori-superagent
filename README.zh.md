@@ -132,7 +132,7 @@ dori backlog add new-billing --brief briefs/billing.md --decision 'charge per se
 dori backlog import owner/repo --label dori     # label p1..p9 sets the priority, needs-decision marks a question
 ```
 
-一次运行通过它的 gate（没有被停止，没有被另一个 loop 锁住，距上次运行至少隔了一个间隔）之后，先根据 lane 和 PR 的状态同步条目。接着审查漏掉的工作：沉默了 3 小时的 lane，READY 后 2 小时没人关闭的 lane，消失的 pane。然后在 `--max-lanes`（默认 3）个打开的 lane 和每次运行 `--max-starts`（默认 2）个的限制内，只要宿主机的负载和内存还有余量，就拉取下一批未完成的条目。每个悬而未决的问题以 `[DECIDE <id>]` 的形式只到达 lead 一次，6 小时后提醒一次，每次运行以一条发给 lead 的 `[LOOP ...]` 报告结束。
+一次运行通过它的 gate（没有被停止，没有被另一个 loop 锁住，距上次运行至少隔了一个间隔）之后，先根据 lane 和 PR 的状态同步条目。接着审查漏掉的工作：沉默了 3 小时的 lane，READY 后 2 小时没人关闭的 lane，消失的 pane。然后在 `--max-lanes`（默认 5）个打开的 lane 和每次运行 `--max-starts`（默认 2）个的限制内，只要宿主机的负载和内存还有余量，就拉取下一批未完成的条目。每个悬而未决的问题以 `[DECIDE <id>]` 的形式只到达 lead 一次，6 小时后提醒一次，每次运行以一条发给 lead 的 `[LOOP ...]` 报告结束。
 
 loop 只开 lane 和发消息；它从不 merge、push 或关闭 pane。完整设计见 [`docs/hourly-loop.md`](docs/hourly-loop.md)。
 
@@ -254,7 +254,7 @@ harness 环境变量：
 | `DORI_RUNTIME` | 你当前所在的运行时，否则是 PATH 上的 `hc`，没有就是 `herdr` | 新会话在哪个运行时上打开：`herdr`，或 `hc`（herdr-core，同一项目的无界面会话运行时）；`$DORI_HOME/config.json` 里的 `runtime` 键作用相同；两个都不在 PATH 上、没有设置、周围也没有任一运行时的 pane 或终端时，`dori` 会拒绝并给出一行修复方法 |
 | `DORI_CMD` | `src/cli.ts` 的完整路径 | 告诉 agent 如何调用 dori |
 | `DORI_PROMPTS_DIR` | 仓库的 `prompts/` | 你自己的提示词文件 |
-| `DORI_MAX_LANES`, `DORI_MAX_STARTS`, `DORI_MAX_LOAD` | 3、2、核心数 | hourly loop 的预算 |
+| `DORI_MAX_LANES`, `DORI_MAX_STARTS`, `DORI_MAX_LOAD` | 5、2、核心数 | hourly loop 的预算 |
 | `DORI_TELEMETRY`, `DORI_TELEMETRY_ENDPOINT` | 开启，`https://t.omo.dev` | `0` 关闭遥测 |
 
 Dori mode 读取 `~/.dori/config.json`（或 `DORI_CONFIG`）；每个字段都是可选的，[`config.example.json`](skills/dori-mode/references/config.example.json) 列出了全部字段。你最先会设置的是：`leadPane`、`laneWorkspace`、`defaultCwd`、`agentCommand` 和 `defaultModel`，`repoIdentities`（`verify-pr` 对每个仓库期望的 Git 名字和邮箱），`hooks.threadReply` 和 `hooks.threadDone`（你的消息 CLI，以带 `{thread}` 和 `{text}` 的 argv 模板形式），`hooks.transcribe`，以及 `guard`（负载、空闲内存、空闲磁盘和 pane 数量）。时间默认值：安静 15 分钟后提醒，20 分钟后把最后一条汇报发到 thread，完成声明在 5 分钟后处理。

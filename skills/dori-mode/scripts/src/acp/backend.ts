@@ -1,10 +1,10 @@
 import { AcpError, isRecord, LineFramer, type Backend, type StopReason } from "./protocol.ts";
-import { readStderr, readStdout, spawnSenpi } from "./senpi-io.ts";
-import { asError, assertLocalModel, killProcessTree, resolveSenpiCommand, snippet } from "./senpi-process.ts";
+import { startSenpiChild, shutdownSenpiChild } from "./senpi-child.ts";
+import { asError, assertLocalModel, snippet } from "./senpi-process.ts";
 import type { ActiveTurn, SenpiBackendOptions, SenpiChild, SenpiMessage } from "./senpi-types.ts";
 import { agentEndState, assistantText, responseOf, textDelta } from "./senpi-wire.ts";
 
-export { assertLocalModel, isPidAlive, killProcessTree, resolveSenpiCommand } from "./senpi-process.ts";
+export { assertLocalModel, isPidAlive, resolveSenpiCommand } from "./senpi-process.ts";
 
 export class SenpiBackend implements Backend {
   private readonly opts: SenpiBackendOptions;
@@ -34,7 +34,17 @@ export class SenpiBackend implements Backend {
     this.start();
     const id = `acp-prompt-${++this.seq}`;
     const turn = new Promise<StopReason>((resolve, reject) => {
-      this.active = { onText, resolve, reject, cancelled: false, aborted: false, textSeen: false, done: false, failure: undefined, abortTimer: undefined };
+      this.active = {
+        onText,
+        resolve,
+        reject,
+        cancelled: false,
+        aborted: false,
+        textSeen: false,
+        done: false,
+        failure: undefined,
+        abortTimer: undefined,
+      };
     });
     this.pending.set(id, {
       resolve: () => undefined,
@@ -84,12 +94,7 @@ export class SenpiBackend implements Backend {
         this.write({ type: "abort" });
       } catch {}
     }
-    try {
-      child.stdin.end();
-    } catch {}
-    await Promise.race([child.exited.catch(() => 0), Bun.sleep(1_500)]);
-    await killProcessTree(child.pid);
-    await Promise.race([child.exited.catch(() => 0), Bun.sleep(3_000)]);
+    await shutdownSenpiChild(child);
     this.finish("cancelled");
     this.failActive(new AcpError("senpi backend closed"));
     if (this.child === child) this.child = undefined;
@@ -98,19 +103,12 @@ export class SenpiBackend implements Backend {
   private start(): void {
     if (this.child) return;
     if (this.closed) throw new AcpError("senpi backend is closed");
-    const command = this.opts.command ?? resolveSenpiCommand();
-    const args = ["--mode", "rpc", "--model", this.opts.model];
-    if (this.opts.permissionPreset !== false) args.push("--permission-preset", this.opts.permissionPreset ?? "full-access");
-    const spawned = spawnSenpi([...command, ...args], this.opts.cwd);
-    this.child = spawned;
-    this.log(`SENPI_CHILD pid=${spawned.pid}`);
-    const closed = (): boolean => this.closed;
-    void readStdout(spawned, this.framer, (line) => this.handleLine(line), this.log, closed);
-    void readStderr(spawned, this.log, closed);
-    spawned.exited.then(
-      (code) => this.onExit(spawned, code),
-      (error) => this.onExit(spawned, -1, asError(error)),
-    );
+    this.child = startSenpiChild(this.opts, this.framer, {
+      onLine: (line) => this.handleLine(line),
+      onExit: (child, code, error) => this.onExit(child, code, error),
+      closed: () => this.closed,
+      log: this.log,
+    });
   }
 
   private handleLine(line: string): void {
@@ -138,11 +136,14 @@ export class SenpiBackend implements Backend {
         this.onAgentEnd(message);
         break;
       case "agent_settled":
-        if (message.reason === "session_closed") this.failActive(new AcpError("senpi session closed before the turn settled"));
+        if (message.reason === "session_closed")
+          this.failActive(new AcpError("senpi session closed before the turn settled"));
         else this.finish("end_turn");
         break;
       case "session_closed":
-        this.failActive(new AcpError(`senpi session closed (${typeof message.reason === "string" ? message.reason : "unknown"})`));
+        this.failActive(
+          new AcpError(`senpi session closed (${typeof message.reason === "string" ? message.reason : "unknown"})`),
+        );
         break;
       default:
         break;

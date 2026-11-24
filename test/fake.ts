@@ -27,6 +27,7 @@ type Pane = {
   agent?: string;
   pgid?: number;
   cwd?: string;
+  shellPid?: number;
 };
 
 export class World {
@@ -35,7 +36,7 @@ export class World {
   hc = new FakeHc();
   calls: { cmd: string; argv: readonly string[] }[] = [];
   clock = 1_000_000;
-  host: HostLoad = { load1: 1, cores: 8, memFreePct: 50 };
+  host: HostLoad = { load1: 1, cores: 8, memFreePct: 50, memFreeMb: 4096 };
   next = 1;
   /** pane id -> herdr error text returned by `agent prompt` (exit 1) */
   promptFails = new Map<string, string>();
@@ -50,7 +51,7 @@ export class World {
   onHookKill: (() => void) | undefined;
   /** number of upcoming `pane send-keys` calls that fail (exit 1) */
   keyFails = 0;
-  gh: (argv: readonly string[]) => { code: number; stdout: string } = () => ({ code: 1, stdout: "" });
+  gh: (argv: readonly string[]) => { code: number; stdout: string; stderr?: string } = () => ({ code: 1, stdout: "" });
   /** answers for `git`; the default is "not a repository", as a lane started outside a checkout sees it. */
   git: (argv: readonly string[]) => { code: number; stdout: string; stderr?: string } = () => ({
     code: 128,
@@ -107,7 +108,10 @@ export class World {
       await Promise.race([this.hang, kill]);
       if (killed) return { code: 143, stdout: "", stderr: "terminated" };
     }
-    if (cmd === "gh") return { ...this.gh(argv), stderr: "" };
+    if (cmd === "gh") {
+      const r = this.gh(argv);
+      return { code: r.code, stdout: r.stdout, stderr: r.stderr ?? "" };
+    }
     if (cmd === "git") return { stderr: "", ...this.git(argv) };
     if (cmd === "hc") return this.hc.exec(cmd, argv);
     if (cmd !== "herdr") return { stderr: "", ...(await this.reviewer(argv, options)) };
@@ -121,7 +125,7 @@ export class World {
       return ok({
         process_info: {
           pane_id: argv[3],
-          shell_pid: 100,
+          shell_pid: target.shellPid ?? 100,
           foreground_process_group_id: target.pgid ?? 101,
           foreground_processes: procs.map((x, i) => ({ ...x, pid: 101 + i })),
         },

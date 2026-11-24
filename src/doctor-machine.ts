@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import type { DoctorProbes, ProbeResult } from "./doctor.ts";
 import type { DoctorEnv } from "./doctor-env.ts";
+import { mergeGuardCheck } from "./doctor-merge.ts";
 import { atLeast, clip, firstLine, homePath, isRecord, messageOf, nearestExisting, versionOf } from "./doctor-util.ts";
 
 const runtimeCheck = async (e: DoctorEnv): Promise<ProbeResult> => {
@@ -140,9 +141,12 @@ const sessionCheck = async (e: DoctorEnv): Promise<ProbeResult> => {
   return { status: "PASS", detail: hcNote ?? "hc installed" };
 };
 
-export const machineChecks = (e: DoctorEnv): Pick<DoctorProbes, "runtime" | "git" | "home" | "session"> => ({
+export const machineChecks = (
+  e: DoctorEnv,
+): Pick<DoctorProbes, "runtime" | "git" | "mergeGuard" | "home" | "session"> => ({
   runtime: () => runtimeCheck(e),
   git: () => gitCheck(e),
+  mergeGuard: () => mergeGuardCheck(e),
   home: () => homeCheck(e),
   session: () => sessionCheck(e),
 });

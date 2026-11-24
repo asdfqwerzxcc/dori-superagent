@@ -1,0 +1,33 @@
+Live requeue and restart measurement
+====================================
+
+Date: 2026-11-23
+Worktree: C:/Users/USER/.dori/worktrees/review-requeue-dedupe
+Base: be8b5de (main: review-fallback-on-error + design-lane-gate), rebased lane tip
+Command: bun C:/Users/USER/AppData/Local/Temp/dori-live-review-measure.ts
+Setup: a temp DORI_HOME, a temp two-commit git repo, a lane record at its tip, and
+hooks.reviewCommand pointing at a fake reviewer that starts a real child process. The
+fake reviewer appends its own pid and the child's pid to a file and sleeps, so an
+actual process pair can be counted and liveness-checked from outside dori.
+
+Transcript (verbatim):
+
+call1: 0 QUEUED probe c0536e4a5527842e40326cf741d3466050ddcf7b probe@c0536e4a5527842e40326cf741d3466050ddcf7b
+call2: 0 already queued probe@c0536e4a5527842e40326cf741d3466050ddcf7b (running)
+call3: 0 already queued probe@c0536e4a5527842e40326cf741d3466050ddcf7b (running)
+marker before restart: {"requestedAt":1795456717437,"pid":20580,"host":"LAPTOP-R4SKBCBU","startTime":1795456717562}
+reviewer pids after three calls: 20580,27364
+restart: 0 QUEUED probe c0536e4a5527842e40326cf741d3466050ddcf7b probe@c0536e4a5527842e40326cf741d3466050ddcf7b (restarted)
+old pair 20580,27364: dead
+new pair 28640,26556: alive
+LIVE_OK three calls -> one reviewer pair; --restart killed the old tree and started one new pair
+
+Reading:
+- The first call queued; the second and third returned the same job and printed the
+  in-flight message. The fake reviewer process pair (20580, 27364) was the only one
+  running after three calls.
+- The `.running` marker names the reviewer pid, this host, and the reviewer's OS start
+  time, which is what the restart verified before killing.
+- `--restart` killed both old pids (the process-tree kill) and one new pair
+  (28640, 26556) was alive afterwards.
+- The pids are from this run only; a new run prints new pids.

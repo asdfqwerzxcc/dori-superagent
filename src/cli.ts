@@ -8,68 +8,27 @@ import { runSop } from "./cli-sop.ts";
 import { pluginCommand } from "./cli-plugins.ts";
 import { runRemote } from "./cli-remotes.ts";
 import { status, up } from "./cli-up.ts";
-import { done, ready, report, startLane } from "./lanes.ts";
+import { done, pruneLaneRecords, ready, report, startLane } from "./lanes.ts";
+import { leadRestart } from "./cli-lead-restart.ts";
 import { runLabels } from "./labels.ts";
 import { runStale } from "./stale.ts";
 import { listWorktrees, pruneWorktrees } from "./worktrees.ts";
-import { mergeGate, review } from "./gate.ts";
-import { reviewLane } from "./lane-review.ts";
+import { attest, isPrId, mergeGate, review } from "./gate.ts";
+import { mergeLane } from "./lane-land.ts";
 import { runDoctor } from "./doctor.ts";
-import { queueLaneReview, reviewJobId } from "./review-queue.ts";
-import { need, one, parse, textOf, USAGE } from "./cli-args.ts";
-import { defaultDeps, ROLES, type Deps } from "./harness.ts";
-import { ConfigError, hooksSettled } from "./hooks.ts";
-import { send, type SendResult } from "./inbox.ts";
+import { runReviewLane } from "./review-lane-cli.ts";
+import { COMMANDS, deliveryOutcome, need, one, parse, textOf, USAGE } from "./cli-args.ts";
+import { runRole } from "./cli-role.ts";
+import { defaultDeps, type Deps } from "./harness.ts";
+import { ConfigError, hooksSettled, loadReviewSettings } from "./hooks.ts";
+import { send } from "./inbox.ts";
 import { inboxList, releaseHeld, sendToShell } from "./inbox-held.ts";
 import { Refusal } from "./refusal.ts";
 import { runMigrate } from "./migrate.ts";
 import { refText } from "./refs.ts";
 import { ConfigError as RuntimeConfigError, RuntimeChoiceError } from "./runtime/select.ts";
-import { parseRef } from "./runtime/types.ts";
 import { formatEnsureUp, formatSupervised } from "./supervisors.ts";
 import { restartSupervisors } from "./supervisor-run.ts";
-import { RESERVED_KEYS, type Role } from "./store-types.ts";
-
-const COMMANDS = new Set([
-  "up",
-  "role",
-  "start",
-  "report",
-  "ready",
-  "send",
-  "inbox",
-  "duty",
-  "review",
-  "merge",
-  "done",
-  "bundle",
-  "worktrees",
-  "status",
-  "loop",
-  "backlog",
-  "board",
-  "sop",
-  "labels",
-  "stale",
-  "migrate",
-  "restart",
-  "plugin",
-  "remote",
-  "agent",
-  "link",
-  "devices",
-  "doctor",
-]);
-
-/** Prints the line for a delivery that did not land now and returns the exit code: HELD 3, everything else 0. */
-function deliveryOutcome(result: SendResult | undefined, target: string): number {
-  if (result === "HELD") {
-    console.log(`HELD ${target}: delivery may or may not have reached the pane; do not resend`);
-    return 3;
-  }
-  if (result === "QUEUED") console.log(`QUEUED ${target}`);
-  return 0;
-}
 
 export async function main(argv: readonly string[], d: Deps = defaultDeps()): Promise<number> {
   const a = parse(argv);
@@ -87,26 +46,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "up":
       await up(d, resolve(one(a, "cwd") ?? process.cwd()), one(a, "retire-old") === "true");
       return 0;
-    case "role": {
-      const role = need(x, "role") as Role;
-      const given = a.pos[2];
-      if (given === "-") {
-        // Clearing accepts the loop roles too: a supervised home registers only lead (and duty on a pane), and an
-        // older roles.json may still hold stale loop panes that no `up` will open again.
-        if (!RESERVED_KEYS.includes(role)) throw new Refusal(`role must be one of ${RESERVED_KEYS.join(", ")}`);
-        d.store.clearRole(role);
-        console.log(`ROLE ${role}=-`);
-        return 0;
-      }
-      if (!ROLES.includes(role)) throw new Refusal(`role must be one of ${ROLES.join(", ")}`);
-      const ref = given === undefined ? d.runtimes.selfAny(process.env) : parseRef(given);
-      if (given !== undefined && ref === undefined)
-        throw new Refusal(`${given} is not a session ref (w1:p3, herdr:w1:p3 or hc:t7)`);
-      if (ref === undefined) throw new Refusal(`missing session ref (not inside herdr or hc?)\n\n${USAGE}`);
-      d.store.setRole(role, ref);
-      console.log(`ROLE ${role}=${refText(ref)}`);
-      return 0;
-    }
+    case "role":
+      return runRole(d, a);
     case "start": {
       const cwd = one(a, "cwd");
       const workspace = one(a, "workspace");
@@ -169,27 +110,40 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       const lane = one(a, "lane");
       if (lane !== undefined) {
         if (x !== undefined) throw new Refusal("give a PR or --lane, not both");
-        // With a duty loop running, the reviewer runs in its pane: the caller gets the job back and returns at once.
-        const job = await queueLaneReview(d, lane, one(a, "model"));
-        if (job !== undefined) {
-          console.log(`QUEUED ${job.lane} ${job.tip} ${reviewJobId(job.lane, job.tip)}`);
-          return 0;
-        }
-        const r = await reviewLane(d, lane, one(a, "model"));
-        console.log(`REVIEW_LANE ${lane} tip=${r.tip} verdict=${r.verdict}`);
+        return runReviewLane(d, lane, one(a, "model"), a.flags.has("restart"));
+      }
+      const prId = need(x, "PR");
+      if (a.flags.has("attest")) {
+        const verdict = one(a, "verdict");
+        if (verdict !== "CLEAR" && verdict !== "BLOCK") throw new Refusal("--attest needs --verdict CLEAR|BLOCK");
+        const summary = one(a, "summary");
+        const r = await attest(d, prId, {
+          verdict,
+          reviewer: need(one(a, "reviewer"), "--reviewer"),
+          ...(summary === undefined ? {} : { summary }),
+          evidence: a.flags.get("evidence") ?? [],
+        });
+        console.log(`ATTESTED ${prId} head=${r.sha} verdict=${r.verdict}`);
         return r.verdict === "CLEAR" ? 0 : 1;
       }
-      const r = await review(d, need(x, "PR"), one(a, "model"));
-      console.log(`REVIEW ${x} head=${r.sha} verdict=${r.verdict}`);
+      const r = await review(d, prId, one(a, "model") ?? loadReviewSettings(d.store.root).model);
+      console.log(`REVIEW ${prId} head=${r.sha} verdict=${r.verdict}`);
       return r.verdict === "CLEAR" ? 0 : 1;
     }
     case "merge": {
       const bundle = one(a, "bundle");
+      const lane = one(a, "lane");
+      const dryRun = one(a, "dry-run") === "true";
+      if (lane !== undefined && x !== undefined) throw new Refusal("give a lane key or --lane, not both");
+      const target = lane ?? x;
+      if (target !== undefined && !isPrId(target)) {
+        if (bundle !== undefined) throw new Refusal("--bundle needs a PR id: dori merge <owner/repo#N> --bundle <id>");
+        const key = target.startsWith("lane/") ? target.slice("lane/".length) : target;
+        for (const line of await mergeLane(d, key, { dryRun })) console.log(line);
+        return 0;
+      }
       console.log(
-        await mergeGate(d, need(x, "PR"), {
-          dryRun: one(a, "dry-run") === "true",
-          ...(bundle === undefined ? {} : { bundle }),
-        }),
+        await mergeGate(d, need(target, "PR or lane key"), { dryRun, ...(bundle === undefined ? {} : { bundle }) }),
       );
       return 0;
     }
@@ -209,6 +163,20 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       console.log(`DONE ${x}${note === undefined ? "" : ` (${note})`}`);
       return 0;
     }
+    case "lanes": {
+      const sub = need(x, "lanes prune [--older-than N] [--dry-run]");
+      if (sub !== "prune") throw new Refusal(`unknown lanes command ${sub}\n\n${USAGE}`);
+      const daysArg = one(a, "older-than");
+      const days = daysArg === undefined ? 7 : Number(daysArg);
+      if (!Number.isFinite(days) || days < 0) throw new Refusal("--older-than must be a number of days");
+      const dryRun = a.flags.has("dry-run");
+      const result = pruneLaneRecords(d, days, d.now(), dryRun);
+      for (const key of result.removed) console.log(`${dryRun ? "WOULD PRUNE" : "PRUNED"} ${key}`);
+      console.log(
+        `LANES_pruned=${result.removed.length} kept=${result.kept} kept_for_worktree=${result.skipped.length}`,
+      );
+      return 0;
+    }
     case "worktrees": {
       const sub = need(x, "worktrees list|prune");
       if (sub === "list") await listWorktrees(d);
@@ -218,6 +186,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     }
     case "migrate":
       return runMigrate(d, a);
+    case "lead-restart":
+      return leadRestart(d, a, x);
     case "restart": {
       const r = await restartSupervisors(d.store.root);
       for (const line of formatSupervised(r.health)) console.log(line);

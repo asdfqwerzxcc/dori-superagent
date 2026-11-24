@@ -1,101 +1,8 @@
 import { expect, test } from "bun:test";
-import { join } from "node:path";
 
 import { assertLocalModel, isPidAlive, resolveSenpiCommand, SenpiBackend } from "../src/acp/backend.ts";
-import { AcpError, LineFramer, type Backend, type StopReason } from "../src/acp/protocol.ts";
-import { AcpServer } from "../src/acp/server.ts";
-
-type FakeState = {
-  cancelCalls: number;
-  closeCalls: number;
-  prompts: string[];
-  cancelled: boolean;
-};
-
-type FakeOptions = {
-  readonly text?: string;
-  readonly waitForCancel?: boolean;
-  readonly fail?: boolean;
-};
-
-const fakeBackend = (opts: FakeOptions = {}) => {
-  const state: FakeState = { cancelCalls: 0, closeCalls: 0, prompts: [], cancelled: false };
-  let release: ((stop: StopReason) => void) | undefined;
-  let started: (() => void) | undefined;
-  const began = new Promise<void>((resolve) => {
-    started = resolve;
-  });
-  const backend: Backend = {
-    prompt: async (text, onText) => {
-      state.prompts.push(text);
-      started?.();
-      if (opts.fail) throw new Error("backend failed");
-      if (opts.waitForCancel) {
-        onText("working");
-        return new Promise<StopReason>((resolve) => {
-          release = resolve;
-        });
-      }
-      onText(opts.text ?? "DORI_ACP_OK");
-      return "end_turn";
-    },
-    cancel: async () => {
-      state.cancelCalls += 1;
-      state.cancelled = true;
-      release?.("cancelled");
-    },
-    close: async () => {
-      state.closeCalls += 1;
-      release?.("cancelled");
-    },
-  };
-  return { backend, state, began };
-};
-
-type Wire = {
-  readonly jsonrpc?: unknown;
-  readonly id?: unknown;
-  readonly method?: unknown;
-  readonly params?: unknown;
-  readonly result?: unknown;
-  readonly error?: unknown;
-};
-
-type ResultFields = {
-  readonly protocolVersion?: unknown;
-  readonly agentInfo?: unknown;
-  readonly agentCapabilities?: unknown;
-  readonly authMethods?: unknown;
-  readonly sessionId?: unknown;
-  readonly stopReason?: unknown;
-};
-
-const collector = (backend: Backend) => {
-  const messages: Wire[] = [];
-  const server = new AcpServer({
-    write: (message) => messages.push(message),
-    createBackend: async () => backend,
-    log: () => undefined,
-  });
-  const send = async (message: Record<string, unknown>): Promise<void> => {
-    await server.handleLine(JSON.stringify({ jsonrpc: "2.0", ...message }));
-  };
-  return { messages, server, send };
-};
-
-const response = (messages: Wire[], id: number): Wire | undefined =>
-  messages.find((message) => message.id === id);
-
-const resultOf = (messages: Wire[], id: number): ResultFields =>
-  (response(messages, id)?.result ?? {}) as ResultFields;
-
-const errorOf = (messages: Wire[], id: number): { readonly code?: unknown } =>
-  (response(messages, id)?.error ?? {}) as { readonly code?: unknown };
-
-const newSession = async (send: (message: Record<string, unknown>) => Promise<void>, messages: Wire[], id: number): Promise<string> => {
-  await send({ id, method: "session/new", params: { cwd: process.cwd(), mcpServers: [] } });
-  return String(resultOf(messages, id).sessionId);
-};
+import { AcpError, LineFramer } from "../src/acp/protocol.ts";
+import { collector, errorOf, fakeBackend, fakeChild, newSession, resultOf, response } from "./acp-test-setup.ts";
 
 test("the line framer reassembles a split record and splits coalesced records", () => {
   const framer = new LineFramer();
@@ -115,7 +22,11 @@ test("the line framer never splits a UTF-8 character across chunks", () => {
 
 test("initialize returns the ACP v1 shape with close-session capability", async () => {
   const { messages, send } = collector(fakeBackend().backend);
-  await send({ id: 1, method: "initialize", params: { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "goat", version: "1" } } });
+  await send({
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "goat", version: "1" } },
+  });
   const result = resultOf(messages, 1);
   expect(response(messages, 1)?.jsonrpc).toBe("2.0");
   expect(result.protocolVersion).toBe(1);
@@ -144,9 +55,14 @@ test("session/prompt streams agent_message_chunk updates before the end_turn res
   expect(updates.length).toBeGreaterThanOrEqual(1);
   const params = updates[0]?.params as { readonly sessionId?: unknown; readonly update?: unknown };
   expect(params.sessionId).toBe(sessionId);
-  expect(params.update).toMatchObject({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "DORI_ACP_OK" } });
+  expect(params.update).toMatchObject({
+    sessionUpdate: "agent_message_chunk",
+    content: { type: "text", text: "DORI_ACP_OK" },
+  });
   expect(resultOf(messages, 3).stopReason).toBe("end_turn");
-  expect(messages.findIndex((message) => message.method === "session/update")).toBeLessThan(messages.findIndex((message) => message.id === 3));
+  expect(messages.findIndex((message) => message.method === "session/update")).toBeLessThan(
+    messages.findIndex((message) => message.id === 3),
+  );
   expect(fake.state.prompts).toEqual(["hello"]);
 });
 
@@ -155,7 +71,11 @@ test("session/cancel resolves the pending prompt with the cancelled stop reason"
   const { messages, send } = collector(fake.backend);
   await send({ id: 1, method: "initialize", params: { protocolVersion: 1 } });
   const sessionId = await newSession(send, messages, 2);
-  const pending = send({ id: 3, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "slow" }] } });
+  const pending = send({
+    id: 3,
+    method: "session/prompt",
+    params: { sessionId, prompt: [{ type: "text", text: "slow" }] },
+  });
   await fake.began;
   await send({ method: "session/cancel", params: { sessionId } });
   await pending;
@@ -186,8 +106,6 @@ test("the senpi command override accepts an argv array and falls back to the sen
   expect(resolveSenpiCommand({ DORI_ACP_SENPI: '["bun","fake.ts"]' })).toEqual(["bun", "fake.ts"]);
   expect(resolveSenpiCommand({ DORI_ACP_SENPI: "C:/tools/senpi.exe" })).toEqual(["C:/tools/senpi.exe"]);
 });
-
-const fakeChild = (): string => join(import.meta.dir, "fixtures/fake-senpi.ts");
 
 test("the senpi backend forwards text deltas and finishes on agent_settled", async () => {
   const backend = new SenpiBackend({
