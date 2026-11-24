@@ -54,6 +54,28 @@ export function omoScreenIdle(screen: string): boolean {
 /** What the bottom of an omo screen says about taking a message now; `why` is the one-line reason the inbox logs. */
 export type InputReadiness = { readonly ready: boolean; readonly why: string };
 
+type Composer = { readonly lines: readonly string[]; readonly input: number };
+
+/** The empty composer between its borders, or the one reason the screen does not show one. */
+function emptyComposer(screen: string): Composer | { readonly why: string } {
+  const { lines, input } = composerLines(screen);
+  if (input < 1 || input + 1 >= lines.length) return { why: "no input box on screen" };
+  if (!EMPTY_INPUT.test(lines[input] ?? "")) return { why: "the input box holds a draft" };
+  if (!BORDER.test(lines[input - 1] ?? "")) return { why: "no border above the input box" };
+  if (!BORDER.test(lines[input + 1] ?? "")) return { why: "no border under the input box" };
+  return { lines, input };
+}
+
+/**
+ * Whether an empty composer is on screen at all, whatever its state: a turn, a child or a monitor may own the rest of
+ * the screen, but text typed into this composer is a follow-up. It is what the lead's busy delivery gates on; a dialog
+ * or a draft has no empty composer and holds.
+ */
+export function omoComposerReady(screen: string): InputReadiness {
+  const composer = emptyComposer(screen);
+  return "why" in composer ? { ready: false, why: composer.why } : { ready: true, why: "empty composer on screen" };
+}
+
 /**
  * Whether omo's live composer can take a message now, not only between turns. While the agent waits on a background
  * child (the footer says `waiting_children`) omo keeps the composer under the child panel and queues text typed there
@@ -63,15 +85,19 @@ export type InputReadiness = { readonly ready: boolean; readonly why: string };
  */
 export function omoInputReady(screen: string): InputReadiness {
   if (TURN.test(screen)) return { ready: false, why: "a turn is running (esc to interrupt)" };
-  const { lines, input } = composerLines(screen);
-  if (input < 1 || input + 1 >= lines.length) return { ready: false, why: "no input box on screen" };
-  if (!EMPTY_INPUT.test(lines[input] ?? "")) return { ready: false, why: "the input box holds a draft" };
-  if (!BORDER.test(lines[input - 1] ?? "")) return { ready: false, why: "no border above the input box" };
-  if (!BORDER.test(lines[input + 1] ?? "")) return { ready: false, why: "no border under the input box" };
-  // The child panel (its border, the child's progress line) sits under the composer; it is output, not a dialog.
-  const tail = lines.slice(input + 2);
+  const composer = emptyComposer(screen);
+  if ("why" in composer) return { ready: false, why: composer.why };
+  const tail = composer.lines.slice(composer.input + 2);
   const below = tail.filter((line) => line !== "" && !redrawn(line));
   if (below.length === 0) return { ready: true, why: "idle input box" };
   if (!WAITING_CHILDREN.test(tail.join("\n"))) return { ready: false, why: "output below the input box" };
   return { ready: true, why: "input box live while waiting on background children" };
+}
+
+/**
+ * True when the screen shows a gate-review child (its progress line names it). Reviews belong to `dori review` in its own
+ * session, never to a child of the lead pane (Lee, 2026-11-24), so the inbox warns when it has to deliver past one.
+ */
+export function omoReviewChild(screen: string): boolean {
+  return /\bgate review\b|omo-native-gate-reviewer/i.test(screen);
 }

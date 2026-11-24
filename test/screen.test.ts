@@ -37,11 +37,19 @@ describe("delivery to a pane herdr calls working", () => {
     expect(lead.received).toEqual(["hello"]);
   });
 
-  test("a real turn: the message is queued and nothing is typed", async () => {
+  test("a real turn: the lead's composer takes the message as a follow-up", async () => {
     const { w, d, lead } = setup(await screen("omo-turn"));
-    expect(await send(d, "lead", "hello", "cli")).toBe("QUEUED");
-    expect(lead.received).toEqual([]);
-    expect(w.calls.some((c) => c.argv[1] === "send-text" || c.argv[0] === "agent")).toBe(false);
+    expect(await send(d, "lead", "hello", "cli")).toBe("DELIVERED");
+    expect(lead.received).toEqual(["hello"]);
+    expect(w.calls.some((c) => c.argv[0] === "agent")).toBe(true);
+  });
+
+  test("a review child running: delivered at once, no duty tick, with the review-child warning", async () => {
+    const { d, lead } = setup(await screen("omo-running-child"));
+    const err = await captureStderr(() => send(d, "lead", "hello", "cli"));
+    expect(lead.received).toEqual(["hello"]);
+    expect(err).toContain("delivering: working, injecting into the lead's input buffer");
+    expect(err).toContain("warning: a gate-review child is running in the lead pane");
   });
 
   test("a failed screen read keeps the message queued", async () => {
@@ -70,14 +78,29 @@ describe("delivery to a pane herdr calls working", () => {
     expect(w.calls.some((c) => c.argv[0] === "agent" || c.argv[1] === "send-text")).toBe(false);
   });
 
+  test("a dialog with no composer: held, nothing typed into it", async () => {
+    const { w, d, lead } = setup(await screen("omo-dialog"));
+    expect(await send(d, "lead", "hello", "cli")).toBe("QUEUED");
+    expect(lead.received).toEqual([]);
+    expect(w.calls.some((c) => c.argv[0] === "agent" || c.argv[1] === "send-text")).toBe(false);
+  });
+
   test("the deliver and hold decisions leave their reason on stderr", async () => {
     const ready = setup(await screen("omo-waiting-children"));
     const delivered = await captureStderr(() => send(ready.d, "lead", "hello", "cli"));
-    expect(delivered).toContain("delivering: working, input box live while waiting on background children");
+    expect(delivered).toContain("delivering: working, injecting into the lead's input buffer");
 
     const busy = setup(await screen("omo-turn"));
-    const queued = await captureStderr(() => send(busy.d, "lead", "hello", "cli"));
-    expect(queued).toContain("queued: working, a turn is running (esc to interrupt)");
+    const injected = await captureStderr(() => send(busy.d, "lead", "hello", "cli"));
+    expect(injected).toContain("delivering: working, injecting into the lead's input buffer");
+
+    const lane = setupLane(await screen("omo-waiting-children"));
+    const waiting = await captureStderr(() => send(lane.d, "fix-x", "hello", "cli"));
+    expect(waiting).toContain("delivering: working, input box live while waiting on background children");
+
+    const blockedLane = setupLane(await screen("omo-turn"));
+    const held = await captureStderr(() => send(blockedLane.d, "fix-x", "hello", "cli"));
+    expect(held).toContain("queued: working, a turn is running (esc to interrupt)");
   });
 });
 

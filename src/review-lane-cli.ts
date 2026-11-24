@@ -1,5 +1,6 @@
-// The `dori review --lane` commands: record a request and print it, or record the lead reviewer's verdict as the lane
-// receipt. Neither command spawns a reviewer; the lead runs one in-process subagent and attests what it answered.
+// The `dori review --lane` commands: record a request and print it, or record the reviewer's verdict as the lane
+// receipt. Neither command spawns a reviewer; the lead runs the review from `dori review` in its own session and
+// attests what it answered.
 
 import { need, one, type Args } from "./cli-args.ts";
 import { attest, isPrId, review } from "./gate.ts";
@@ -78,7 +79,7 @@ export type LaneAttestOptions = {
 export type LaneAttest = { readonly verdict: "CLEAR" | "BLOCK"; readonly tip: string; readonly kept: boolean };
 
 /**
- * Records a reviewer subagent's verdict as the lane receipt at the lane's current tip. The schema is the same one the
+ * Records a reviewer session's verdict as the lane receipt at the lane's current tip. The schema is the same one the
  * gate has always read (`lane`, `verdict`, `base`, `tip`, `brief`, `reviewer`, `at`, `summary`), plus the evidence the
  * verdict rested on. BLOCK still wins at one tip: a CLEAR attest never replaces a BLOCK already on disk.
  */

@@ -1,5 +1,5 @@
 // The review request queue: `dori review --lane` records the lane's tip and diff and prints QUEUED, then returns.
-// The lead (or a human) runs one reviewer subagent and records its verdict with `dori review <key> --attest`.
+// A reviewer session (started from `dori review <owner/repo#N>`) records its verdict with `dori review <key> --attest`.
 // Duty never spawns a reviewer: its drain only reports a waiting request and expires one that never got a receipt.
 
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -48,7 +48,7 @@ export function reviewQueueTtlFromEnv(env: NodeJS.ProcessEnv = process.env): num
 /**
  * The queue side of `dori review --lane`: writes the full `base..tip` diff, records the request atomically and hands
  * it back. A request for the same lane+tip while one is queued returns that record and never a second request;
- * `--restart` replaces it. Nothing is spawned here: the caller returns at once and the lead reviews it as a subagent.
+ * `--restart` replaces it. Nothing is spawned here: the caller returns at once and the lead reviews it in `dori review`.
  */
 export async function queueLaneReview(
   d: Deps,

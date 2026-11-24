@@ -31,7 +31,7 @@ export async function headSha(d: Deps, pr: PrRef): Promise<string> {
   return String(out.headRefOid);
 }
 
-/** Records a receipt for a review that already happened elsewhere (a gate-reviewer subagent, a human, an external tool).
+/** Records a receipt for a review that already happened elsewhere (a reviewer session, a human, an external tool).
  * The built-in reviewer spawns `omo -p`, which stalls on long prompts on this host, so this is the reliable path: the
  * caller names the reviewer and the evidence it rested on, and the receipt still binds to the PR's exact head. */
 export async function attest(

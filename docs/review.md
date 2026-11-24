@@ -1,20 +1,20 @@
-# Review: lane request, lead reviewer, lane receipt
+# Review: lane request, reviewer session, lane receipt
 
-Dori reviews lane work locally first. `dori review --lane <key>` does not run a reviewer: it records the lane's current
-tip and diff and prints `QUEUED`. The lead (or a human operator) runs one in-process reviewer subagent,
-`omo-native-gate-reviewer`, reads its verdict, and records it with `dori review <key> --attest ...`. The record of the
-review is `receipts/lane_<key>@<tip>.json`; its schema and the gate rules are unchanged. Once the lane receipt is
+Dori reviews lane work locally first. `dori review --lane <key>` records the lane's current tip and diff and prints
+`QUEUED`. The review itself runs in its own session: `dori review <owner/repo#N>` starts one fresh non-interactive
+reviewer against the PR head (the lane tip) and records a PR receipt; its verdict is recorded as the lane receipt with
+`dori review <key> --attest ...`. The lane receipt's schema and the gate rules are unchanged. Once the lane receipt is
 CLEAR, `dori merge <key>` is the landing path.
 
-Why: on 2026-11-23 a session reviewer launched by duty died with its omo process after about two minutes and left the
-pane `working`; the chunked `omo -p` path timed out and leaked children. The lead's in-process subagent answered in
-15-30 minutes through nine rounds. Memory has room for one reviewer subagent (300-500 MB), never two.
+Why: reviews must not run as children of the lead pane. A gate-review child keeps the lead `working`, holds its inbox
+and puts review work in the human's session (Lee, 2026-11-24). A separate reviewer session keeps the lead free for
+inbound; memory has room for one reviewer at a time (300-500 MB), never two.
 
 ## The three layers
 
 | Layer | Who runs it | Evidence |
 | --- | --- | --- |
-| Lane review | `dori review --lane <key>` records a request; the lead runs one `omo-native-gate-reviewer` subagent and attests its verdict | `receipts/lane_<key>@<tip>.json` |
+| Lane review | `dori review --lane <key>` records a request; `dori review <owner/repo#N>` reviews the PR in its own session, and its verdict is attested with `dori review <key> --attest` | `receipts/lane_<key>@<tip>.json`; the PR receipt under `receipts/` |
 | Lead review | the lead reads the lane's final answer and its evidence (`dori ready`) and may read the receipt or diff | the lane's `final` entry and `lane-reviews/lane_<key>@<tip>.diff` |
 | Lane merge gate | `dori merge <key>` after a CLEAR lane receipt: push, PR create/update, checks, merge commit, remote-branch delete | the lane receipt plus the PR checks (`checks=none` when the repo has no workflows) |
 
@@ -33,7 +33,7 @@ from a directory that is not a repository uses the harness checkout `$DORI_HOME/
 1. takes the merge-base of the recorded base and the current tip in the lane's worktree, so a moved branch still reviews
    only the lane's work;
 2. refreshes the tip and saves the full diff to `lane-reviews/lane_<key>@<tip>.diff`; there is no chunking: the reviewer
-   subagent receives the whole diff and can read the worktree with git when it needs more context;
+   session receives the whole PR diff and the saved lane diff is evidence for the attestation;
 3. writes one request record and prints `QUEUED <key> <tip> <job>`; it returns at once and spawns nothing. `--model M`
    is recorded on the request for the lead's reference; the queue never runs it.
 
@@ -43,16 +43,18 @@ The request record is `$DORI_HOME/state/review-queue/<key>@<tip>.json`, written 
 `base`, `model` (when one was given), `requestedAt` and `state`. It stays `queued` until a receipt is recorded or the
 request expires.
 
-### The reviewer subagent
+### The reviewer session
 
-The lead launches exactly one reviewer subagent at a time and gives it the rendered `prompts/review-lane.md` contract: the
-lane brief, the base, the tip, the saved diff and the worktree. The reviewer contract is the same one the gate has
-always used: check the change against the lane's goal for correctness, regressions, missing tests, security issues and
-scope creep; list findings by severity (HIGH/MEDIUM/LOW); print exactly one final `VERDICT: CLEAR` (no HIGH or MEDIUM)
-or `VERDICT: BLOCK` (at least one HIGH or MEDIUM); do not modify files. A numbered requirement (`rN`) with no change or
-evidence behind it is HIGH unless the lane marked it `handed-off` with the recipient.
+The review runs in its own session, never as a `task`/subagent child of the lead pane. `dori review <owner/repo#N>`
+fetches the PR head and diff, renders `prompts/review.md`, starts one fresh non-interactive reviewer (`omo -p`, or the
+configured `reviewCommand` hook), and records its answer as a PR receipt. Give it the lane brief as context; the PR head
+must equal the lane tip. The reviewer contract is the same one the gate has always used: check the change against the
+lane's goal for correctness, regressions, missing tests, security issues and scope creep; list findings by severity
+(HIGH/MEDIUM/LOW); print exactly one final `VERDICT: CLEAR` (no HIGH or MEDIUM) or `VERDICT: BLOCK` (at least one HIGH or
+MEDIUM); do not modify files. A numbered requirement (`rN`) with no change or evidence behind it is HIGH unless the lane
+marked it `handed-off` with the recipient.
 
-The lead records the answer:
+The lead records the answer as the lane receipt:
 
 ```
 dori review <key> --attest --verdict CLEAR|BLOCK --reviewer <name> --evidence <report> [--evidence ...] [--summary <text>]
@@ -80,7 +82,8 @@ for a reviewer tree an older dori recorded: `--restart --legacy-kill` proves the
 kills that tree, and refuses to replace the request when the kill fails. Without the flag, `--restart` only replaces the
 record. `dori done --drop` honors `DORI_REVIEW_LEGACY_KILL=1` when it removes a lane's queued requests.
 
-The PR review path (`dori review <owner/repo#N>` and its `--attest` form) is unchanged.
+The PR review path (`dori review <owner/repo#N>` and its `--attest` form) is the reviewer-session path; it is also how
+a lane review runs now.
 
 ## Layer 2: the lead review
 
@@ -107,7 +110,7 @@ lane <key> at <sha> has no review receipt; run: dori review --lane <key> to queu
 A review request still queued at that tip refuses without waiting and names the attestation:
 
 ```
-lane <key> at <sha>: a review request is queued (queued, requested <time>); the lead reviews it as a subagent, then records the verdict with dori review <key> --attest --verdict CLEAR|BLOCK --reviewer <name> --evidence <report>; ...
+lane <key> at <sha>: a review request is queued (queued, requested <time>); run the review in its own session with dori review <owner/repo#N>, then record the verdict with dori review <key> --attest --verdict CLEAR|BLOCK --reviewer <name> --evidence <report>; ...
 ```
 
 Legacy `reviewer_timeout`, `reviewer_empty` and `review_partial` receipts are failures, not passes: the lane is never

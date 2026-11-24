@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { omoInputReady } from "../src/runtime/screen.ts";
+import { omoComposerReady, omoInputReady, omoReviewChild } from "../src/runtime/screen.ts";
 import { HerdrRuntime, omoScreenIdle } from "../src/runtime/herdr/index.ts";
 import { recorder, ref, world } from "./herdr-recorder.ts";
 
@@ -102,6 +102,24 @@ describe("omoInputReady (the live composer, not only the idle box)", () => {
       ready: false,
       why: "output below the input box",
     });
+  });
+});
+
+describe("the busy composer and review children", () => {
+  test("a turn or a running child still leaves an empty composer; a dialog or a draft does not", async () => {
+    expect(omoComposerReady(await screen("omo-turn"))).toEqual({ ready: true, why: "empty composer on screen" });
+    expect(omoComposerReady(await screen("omo-running-child"))).toEqual({
+      ready: true,
+      why: "empty composer on screen",
+    });
+    expect(omoComposerReady(await screen("omo-dialog"))).toEqual({ ready: false, why: "no input box on screen" });
+    expect(omoComposerReady(await screen("omo-draft"))).toEqual({ ready: false, why: "the input box holds a draft" });
+  });
+
+  test("a gate-review child is detected; a plain turn is not", async () => {
+    expect(omoReviewChild(await screen("omo-running-child"))).toBe(true);
+    expect(omoReviewChild(await screen("omo-waiting-children"))).toBe(true);
+    expect(omoReviewChild(await screen("omo-turn"))).toBe(false);
   });
 });
 
