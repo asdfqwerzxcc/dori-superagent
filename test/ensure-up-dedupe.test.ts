@@ -4,13 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { contenderAlive } from "../src/plugins/plugin.ts";
 import { setPluginEnabled, writePluginRecord, writePluginsConfig } from "../src/plugins/state.ts";
-import {
-  dedupeEnsureUp,
-  mergeEnsureUpDedupe,
-  supervisorProcessAlive,
-  waitEnsureUp,
-  waitSupervisorUnit,
-} from "../src/supervise-home.ts";
+import { dedupeEnsureUp, mergeEnsureUpDedupe, waitEnsureUp, waitSupervisorUnit } from "../src/supervise-home.ts";
 import { writeEnsureUpRecord, writeSupervisorRecord } from "../src/supervisors.ts";
 
 const NOW = 1_800_000_000_000;
@@ -169,14 +163,12 @@ describe("stale records, failed kills and fail-closed guards", () => {
     expect(h.alive.has(HOLDER)).toBe(false);
   });
 
-  test("the supervisor pid is trusted only with its recorded start time", () => {
-    const home = homeWithState();
-    writeSupervisor(home, SUPERVISOR, UNIT);
+  test("the supervisor record is trusted only with its recorded start time", () => {
     const h = harness([SUPERVISOR]);
     h.startAt.set(SUPERVISOR, NOW);
-    expect(supervisorProcessAlive(home, sameAs(h))).toBe(false);
+    expect(sameAs(h)({ pid: SUPERVISOR, at: NOW - 60_000 })).toBe(false);
     h.startAt.set(SUPERVISOR, NOW - 60_000);
-    expect(supervisorProcessAlive(home, sameAs(h))).toBe(true);
+    expect(sameAs(h)({ pid: SUPERVISOR, at: NOW - 60_000 })).toBe(true);
   });
 
   test("contenderAlive fails closed when the start time is unreadable or differs", () => {
@@ -188,10 +180,22 @@ describe("stale records, failed kills and fail-closed guards", () => {
   });
 
   test("a dead first keeper is not carried into the merged verdict", () => {
-    const dead = mergeEnsureUpDedupe({ kept: 1, killed: [] }, { killed: [] }, () => false);
+    const dead = mergeEnsureUpDedupe(
+      { kept: 1, killed: [] },
+      { killed: [] },
+      () => false,
+      () => true,
+    );
     expect(dead).toEqual({ killed: [] });
     expect(dead.kept).toBeUndefined();
-    expect(mergeEnsureUpDedupe({ kept: 1, killed: [] }, { killed: [] }, () => true)).toEqual({ kept: 1, killed: [] });
+    expect(
+      mergeEnsureUpDedupe(
+        { kept: 1, killed: [] },
+        { killed: [] },
+        () => true,
+        () => true,
+      ),
+    ).toEqual({ kept: 1, killed: [] });
   });
 
   test("an unreadable start time never authorizes a kill", async () => {

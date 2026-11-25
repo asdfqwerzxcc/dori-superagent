@@ -42,7 +42,7 @@ export type RecordedChild = { readonly pid: number; readonly at: number };
 /** Every pid the records claim as a child: supervisor units, plugin children and the ensure-up loop. */
 export function recordedChildren(home: string): RecordedChild[] {
   const out = new Map<number, number>();
-  for (const unit of supervisorRecord(home, "supervisor")?.units ?? []) out.set(unit.pid, unit.at);
+  for (const unit of supervisorRecord(home, "supervisor")?.units ?? []) out.set(unit.pid, unit.startedAt ?? unit.at);
   for (const plugin of PLUGINS) {
     const record = readPluginRecord(home, plugin.name);
     if (record !== undefined) out.set(record.pid, record.startedAt);

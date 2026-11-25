@@ -126,15 +126,18 @@ describe("the plugin lock directory", () => {
     const deps = {
       alive: (pid: number) => pid === 7003 || pid === fresh,
       started: (pid: number) => {
-        if (pid !== 7003) return 200;
+        if (pid !== 7003) return 50_000;
+        // A fresh owner appears after the stale record was judged, before the generation CAS re-reads it.
         swapped = true;
-        writeOwner(path, { version: 1, token: "fresh", pid: fresh, at: 200, startedAt: 200 });
-        return 50;
+        writeOwner(path, { version: 1, token: "fresh", pid: fresh, at: 200, startedAt: 50_000 });
+        return 50_000;
       },
     };
     expect(acquirePluginLock(path, deps)).toBe(false);
     expect(swapped).toBe(true);
-    expect(ownerPid(path)).toBe(fresh);
+    const remaining = JSON.parse(readFileSync(ownerPath(path), "utf8")) as { pid: number; token: string };
+    expect(remaining.pid).toBe(fresh);
+    expect(remaining.token).toBe("fresh");
   });
 
   test("a claim writes a complete owner inside the directory", () => {

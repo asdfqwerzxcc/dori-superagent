@@ -1,5 +1,6 @@
 import { join } from "node:path";
-import { enabledPluginNames, isPluginEnabled } from "./plugins/state.ts";
+import { enabledPluginNames, isPluginEnabled, pluginHealth } from "./plugins/state.ts";
+import { ensureUpPlugin } from "./plugins/ensure-up.ts";
 import { pidAlive } from "./process-liveness.ts";
 import { ensureSupervisors, killSupervisorTree, strictRecordedAlive, waitFresh } from "./supervisor-run.ts";
 import {
@@ -101,12 +102,25 @@ export async function restartSupervisors(
   for (let i = 0; i < 40 && killed.some(pidAlive); i++) await io.sleep(250);
   // A child that was not in any record (a pane-mode loop, an idler on a held lock) is only visible now.
   const before = await io.dedupe(home);
+  const keptFromCleanup = before.kept;
   const expected = [...CORE_UNITS, ...enabledPluginNames(home)];
   const wanted = !ensureUpOff(home) && isPluginEnabled(home, "ensure-up");
   const beats = [heartbeatPath(home, "supervisor"), join(stateDir(home), WS_HEARTBEAT)];
   const settle = async () => {
     const fresh = await io.waitFresh(beats, started, timeoutMs);
     const ensureUp = await io.waitEnsureUp(home, wanted, fresh ? 15_000 : 0);
+    // The cleanup's kept process is live evidence while the old loop record still names the killed holder.
+    const keptPlugin =
+      keptFromCleanup === undefined ? undefined : pluginHealth(home, ensureUpPlugin, io.now(), pidAlive);
+
+    const ensureUpSeen =
+      wanted &&
+      !ensureUp.alive &&
+      keptFromCleanup !== undefined &&
+      keptPlugin?.alive === true &&
+      keptPlugin.pid === keptFromCleanup
+        ? { ...ensureUp, pid: keptFromCleanup, alive: true }
+        : ensureUp;
     const deadline = io.now() + timeoutMs;
     let health = io.health(home);
     const unitsUp = (h: readonly SupervisorHealth[]): boolean => {
@@ -119,8 +133,8 @@ export async function restartSupervisors(
       health = io.health(home);
     }
     const supervisor = health.find((h) => h.name === "supervisor");
-    const ok = fresh && supervisor?.alive === true && unitsUp(health) && (!wanted || ensureUp.alive);
-    return { health, ensureUp, ok };
+    const ok = fresh && supervisor?.alive === true && unitsUp(health) && (!wanted || ensureUpSeen.alive);
+    return { health, ensureUp: ensureUpSeen, ok };
   };
   await io.ensure(home, timeoutMs);
   let attempt = await settle();
@@ -139,9 +153,17 @@ export async function restartSupervisors(
   );
   // The attempt read predates the unit wait and both dedupe passes: always re-read the beat after them.
   const ensureUp = await io.waitEnsureUp(home, wanted, 15_000);
+  // The kept process is confirmed ensure-up evidence even while the old loop record still names the killed holder.
+  const finalKeptPlugin = dupes.kept === undefined ? undefined : pluginHealth(home, ensureUpPlugin, io.now(), pidAlive);
+
+  const keptAlive =
+    wanted && dupes.kept !== undefined && finalKeptPlugin?.alive === true && finalKeptPlugin.pid === dupes.kept;
+  const ensureUpFinal =
+    keptAlive && !ensureUp.alive && dupes.kept !== undefined ? { ...ensureUp, pid: dupes.kept, alive: true } : ensureUp;
   const dedupeFailed = dupes.failed ?? [];
   const dedupeUnverified = dupes.unverified ?? [];
-  const ok = attempt.ok && (!wanted || ensureUp.alive) && dedupeFailed.length === 0 && dedupeUnverified.length === 0;
+  const ok =
+    attempt.ok && (!wanted || ensureUpFinal.alive) && dedupeFailed.length === 0 && dedupeUnverified.length === 0;
   const now = io.now();
   const wsAge = ageMs(beats[1]!, now);
   const missing = ok
@@ -153,7 +175,7 @@ export async function restartSupervisors(
           expected,
           wanted,
           health: attempt.health,
-          ensureUp,
+          ensureUp: ensureUpFinal,
           now,
         }),
         ...(dedupeFailed.length === 0 ? [] : [`ensure-up dedupe failed=${dedupeFailed.join(",")}`]),
@@ -166,7 +188,7 @@ export async function restartSupervisors(
     dupes,
     health: attempt.health,
     expected,
-    ensureUp,
+    ensureUp: ensureUpFinal,
     ...(wsAge === undefined ? {} : { wsHeartbeatAgeMs: wsAge }),
     off: !wanted,
     retried,

@@ -39,9 +39,16 @@ const writeMirror = (path: string, record: LockOwnerRecord): "ok" | "exists" | "
  */
 export const claimMirror = (lock: string, record: LockOwnerRecord, deps: LockRecordDeps): boolean => {
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const current = readJsonFile(lock);
-    if (current !== undefined) {
-      if (lockHeldByRecord(current, deps)) return sameOwner(current, record);
+    let exists = false;
+    try {
+      if (statSync(lock).isDirectory()) return false;
+      exists = true;
+    } catch {}
+    const current = exists ? readJsonFile(lock) : undefined;
+    if (exists) {
+      if (current !== undefined && lockHeldByRecord(current, deps)) return sameOwner(current, record);
+      // A dead holder and an unreadable/truncated file are both removable: the old release rewrote after a parse
+      // error too, so a damaged historical file can never block every claim.
       try {
         rmSync(lock, { force: true });
       } catch {

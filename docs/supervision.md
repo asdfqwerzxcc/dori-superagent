@@ -12,7 +12,7 @@ exists to resurrect the supervisor and cannot resurrect itself. The timed side-j
 | `supervisor.ts` | launched by `dori up`, `dori restart`, or the watchdog | `state/supervisor-heartbeat`, `state/supervisor.json`, `state/gateway-heartbeat` (compatibility) | `state/supervisor.log` |
 | `discord-gateway.ts` | supervisor | `state/gateway-ws-heartbeat` (each Discord heartbeat ack) | pane output, else `state/gateway.log` |
 | `duty`, `loop` | supervisor | their own files under `state/`, `duty/`, `loop/` | pane output, else `state/loops.log` |
-| `plugins/run.ts <name>` | supervisor (one per enabled plugin) | `state/plugins/<name>.json`/`.tick`/`.lock`, plus its own `state/` files | pane output, else `state/loops.log` |
+| `plugins/run.ts <name>` | supervisor (one per enabled plugin) | `state/plugins/<name>.json`/`.tick`/`.lock` (the compatibility mirror), `.lock.d/owner.json`, `.contenders/`, plus its own `state/` files | pane output, else `state/loops.log` |
 | `gateway-watchdog.ts` | launcher | `state/gateway-watchdog-heartbeat`, `state/watchdog-supervisor.json` | `state/gateway-watchdog.log` |
 
 The watchdog treats a stale supervisor heartbeat as a whole-stack failure, but a stale Discord socket alone costs only
@@ -195,18 +195,23 @@ ended in favour of an idle child; the supervisor's unit is the keeper otherwise,
 beat wins. Its standby is left alone while another process holds the lock. The lock is re-read before every kill; after
 the final keeper is resolved every other live candidate, the displaced initial keeper included, is ended. A kill needs
 a positive start-time match: an unreadable or null start time is doubt and the pid is listed `unverified=` instead.
-Every supervisor unit records its pid's OS start time, so a kill uses the same 2 s identity check as a loop; the 10 s
-tolerance is only for waiting on a pane unit's registration. A pid is counted as `killed` only after a grace poll
-confirms the OS no longer holds it; otherwise it stays `failed=` with its contender marker. A disabled plugin leaves no
-ensure-up process; an old null-start holder that cannot be killed safely is listed `unverified=`. `ensure-up.off` keeps
-one idle loop. The cleanup runs again after a started supervisor registers a live, start-time-matched unit. A plugin
-child that cannot take the plugin lock writes `{ pid, at }` (its OS start time) under
-`state/plugins/<name>.contenders/`, refreshes that file every 5 s, and retries the lock; it leaves the shared tick to the
-holder. Only a disabled plugin makes it leave; an `ensure-up.off` loop stays waiting (the standby that takes over when
-the holder goes). The supervisor starts a plugin child once while the plugin is enabled and starts it again only after
-that child exits; it does not use the tick to restart a live child, so a waiting standby with no tick is not
-restart-looped. The library logger is silent; the CLI prints the one dedupe line. The lock and contender rules apply to
-every plugin child, not only ensure-up.
+Every supervisor unit records its pid's OS start time, so the unit wait and the kill use the same 2 s identity; the 10 s
+tolerance remains only for a recorded child without an OS start (an old record) in the supervisor tree kill. A pid is
+counted as `killed` only after a grace poll confirms the OS no longer holds it; otherwise it stays `failed=` with its
+contender marker. A disabled plugin leaves no ensure-up process; an old null-start holder that cannot be killed safely
+is listed `unverified=`. `ensure-up.off` keeps one idle loop. The cleanup runs again after a started supervisor registers
+a live, start-time-matched unit. A live `run.ts ensure-up` process that no record names is found by a `ps` scan bounded
+by the exact plugin entry and `DORI_HOME` (POSIX; on Windows a supervisor's children exit with it), so a pre-upgrade
+idle duplicate is a candidate too and is killed only with the same positive start match. If the cleanup killed the old
+holder, the kept process is the ensure-up evidence until the loop record's next 20 s beat, so `dori up`/`dori restart`
+do not report DOWN for that one tick. The line prints `kept=none` when nothing is kept. A plugin child that cannot take
+the plugin lock writes `{ pid, at }` (its OS start time) under `state/plugins/<name>.contenders/`, refreshes that file
+every 5 s, and retries the lock; it leaves the shared tick to the holder. Only a disabled plugin makes it leave; an
+`ensure-up.off` loop stays waiting (the standby that takes over when the holder goes). The supervisor starts a plugin
+child once while the plugin is enabled and starts it again only after that child exits; it does not use the tick to
+restart a live child, so a waiting standby with no tick is not restart-looped. The library logger is silent; the CLI
+prints the one dedupe line. The lock and contender rules apply to every plugin child, not only ensure-up; a corrupt
+historical file is replaced, and an old-format holder whose own tick is older than three beats is stale.
 
 Because the decision is the lead's own pane, a `dori up` that finds a live lead opens no second workspace: it ensures
 the supervised units and prints one line, and only `dori up --retire-old true` opens a fresh lead and closes the old one.

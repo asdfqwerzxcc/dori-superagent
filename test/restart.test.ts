@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { writePluginRecord } from "../src/plugins/state.ts";
 import { restartSupervisors } from "../src/supervisor-restart.ts";
 import type { SupervisorHealth } from "../src/supervisors.ts";
 import { homeWithState } from "./supervisor-fixtures.ts";
@@ -94,6 +95,30 @@ describe("dori restart", () => {
     expect(events).toEqual(["kill", "dedupe", "ensure", "waitUnit", "dedupe"]);
     expect(result.dupes).toEqual({ kept: process.pid, killed: [12] });
     expect(result.ok).toBe(true);
+  });
+
+  test("a kept replacement is not reported DOWN while the loop record catches up", async () => {
+    const home = homeWithOnlyEnsureUpEnabled();
+    mkdirSync(join(home, "state", "plugins"), { recursive: true });
+    writePluginRecord(home, { name: "ensure-up", pid: process.pid, startedAt: 1_000, at: 1_000 });
+    writeFileSync(join(home, "state", "plugins", "ensure-up.tick"), JSON.stringify({ pid: process.pid, at: 1_000 }));
+    const result = await restartSupervisors(home, {
+      timeoutMs: 1_000,
+      io: {
+        kill: async () => [],
+        dedupe: async () => ({ kept: process.pid, killed: [12] }),
+        ensure: async () => [],
+        health: () => healthWhereUnitsAreThisProcess([...CORE, "ensure-up"]),
+        waitFresh: async () => true,
+        waitEnsureUp: async () => ({ alive: false }),
+        waitUnit: async () => true,
+        sleep: async () => {},
+        now: () => 1_000,
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.missing).toEqual([]);
+    expect(result.ensureUp).toMatchObject({ pid: process.pid, alive: true });
   });
 
   test("a failed dedupe fails the restart verdict and names the pid", async () => {

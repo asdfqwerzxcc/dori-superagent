@@ -142,12 +142,29 @@ describe("ensure-up doubt and beats", () => {
   });
 
   test("merge drops a kept pid from killed and a failed pid from unverified", () => {
-    expect(mergeEnsureUpDedupe({ kept: 5, killed: [5] }, { killed: [] }, () => true).killed).toEqual([]);
-    const merged = mergeEnsureUpDedupe({ killed: [], failed: [3] }, { killed: [], unverified: [3] }, () => true);
+    expect(
+      mergeEnsureUpDedupe(
+        { kept: 5, killed: [5] },
+        { killed: [] },
+        () => true,
+        () => true,
+      ).killed,
+    ).toEqual([]);
+    const merged = mergeEnsureUpDedupe(
+      { killed: [], failed: [3] },
+      { killed: [], unverified: [3] },
+      () => true,
+      () => true,
+    );
     expect(merged.unverified).toBeUndefined();
     expect(merged.failed).toEqual([3]);
     expect(
-      mergeEnsureUpDedupe({ killed: [], unverified: [9] }, { killed: [] }, () => false).unverified,
+      mergeEnsureUpDedupe(
+        { killed: [], unverified: [9] },
+        { killed: [] },
+        () => false,
+        () => true,
+      ).unverified,
     ).toBeUndefined();
   });
 

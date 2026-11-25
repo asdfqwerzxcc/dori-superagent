@@ -76,7 +76,7 @@ describe("dori up", () => {
     expect(out).toBe(
       `UP runtime=herdr lead=w1:p2 duty=w1:p3 loop=w1:p4 hourly=w1:p5 home=${root} units=panes\nENSURE-UP off (ensure-up.off)`,
     );
-    expect(w.superviseCalls).toEqual([{ startMissing: false }]);
+    expect(w.superviseCalls).toEqual([{ startMissing: false, hasLog: true }]);
   });
 
   test("a registered lead that is only a shell is replaced by a new lead", async () => {
@@ -129,7 +129,7 @@ describe("dori up", () => {
     expect(w.calls.filter((c) => c.cmd === "herdr" && c.argv[0] === "pane" && c.argv[1] === "run")).toHaveLength(0);
     expect(d.store.roles()).toEqual({ lead: href("w1:p1") });
     // startMissing is the one argument that makes superviseHome call ensureSupervisors; a dead supervisor needs it.
-    expect(w.superviseCalls).toEqual([{ startMissing: true }]);
+    expect(w.superviseCalls).toEqual([{ startMissing: true, hasLog: true }]);
     expect(out).toBe("UP lead alive; ensuring units only (lead=w1:p1) units=panes");
   });
 
@@ -145,7 +145,7 @@ describe("dori up", () => {
       await up(d, "/w");
       return 0;
     });
-    expect(w.superviseCalls).toEqual([{ startMissing: false }]);
+    expect(w.superviseCalls).toEqual([{ startMissing: false, hasLog: true }]);
     expect(out).toBe("UP lead alive; ensuring units only (lead=w1:p1) units=panes");
   });
 
@@ -226,7 +226,7 @@ describe("dori up", () => {
     });
     expect(w.calls.filter((c) => c.cmd === "herdr" && c.argv[0] === "pane" && c.argv[1] === "split")).toHaveLength(0);
     expect(JSON.parse(readFileSync(join(root, "roles.json"), "utf8"))).toEqual({ lead: "w1:p2", duty: "w1:p3" });
-    expect(w.superviseCalls).toEqual([{ startMissing: false }]);
+    expect(w.superviseCalls).toEqual([{ startMissing: false, hasLog: true }]);
     expect(out).toStartWith("UP loops are supervised; skipping the loop panes (lead+duty only)\n");
     expect(out).toContain("ensure-up=off");
     expect(out).toContain("units=panes");

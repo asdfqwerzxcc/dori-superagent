@@ -1,7 +1,13 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pidAlive, processStartTimeMs } from "../process-liveness.ts";
-import { lockHeldByRecord, readLockRecord, START_SLACK_MS, type LockRecordDeps } from "./lock-record.ts";
+import {
+  lockDepsWithBeat,
+  lockHeldByRecord,
+  readLockRecord,
+  START_SLACK_MS,
+  type LockRecordDeps,
+} from "./lock-record.ts";
 
 export { START_SLACK_MS } from "./lock-record.ts";
 
@@ -95,8 +101,9 @@ export function readPluginLock(home: string, name: string): PluginLock | undefin
 
 /** Whether the lock's record still owns it; the dedupe uses the same judgment as acquisition. */
 export function pluginLockHeld(home: string, name: string, deps: LockRecordDeps = {}): boolean {
-  const raw = readLockRecord(pluginPath(home, name, "lock"));
-  return raw !== undefined && lockHeldByRecord(raw, deps);
+  const lock = pluginPath(home, name, "lock");
+  const raw = readLockRecord(lock);
+  return raw !== undefined && lockHeldByRecord(raw, lockDepsWithBeat(lock, deps));
 }
 
 /** A contender is evidence only while the pid is alive and its OS start time matches the recorded moment. */
@@ -148,8 +155,10 @@ export function readContenders(home: string, name: string, opts: ReadContendersO
       live.push({ ...contender, ...(beat === undefined ? {} : { beat }) });
       continue;
     }
-    // A transiently unreadable start is doubt: keep the marker for the next refresh, never delete it.
-    if ((opts.started ?? processStartTimeMs)(contender.pid) === null) continue;
+    // Only a definite start mismatch evicts a marker; a marker the caller counts live for another reason (its own pid,
+    // a liveness verdict) is kept, and a transiently unreadable start is doubt.
+    const started = (opts.started ?? processStartTimeMs)(contender.pid);
+    if (started === null || Math.abs(started - contender.at) <= START_SLACK_MS) continue;
     try {
       rmSync(path, { force: true });
     } catch {}

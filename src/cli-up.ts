@@ -37,7 +37,7 @@ const LEAD_ENV = { OMO_TASK_DEFAULT_BACKGROUND: "1" } as const;
 
 const supervise = (d: Deps, startMissing: boolean): Promise<SupervisedState> =>
   d.supervise !== undefined
-    ? d.supervise(d.store.root, { startMissing })
+    ? d.supervise(d.store.root, { startMissing, log: (line) => console.log(line) })
     : superviseHome(d.store.root, { startMissing, log: (line) => console.log(line) });
 
 /** A registered lead is replaced when its pane is gone OR is only a shell: a bare shell holds no conversation. A probe

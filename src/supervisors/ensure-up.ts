@@ -10,6 +10,7 @@ import { HcRuntime } from "../runtime/hc/index.ts";
 import { HerdrRuntime } from "../runtime/herdr/index.ts";
 import type { AgentStatus, SessionRef } from "../runtime/types.ts";
 import { ENSURE_UP_HEARTBEAT, ENSURE_UP_OFF, pidAlive, stateDir, writeEnsureUpRecord } from "../supervisors.ts";
+import { processStartTimeMs } from "../process-liveness.ts";
 
 /** True when state/ensure-up.off exists; the loop idles and the ensure-up plugin reports `off`. */
 export const ensureUpStopped = (home: string): boolean => existsSync(join(stateDir(home), ENSURE_UP_OFF));
@@ -101,7 +102,9 @@ function beat(home: string, startedAt: number): void {
   try {
     writeFileSync(join(stateDir(home), ENSURE_UP_HEARTBEAT), new Date().toISOString());
   } catch {}
-  writeEnsureUpRecord(home, { pid: process.pid, startedAt, at: Date.now() });
+  // The record's identity is the OS start, so the dedupe's 2 s check compares two OS clocks, not a wall-clock start.
+  const osStart = processStartTimeMs(process.pid) ?? startedAt;
+  writeEnsureUpRecord(home, { pid: process.pid, startedAt: osStart, at: Date.now() });
 }
 
 /** Keeps the ensure-up heartbeat fresh while a `dori up` raise runs longer than the 90 s stale window. */

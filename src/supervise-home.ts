@@ -1,5 +1,6 @@
-import { isPluginEnabled } from "./plugins/state.ts";
+import { isPluginEnabled, pluginHealth } from "./plugins/state.ts";
 import { pluginRunEntry } from "./plugins/plugin.ts";
+import { ensureUpPlugin } from "./plugins/ensure-up.ts";
 import { pidAlive } from "./process-liveness.ts";
 import {
   ensureSupervisors,
@@ -57,15 +58,6 @@ export type SupervisedState = {
   readonly off: boolean;
 };
 
-/** A supervisor the OS still holds, even when its beat is late: a late beat is doubt, never permission for a second loop. */
-export function supervisorProcessAlive(
-  home: string,
-  same: (child: RecordedChild) => boolean = strictRecordedAlive,
-): boolean {
-  const record = supervisorRecord(home, "supervisor");
-  return record !== undefined && same({ pid: record.pid, at: record.startedAt });
-}
-
 export type SuperviseHomeOptions = {
   readonly startMissing: boolean;
   readonly spawn?: typeof spawnDetached;
@@ -100,7 +92,7 @@ export async function waitSupervisorUnit(
   const same =
     opts.same ??
     ((child: RecordedChild) =>
-      recordedAlive(child, {
+      strictRecordedAlive(child, {
         alive,
         ...(opts.started === undefined ? {} : { started: opts.started }),
       }));
@@ -163,7 +155,7 @@ export async function superviseHome(home: string, opts: SuperviseHomeOptions): P
           { alive, ...(opts.started === undefined ? {} : { started: opts.started }) },
         );
   if (opts.startMissing && supervised && wantUp) {
-    // The pane unit registers seconds after its process starts: keep the helper's 10 s unit default.
+    // The wait uses the kill's strict identity; 10 s is only the poll budget for a pane unit to register.
     await waitSupervisorUnit(home, "ensure-up", 10_000, {
       ...wait,
       ...(opts.same === undefined ? {} : { same: opts.same }),
@@ -179,6 +171,13 @@ export async function superviseHome(home: string, opts: SuperviseHomeOptions): P
   const cleaned = dedupeLine(dedupe);
   if (cleaned !== undefined) log(cleaned);
   let ensureUp = await (opts.wait ?? waitEnsureUp)(home, wantUp, supervised ? 15_000 : 0, wait);
+  // A successful cleanup can leave the old loop record naming the killed holder for one 20 s tick. The dedupe's kept
+  // process is the same evidence the kill used, so it is not reported DOWN in that window.
+  const kept = dedupe.kept;
+  const at = opts.now?.() ?? Date.now();
+  const keptPlugin = kept === undefined ? undefined : pluginHealth(home, ensureUpPlugin, at, alive);
+  if (wantUp && kept !== undefined && !ensureUp.alive && keptPlugin?.alive === true && keptPlugin.pid === kept)
+    ensureUp = { ...ensureUp, pid: kept, alive: true };
   // The dedupe already elected the keeper strictly; alive is the standby test here.
   const standby = dedupe.kept !== undefined && alive(dedupe.kept);
   // A live supervisor owns the plugin; a startMissing call starts supervisors, never a second ensure-up itself.

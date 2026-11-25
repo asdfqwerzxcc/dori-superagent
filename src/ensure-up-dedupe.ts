@@ -1,6 +1,14 @@
 import { isPluginEnabled, readPluginRecord } from "./plugins/state.ts";
-import { leaveContenders, pluginLockHeld, readContenders, readPluginLock, START_SLACK_MS } from "./plugins/plugin.ts";
+import {
+  leaveContenders,
+  pluginLockHeld,
+  pluginRunEntry,
+  readContenders,
+  readPluginLock,
+  START_SLACK_MS,
+} from "./plugins/plugin.ts";
 import { pidAlive, processStartTimeMs, terminateProcess } from "./process-liveness.ts";
+import { scanEnsureUpProcesses } from "./ensure-up-scan.ts";
 import type { RecordedChild } from "./supervisor-run.ts";
 import { ensureUpRecord, supervisorRecord, type SupervisorRecord, type UnitRecord } from "./supervisors.ts";
 
@@ -23,11 +31,13 @@ export type DedupeEnsureUpOptions = {
   readonly now?: () => number;
   /** One supervisor snapshot for this pass; tests use it to model a unit replaced between reads. */
   readonly supervisor?: () => SupervisorRecord | undefined;
+  /** A process scan for a pid no record names; the default bounds `ps` by this entry and DORI_HOME. */
+  readonly scan?: () => readonly number[] | Promise<readonly number[]>;
 };
 
 type Candidate = RecordedChild & {
   readonly beat?: number;
-  readonly source?: "unit" | "loop" | "plugin" | "contender" | "lock";
+  readonly source?: "unit" | "loop" | "plugin" | "contender" | "lock" | "scan";
 };
 
 /** Every pid a record, a contender or the live lock names, with the start time and the beat that proves it. */
@@ -78,6 +88,11 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
   const supervisor = (deps.supervisor ?? (() => supervisorRecord(home, "supervisor")))();
   const unitRecord = supervisor?.units.find((u) => u.name === "ensure-up");
   const pluginRecord = readPluginRecord(home, "ensure-up");
+  const scan =
+    deps.scan ?? (async () => (await scanEnsureUpProcesses({ home, entry: pluginRunEntry() })).map((p) => p.pid));
+  const scanned = (await scan())
+    .filter((pid) => pid !== process.pid && pid !== process.ppid && alive(pid))
+    .map((pid) => ({ pid, at: startedOf(pid) ?? 0, beat: 0, source: "scan" as const }));
   const same =
     deps.same ??
     ((c: RecordedChild): boolean => {
@@ -106,7 +121,7 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
   const seen = new Set<number>();
   const live: Candidate[] = [];
   const unsure = new Set<number>();
-  for (const c of ensureUpCandidates(home, same, unitRecord, pluginRecord, deps.started)) {
+  for (const c of [...ensureUpCandidates(home, same, unitRecord, pluginRecord, deps.started), ...scanned]) {
     if (c.pid === process.pid || !alive(c.pid)) continue;
     if (same(c)) {
       if (seen.has(c.pid)) continue;
@@ -201,42 +216,4 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
   };
 }
 
-export const mergeEnsureUpDedupe = (
-  first: EnsureUpDedupe,
-  second: EnsureUpDedupe,
-  alive: (pid: number) => boolean = pidAlive,
-  same: (child: RecordedChild) => boolean = () => true,
-): EnsureUpDedupe => {
-  const valid = (d: EnsureUpDedupe): boolean =>
-    d.kept !== undefined && alive(d.kept) && (d.keptAt === undefined || same({ pid: d.kept, at: d.keptAt }));
-  const secondKept = valid(second) ? second.kept : undefined;
-  const carried = valid(first) ? first.kept : undefined;
-  const kept = secondKept ?? carried;
-  const keptAt = kept === undefined ? undefined : kept === secondKept ? second.keptAt : first.keptAt;
-  const killed = [...new Set([...first.killed, ...second.killed])].filter((pid) => pid !== kept);
-  const failed = [...new Set([...(first.failed ?? []), ...(second.failed ?? [])])].filter(
-    (pid) => pid !== kept && !killed.includes(pid) && alive(pid),
-  );
-  const unverified = [...new Set([...(first.unverified ?? []), ...(second.unverified ?? [])])].filter(
-    (pid) => pid !== kept && !killed.includes(pid) && !failed.includes(pid) && alive(pid),
-  );
-  return {
-    ...(kept === undefined ? {} : { kept }),
-    ...(keptAt === undefined ? {} : { keptAt }),
-    killed,
-    ...(failed.length === 0 ? {} : { failed }),
-    ...(unverified.length === 0 ? {} : { unverified }),
-  };
-};
-
-/** The one line a startup or a restart prints when it reduced several ensure-up processes to one. */
-export const dedupeLine = (d: EnsureUpDedupe): string | undefined => {
-  const failed = d.failed ?? [];
-  const unverified = d.unverified ?? [];
-  if (d.killed.length === 0 && failed.length === 0 && unverified.length === 0) return undefined;
-  const parts = [`kept=${d.kept ?? "?"}`];
-  if (d.killed.length > 0) parts.push(`killed=${d.killed.join(",")}`);
-  if (failed.length > 0) parts.push(`failed=${failed.join(",")}`);
-  if (unverified.length > 0) parts.push(`unverified=${unverified.join(",")}`);
-  return `ENSURE_UP dedupe ${parts.join(" ")}`;
-};
+export { dedupeLine, mergeEnsureUpDedupe } from "./ensure-up-dedupe-line.ts";

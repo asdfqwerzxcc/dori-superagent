@@ -65,6 +65,19 @@ describe("the contender registry", () => {
     expect(existsSync(contenderPath(home, 7004))).toBe(false);
   });
 
+  test("a marker whose start matches is kept even when the caller counts the pid as not live", () => {
+    const home = homeWithState();
+    const path = contenderPath(home, process.pid);
+    mkdirSync(contendersDir(home), { recursive: true });
+    const start = processStartTimeMs(process.pid);
+    if (start === null) throw new Error("this process has no readable OS start");
+    writeFileSync(path, JSON.stringify({ pid: process.pid, at: start }));
+    expect(
+      readContenders(home, "ensure-up", { same: (c) => c.pid !== process.pid, started: processStartTimeMs }),
+    ).toEqual([]);
+    expect(existsSync(path)).toBe(true);
+  });
+
   test("a live pid whose start time differs is removed, never trusted", () => {
     const home = homeWithState();
     const path = contenderPath(home, CONTENDER);

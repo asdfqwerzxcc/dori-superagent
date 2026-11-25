@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { acquirePluginLock } from "../src/plugins/run.ts";
+import { acquirePluginLock, releaseLockIfOwner } from "../src/plugins/run.ts";
 import { pidAlive } from "../src/process-liveness.ts";
 
 const NOW = 1_800_000_000_000;
@@ -129,5 +129,59 @@ describe("the new lock directory and the old file format", () => {
     );
     expect(acquirePluginLock(path, { alive: () => true, now: () => NOW })).toBe(false);
     expect((JSON.parse(readFileSync(join(dirOf(path), "owner.json"), "utf8")) as { pid: number }).pid).toBe(7004);
+  });
+
+  const tickPath = (path: string): string => path.replace(/\.lock$/, ".tick");
+
+  test("a corrupt historical file is replaced instead of blocking every claim", () => {
+    for (const raw of ["{", "", "null", '"x"']) {
+      const home = homeWithState();
+      const path = lockPath(home);
+      writeFileSync(path, raw);
+      expect(acquirePluginLock(path)).toBe(true);
+      expect((JSON.parse(readFileSync(path, "utf8")) as { pid: number }).pid).toBe(process.pid);
+      expect(statSync(dirOf(path)).isDirectory()).toBe(true);
+      releaseLockIfOwner(path);
+    }
+  });
+
+  test("an ownerless lock directory older than the claim grace recovers past a dead historical file", () => {
+    const home = homeWithState();
+    const path = lockPath(home);
+    mkdirSync(dirOf(path));
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(dirOf(path), old, old);
+    writeFileSync(path, JSON.stringify({ pid: 7004, at: NOW }));
+    expect(acquirePluginLock(path, { alive: () => false, now: () => NOW })).toBe(true);
+    expect((JSON.parse(readFileSync(join(dirOf(path), "owner.json"), "utf8")) as { pid: number }).pid).toBe(
+      process.pid,
+    );
+    expect((JSON.parse(readFileSync(path, "utf8")) as { version: number }).version).toBe(1);
+  });
+
+  test("an ownerless lock directory younger than the claim grace stays a pending claim", () => {
+    const home = homeWithState();
+    const path = lockPath(home);
+    mkdirSync(dirOf(path));
+    writeFileSync(path, JSON.stringify({ pid: 7004, at: NOW }));
+    expect(acquirePluginLock(path, { alive: () => false, now: () => NOW })).toBe(false);
+  });
+
+  test("an old-format file whose pid was reused recovers once its tick is stale", () => {
+    const home = homeWithState();
+    const path = lockPath(home);
+    writeFileSync(path, JSON.stringify({ pid: process.ppid, at: Date.now() }));
+    writeFileSync(tickPath(path), JSON.stringify({ pid: process.ppid, at: NOW - 120_000 }));
+    expect(acquirePluginLock(path, { now: () => NOW })).toBe(true);
+    expect((JSON.parse(readFileSync(path, "utf8")) as { pid: number }).pid).toBe(process.pid);
+  });
+
+  test("a live old-format holder with a fresh tick is still waited out", () => {
+    const home = homeWithState();
+    const path = lockPath(home);
+    writeFileSync(path, JSON.stringify({ pid: process.ppid, at: Date.now() }));
+    writeFileSync(tickPath(path), JSON.stringify({ pid: process.ppid, at: NOW - 1_000 }));
+    expect(acquirePluginLock(path, { now: () => NOW })).toBe(false);
+    expect(existsSync(dirOf(path))).toBe(false);
   });
 });

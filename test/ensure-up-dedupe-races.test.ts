@@ -185,6 +185,7 @@ describe("a lock takeover during the cleanup", () => {
       { kept: UNIT, keptAt: NOW, killed: [], failed: [OTHER] },
       { kept: OTHER, keptAt: NOW - 30_000, killed: [] },
       () => true,
+      () => true,
     );
     expect(merged.kept).toBe(OTHER);
     expect(merged.failed).toBeUndefined();
@@ -192,8 +193,8 @@ describe("a lock takeover during the cleanup", () => {
 
   test("a failed or unverified pid is printed once", () => {
     expect(dedupeLine({ kept: 1, killed: [2], failed: [3] })).toBe("ENSURE_UP dedupe kept=1 killed=2 failed=3");
-    expect(dedupeLine({ killed: [], failed: [3] })).toBe("ENSURE_UP dedupe kept=? failed=3");
-    expect(dedupeLine({ killed: [], unverified: [4] })).toBe("ENSURE_UP dedupe kept=? unverified=4");
+    expect(dedupeLine({ killed: [], failed: [3] })).toBe("ENSURE_UP dedupe kept=none failed=3");
+    expect(dedupeLine({ killed: [], unverified: [4] })).toBe("ENSURE_UP dedupe kept=none unverified=4");
   });
 
   test("a lock whose live pid has a different start time is not held", async () => {
@@ -207,10 +208,22 @@ describe("a lock takeover during the cleanup", () => {
   });
 
   test("a first-pass failure that died before the second pass is not carried", () => {
-    const merged = mergeEnsureUpDedupe({ killed: [], failed: [12] }, { killed: [] }, () => false);
+    const merged = mergeEnsureUpDedupe(
+      { killed: [], failed: [12] },
+      { killed: [] },
+      () => false,
+      () => true,
+    );
     expect(merged).toEqual({ killed: [] });
     expect(merged.failed).toBeUndefined();
-    expect(mergeEnsureUpDedupe({ killed: [], failed: [12] }, { killed: [] }, () => true).failed).toEqual([12]);
+    expect(
+      mergeEnsureUpDedupe(
+        { killed: [], failed: [12] },
+        { killed: [] },
+        () => true,
+        () => true,
+      ).failed,
+    ).toEqual([12]);
   });
 
   test("the library logger is silent by default", async () => {

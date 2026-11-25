@@ -3,6 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync, renameSync, rmSync, statSyn
 import { dirname, join } from "node:path";
 import { pidAlive, processStartTimeMs } from "../process-liveness.ts";
 import {
+  lockDepsWithBeat,
   lockDir,
   lockHeldByRecord,
   lockOwnerPath,
@@ -143,33 +144,35 @@ const dirAgeMs = (lock: string): number | null => {
   }
 };
 
-const readLockRecordOf = (lock: string): Record<string, unknown> | undefined =>
-  readJsonFile(lockOwnerPath(lock)) ?? readJsonFile(lock);
+/** The directory's own owner record only; the historical mirror never decides a directory takeover. */
+const readDirOwner = (lock: string): Record<string, unknown> | undefined => readJsonFile(lockOwnerPath(lock));
 
 /**
  * One child per plugin per home. The directory is the compare-and-swap generation guard; the historical file is the
  * mirror older releases read, so both protocols see exactly one live owner.
  */
 export function acquirePluginLock(lock: string, deps: LockRecordDeps = {}): boolean {
+  const judged = lockDepsWithBeat(lock, deps);
   mkdirSync(dirname(lock), { recursive: true });
-  if (migrateLegacyDir(lock, deps) === "held") return false;
+  if (migrateLegacyDir(lock, judged) === "held") return false;
   const mirror = readJsonFile(lock);
-  if (mirror !== undefined && lockHeldByRecord(mirror, deps)) return false;
-  if (claimDir(lock, deps)) return true;
+  if (mirror !== undefined && lockHeldByRecord(mirror, judged)) return false;
+  if (claimDir(lock, judged)) return true;
   if (!existsSync(lockDir(lock))) return false;
-  const record = readLockRecordOf(lock);
+  const record = readDirOwner(lock);
   if (record !== undefined) {
-    if (lockHeldByRecord(record, deps)) return false;
+    if (lockHeldByRecord(record, judged)) return false;
   } else {
-    // An ownerless directory is a claim in progress; only an old one is abandoned.
+    // An ownerless directory is a claim in progress; only an old one is abandoned. The historical mirror is a
+    // separate file and never supplies this generation.
     const age = dirAgeMs(lock);
     if (age !== null && age < 30_000) return false;
   }
   // The token is the compare-and-swap guard; re-reading inside it means a delayed loser never renames a fresh owner.
   const generation = tokenOf(record);
-  if (!acquireTakeover(lock, generation, deps)) return false;
+  if (!acquireTakeover(lock, generation, judged)) return false;
   try {
-    const current = readLockRecordOf(lock);
+    const current = readDirOwner(lock);
     if (tokenOf(current) !== generation) return false;
     const stale = `${lockDir(lock)}.stale.${process.pid}.${Date.now()}`;
     try {
@@ -187,7 +190,7 @@ export function acquirePluginLock(lock: string, deps: LockRecordDeps = {}): bool
     try {
       rmSync(stale, { recursive: true, force: true });
     } catch {}
-    return claimDir(lock, deps);
+    return claimDir(lock, judged);
   } finally {
     releaseTakeover(lock, generation);
   }
