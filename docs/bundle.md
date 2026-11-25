@@ -20,7 +20,7 @@ dori merge <owner/repo#N> --bundle <id> # 명시적 번들 게이트로 머지
 
 ## 규칙
 
-1. **`add` 게이트**: 레인 영수증이 **CLEAR**이고, 그 영수증이 **현재 `lane/<key>` head를 덮을 때**(exact tip 또는 같은 patch-id)만 추가된다. 없음/BLOCK/stale sha(다른 patch)는 `Refusal`로 거부되고 번들은 바뀌지 않는다.
+1. **`add` 게이트**: 레인 영수증이 **CLEAR**이고, 그 영수증이 **현재 `lane/<key>` head를 덮을 때**(exact tip 또는 같은 `patchId`+`contentId`, 공백까지 같은 diff)만 추가된다. 없음/BLOCK/stale sha(다른 patch)는 `Refusal`로 거부되고 번들은 바뀌지 않는다.
 2. **`land`**: `main`에서 `bundle/<id>`를 만들고 멤버 브랜치를 적힌 순서대로 `--no-ff` 머지한다. 충돌하면 **그 자리에서 멈추고 부분 브랜치를 남긴다**(조용히 넘어가지 않는다). 성공하면 자기 리모트(`fork`가 있으면 `fork`, 없으면 `origin`)로 푸시하고 `.github/PULL_REQUEST_TEMPLATE.md` + 멤버 목록으로 PR을 만들거나 갱신한다.
 3. **`merge --bundle <id>`**: 게이트는 둘 중 하나를 만족해야 한다.
    - ⑴ PR head에 **CLEAR 영수증**이 있다(번들 단위 리뷰), 또는

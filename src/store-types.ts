@@ -108,6 +108,8 @@ export type LaneReceipt = {
   tip: string;
   /** `git patch-id --stable` of `base..tip`; an older receipt with this id still covers a rebased tip. */
   patchId?: string;
+  /** `git patch-id --verbatim`: the same identity with whitespace significant, so a whitespace-only edit never reuses it. */
+  contentId?: string;
   /** The saved review diff this verdict rested on; different from `tip` when a rebase moved only the SHA. */
   reviewedTip?: string;
   brief: string;

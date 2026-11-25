@@ -15,6 +15,8 @@ export type Repo = {
   diff?: string;
   /** Answer for `git patch-id`; absent hashes the stdin diff (or returns a stable id when there is none). */
   patchId?: string;
+  /** Answer for `git patch-id --verbatim`; defaults to `patchId`, else hashes the stdin diff with whitespace intact. */
+  contentId?: string;
   /** Output of `diff --quiet <branch> HEAD`; empty means the same tree (a squash merge). Defaults to `diff`. */
   contentDiff?: string;
   /** Makes `diff --quiet <branch> HEAD` fail like a git error (exit 2) with this stderr, instead of comparing trees. */
@@ -85,7 +87,11 @@ export function fakeGit(w: World, repo: Repo): void {
         : { code: 0, stdout: "", stderr: "" };
     if (cmd === "merge-base") return { code: 0, stdout: `${repo.mergeBase ?? repo.head}\n` };
     if (cmd === "patch-id") {
-      const id = repo.patchId ?? (stdin === undefined || stdin.trim() === "" ? "0".repeat(40) : fakePatchId(stdin));
+      const verbatim = args.includes("--verbatim");
+      const id = verbatim
+        ? (repo.contentId ?? repo.patchId ?? fakePatchId(stdin ?? ""))
+        : (repo.patchId ??
+          (stdin === undefined || stdin.trim() === "" ? "0".repeat(40) : fakePatchId(stdin.replace(/[ \t]+/g, " "))));
       return { code: 0, stdout: `${id} ${"0".repeat(40)}\n` };
     }
     if (args.includes("diff") && args.includes("--diff-filter=U")) return { code: 0, stdout: repo.conflictFiles ?? "" };

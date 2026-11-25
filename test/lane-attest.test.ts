@@ -41,6 +41,7 @@ describe("lane attestation", () => {
       base,
       tip,
       patchId: "0".repeat(40),
+      contentId: "0".repeat(40),
       reviewedTip: tip,
       brief: d.store.lane("fix-login")!.brief,
       reviewer: "omo-native-gate-reviewer",

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync, writeFileSync } from "node:fs";
 import type { Deps } from "../src/harness.ts";
 import { pickLaneReceipt } from "../src/lane-patch.ts";
 import { done, ready, startLane } from "../src/lanes.ts";
@@ -14,6 +15,8 @@ const rebased = "c".repeat(40);
 const other = "d".repeat(40);
 const patch = "1".repeat(40);
 const changed = "2".repeat(40);
+const content = "3".repeat(40);
+const otherContent = "4".repeat(40);
 const diff = "diff --git a/src/x.ts b/src/x.ts\n+export const x = 1;\n";
 const changedDiff = "diff --git a/src/x.ts b/src/x.ts\n+export const x = 2;\n";
 
@@ -48,19 +51,29 @@ const attest = async (d: Deps, verdict: "CLEAR" | "BLOCK" = "CLEAR") => {
 };
 
 describe("patch-id receipt judgment", () => {
-  test("an exact tip wins; another tip is covered only by the same patch-id", () => {
-    const older = receipt({ tip, patchId: patch });
-    expect(pickLaneReceipt([older], tip, changed)).toBe(older);
-    expect(pickLaneReceipt([older], rebased, patch)).toBe(older);
-    expect(pickLaneReceipt([older], rebased, changed)).toBeUndefined();
-    expect(pickLaneReceipt([older], rebased, undefined)).toBeUndefined();
+  test("an exact tip wins; another tip is covered only by the same patch content", () => {
+    const older = receipt({ tip, patchId: patch, contentId: content });
+    expect(pickLaneReceipt([older], tip, changed, otherContent)).toBe(older);
+    expect(pickLaneReceipt([older], rebased, patch, content)).toBe(older);
+    expect(pickLaneReceipt([older], rebased, changed, otherContent)).toBeUndefined();
+    expect(pickLaneReceipt([older], rebased, undefined, undefined)).toBeUndefined();
+    // The stable id ignores whitespace; the content id does not, so a whitespace-only edit is not covered.
+    expect(pickLaneReceipt([older], rebased, patch, otherContent)).toBeUndefined();
+  });
+
+  test("a receipt written before contentId covers only its exact tip", () => {
+    const legacy = receipt({ tip, patchId: patch });
+    expect(pickLaneReceipt([legacy], tip, patch, content)).toBe(legacy);
+    expect(pickLaneReceipt([legacy], rebased, patch, content)).toBeUndefined();
   });
 
   test("a BLOCK for the same patch beats a CLEAR, even at the exact tip", () => {
-    const clear = receipt({ tip, patchId: patch, at: 99 });
-    const block = receipt({ tip: other, verdict: "BLOCK", patchId: patch, at: 1 });
-    expect(pickLaneReceipt([clear, block], rebased, patch)?.verdict).toBe("BLOCK");
-    expect(pickLaneReceipt([clear, block], tip, patch)?.verdict).toBe("BLOCK");
+    const clear = receipt({ tip, patchId: patch, contentId: content, at: 99 });
+    const block = receipt({ tip: other, verdict: "BLOCK", patchId: patch, contentId: content, at: 1 });
+    const otherBlock = receipt({ tip: other, verdict: "BLOCK", patchId: patch, contentId: otherContent, at: 2 });
+    expect(pickLaneReceipt([clear, block], rebased, patch, content)?.verdict).toBe("BLOCK");
+    expect(pickLaneReceipt([clear, block], tip, patch, content)?.verdict).toBe("BLOCK");
+    expect(pickLaneReceipt([clear, otherBlock], rebased, patch, content)?.verdict).toBe("CLEAR");
   });
 });
 
@@ -155,5 +168,33 @@ describe("patch-id lane receipts", () => {
     d.store.saveLaneReceipt(receipt({ tip }));
     expect(d.store.laneReceipt("fix-login", tip)?.patchId).toBeUndefined();
     expect(await done(d, "fix-login")).toBeUndefined();
+  });
+
+  test("attest refuses a saved diff that changed only in whitespace", async () => {
+    const { d, repo } = await laneWorld();
+    delete repo.patchId;
+    await queueLaneReview(d, "fix-login", undefined);
+    repo.diff = "diff --git a/src/x.ts b/src/x.ts\n+export const x =  1;\n";
+    await expect(laneAttest(d)).rejects.toThrow("only in whitespace");
+    expect(d.store.laneReceipt("fix-login", tip)).toBeUndefined();
+  });
+
+  test("attest refuses a saved diff that was edited away from what git produces", async () => {
+    const { d } = await laneWorld();
+    await queueLaneReview(d, "fix-login", undefined);
+    const path = d.store.laneDiffPath("fix-login", tip);
+    writeFileSync(path, `${readFileSync(path, "utf8")}+// edited after the queue\n`);
+    await expect(laneAttest(d)).rejects.toThrow("not the diff git produces");
+  });
+
+  test("an exact CLEAR still gates a net-zero tip when another patch has a BLOCK", async () => {
+    const { d, repo } = await laneWorld();
+    await attest(d);
+    d.store.saveLaneReceipt(
+      receipt({ tip: other, verdict: "BLOCK", patchId: changed, contentId: otherContent, at: 2 }),
+    );
+    repo.diff = "";
+    expect(await done(d, "fix-login")).toBeUndefined();
+    expect(d.store.lane("fix-login")!.status).toBe("done");
   });
 });

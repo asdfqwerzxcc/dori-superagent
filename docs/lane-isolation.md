@@ -12,9 +12,12 @@ start commit and its current tip, measured in the lane's own checkout. `dori sta
 queued. `dori review --lane <key>` diffs `merge-base(baseSha, tip)..tip`, saves the diff under `lane-reviews/` and
 records a request; the lead reviews it as a subagent and writes the receipt with `dori review <key> --attest`. A main
 branch that moved after the start adds nothing to the reviewed range. The receipt is written per lane key and per tip
-commit, and carries the `git patch-id` of `base..tip`. A new commit with different content invalidates it: review again,
-or drop the lane. A rebase that leaves the diff unchanged (context included) keeps it valid, because the gate compares
-the current patch-id with the ids on disk when no receipt exists at the new tip.
+commit, and carries both `git patch-id --stable` and `--verbatim` (the whitespace-sensitive id) of `base..tip`. A new
+commit with different content invalidates it — including one that changes only whitespace, which moves the verbatim id
+while `--stable` stays the same: review again, or drop the lane. A rebase that leaves the diff unchanged (context
+included) keeps it valid, because the gate compares the current ids with the ids on disk when no receipt exists at the
+new tip. `--attest` also regenerates the saved diff from git when its base is recorded, so an edited
+`lane-reviews/*.diff` is refused.
 
 ## What `dori start` sets up
 

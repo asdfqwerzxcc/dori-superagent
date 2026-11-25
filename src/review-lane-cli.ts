@@ -6,7 +6,7 @@ import { need, one, type Args } from "./cli-args.ts";
 import { attest, isPrId } from "./gate.ts";
 import type { Deps } from "./harness.ts";
 import { loadReviewSettings } from "./hooks.ts";
-import { lanePatchId, pickLaneReceipt, reviewBinding } from "./lane-patch.ts";
+import { laneDiff, patchIdsOfDiff, pickLaneReceipt, reviewBinding } from "./lane-patch.ts";
 import { laneReviewTarget } from "./lane-review-target.ts";
 import { Refusal } from "./refusal.ts";
 import { reviewRunLines } from "./review-drain.ts";
@@ -121,22 +121,35 @@ export type LaneAttest = { readonly verdict: "CLEAR" | "BLOCK"; readonly tip: st
 
 /**
  * Records a reviewer session's verdict as the lane receipt at the lane's current tip. The verdict must rest on a saved
- * review diff (`lane-reviews/lane_<key>@<tip>.diff`) whose patch-id equals the current `base..tip`; a lane that
- * changed after the review is refused instead of attested. The receipt carries that patch-id and the reviewed tip, so
- * the same verdict survives a rebase that leaves the diff unchanged. BLOCK wins for one patch, even over an exact-tip
- * CLEAR: a CLEAR attest never replaces a BLOCK already on disk.
+ * review diff (`lane-reviews/lane_<key>@<tip>.diff`) whose patch ids equal the current `base..tip` in both the stable
+ * and whitespace-sensitive forms; a lane that changed after the review, even only in whitespace, is refused instead of
+ * attested. The receipt carries both ids and the reviewed tip, so the same verdict survives a rebase that leaves the
+ * diff unchanged. BLOCK wins for one patch, even over an exact-tip CLEAR: a CLEAR attest never replaces a BLOCK already
+ * on disk.
  */
 export async function attestLane(d: Deps, key: string, opts: LaneAttestOptions): Promise<LaneAttest> {
   if (opts.evidence.length === 0)
     throw new Refusal("--attest needs at least one --evidence link (task id, path or url)");
   const { lane, repo, tip, base } = await laneReviewTarget(d, key);
-  const patchId = await lanePatchId(d, repo, base, tip);
-  if (patchId === undefined)
+  const diff = await laneDiff(d, repo, base, tip);
+  if (diff === undefined)
+    throw new Refusal(
+      `lane ${key}: cannot read the diff ${base.slice(0, 12)}..${tip.slice(0, 12)} in ${repo}; the lane is not ` +
+        `attested. Check the checkout, run dori review --lane ${key} again, then attest`,
+    );
+  if (diff.trim() === "")
+    throw new Refusal(
+      `lane ${key} at ${tip.slice(0, 12)}: base..tip is empty or net-zero, so there is nothing to review and no ` +
+        `patch-id to bind; the lane is not attested. Close it with dori done --drop ${key} --reason <text> or add a ` +
+        `change and review again`,
+    );
+  const ids = await patchIdsOfDiff(d, diff);
+  if (ids === undefined)
     throw new Refusal(
       `lane ${key}: cannot compute the patch-id of ${tip.slice(0, 12)}; the lane is not attested. ` +
         `Check the checkout, run dori review --lane ${key} again, then attest`,
     );
-  const binding = await reviewBinding(d, lane, tip, patchId);
+  const binding = await reviewBinding(d, lane, repo, tip, base, ids);
   if (!binding.ok) {
     const saved = binding.tips.length === 0 ? "none" : binding.tips.map((t) => t.slice(0, 12)).join(", ");
     const why =
@@ -144,13 +157,17 @@ export async function attestLane(d: Deps, key: string, opts: LaneAttestOptions):
         ? `no reviewed diff is saved for lane ${key}`
         : binding.reason === "stale-diff"
           ? `the saved review diff at ${tip.slice(0, 12)} does not match the current base..tip`
-          : `no saved review diff matches the current base..tip (saved: ${saved})`;
+          : binding.reason === "whitespace-only"
+            ? `the saved review diff differs from the current base..tip only in whitespace`
+            : binding.reason === "tampered-diff"
+              ? `the saved review diff at ${tip.slice(0, 12)} is not the diff git produces for its range`
+              : `no saved review diff matches the current base..tip (saved: ${saved})`;
     throw new Refusal(
       `lane ${key} at ${tip.slice(0, 12)}: ${why}; the lane changed after the review or was never reviewed. ` +
         `Run dori review --lane ${key} to review the current diff, then attest`,
     );
   }
-  const existing = pickLaneReceipt(d.store.receipts.laneReceipts(key), tip, patchId);
+  const existing = pickLaneReceipt(d.store.receipts.laneReceipts(key), tip, ids.patchId, ids.contentId);
   const kept = existing?.verdict === "BLOCK" && opts.verdict === "CLEAR";
   const verdict = kept ? "BLOCK" : opts.verdict;
   if (!kept) {
@@ -159,7 +176,8 @@ export async function attestLane(d: Deps, key: string, opts: LaneAttestOptions):
       verdict,
       base,
       tip,
-      patchId,
+      patchId: ids.patchId,
+      contentId: ids.contentId,
       reviewedTip: binding.reviewedTip,
       brief: lane.brief,
       reviewer: opts.reviewer,

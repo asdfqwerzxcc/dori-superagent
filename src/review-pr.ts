@@ -2,11 +2,13 @@
 // receipt. Kept out of the merge gate so the gate stays a rule module and this stays the process that feeds it.
 
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gh, headSha, parsePr } from "./gate.ts";
 import { prompt, type Deps } from "./harness.ts";
 import { loadHooks, loadReviewSettings, substitute } from "./hooks.ts";
+import { laneRepo } from "./lane-repo.ts";
+import { reviewJobFor } from "./review-queue.ts";
 import type { ExecOptions } from "./runtime/exec.ts";
 import { CEILING_VARS } from "./worker-limits.ts";
 
@@ -15,6 +17,51 @@ const HOOK_ARGV_LIMIT = 30_000;
 /** The full reviewer output saved beside the receipt; findings at the head must survive a huge transcript. */
 const REVIEW_TEXT_CAP = 65_536;
 const SUMMARY_SIDE = 2_000;
+/** A lane brief is inlined because the reviewer has no tools; cap it so a huge brief cannot crowd out the diff. */
+const BRIEF_CAP = 12_000;
+const LANE_BRANCH_RE = /^lane\/([a-z][a-z0-9-]{1,40})$/;
+
+type LaneReview = {
+  readonly key: string;
+  readonly base: string;
+  readonly brief: string;
+  readonly diff: string;
+  readonly diffPath: string;
+  readonly checkout: string;
+};
+
+/**
+ * A lane PR is reviewed from the saved lane diff and the lane's brief — the artifact and contract that `--attest`
+ * binds — instead of the server-rendered PR diff. A PR that is not a lane branch, or whose head has no saved diff,
+ * returns undefined and is reviewed as an ordinary PR.
+ */
+function laneReview(d: Deps, view: Record<string, unknown>, sha: string): LaneReview | undefined {
+  const key = LANE_BRANCH_RE.exec(String(view["headRefName"] ?? ""))?.[1];
+  if (key === undefined) return undefined;
+  const lane = d.store.lane(key);
+  if (lane === undefined) return undefined;
+  const diffPath = d.store.laneDiffPath(key, sha);
+  let diff: string;
+  try {
+    diff = readFileSync(diffPath, "utf8");
+  } catch {
+    return undefined;
+  }
+  let brief: string;
+  try {
+    brief = readFileSync(lane.brief, "utf8").trim();
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    throw new Error(`lane ${key}: cannot read its brief at ${lane.brief} (${why}); the reviewer needs the contract`);
+  }
+  const job = reviewJobFor(d.store.root, key, sha);
+  const base = job !== undefined && job !== "corrupt" ? job.base : (lane.baseSha ?? sha);
+  const capped =
+    brief.length <= BRIEF_CAP
+      ? brief
+      : `${brief.slice(0, BRIEF_CAP)}\n... [brief truncated at ${BRIEF_CAP} characters]`;
+  return { key, base, brief: capped, diff, diffPath, checkout: laneRepo(lane) };
+}
 
 const argvLength = (argv: readonly string[]): number => argv.reduce((total, part) => total + part.length + 1, 0);
 const reviewTextPath = (root: string, pr: string, sha: string): string =>
@@ -54,18 +101,31 @@ export async function review(
   const hook = loadHooks(d.store.root).reviewCommand;
   const sha = await headSha(d, pr);
   opts.onHead?.(sha);
-  const view = JSON.parse(await gh(d, ["pr", "view", String(pr.number), "--repo", pr.repo, "--json", "title,body"]));
+  const view = JSON.parse(
+    await gh(d, ["pr", "view", String(pr.number), "--repo", pr.repo, "--json", "title,body,headRefName"]),
+  );
   const diff = await gh(d, ["pr", "diff", String(pr.number), "--repo", pr.repo]);
+  const lane = laneReview(d, view, sha);
   const vars = {
     pr: pr.id,
     repo: pr.repo,
     number: String(pr.number),
     sha,
     title: `${String(view.title ?? "")}\n\n${String(view.body ?? "")}`.trim(),
-    diff,
+    diff: lane?.diff ?? diff,
     ...CEILING_VARS,
+    ...(lane === undefined
+      ? {}
+      : {
+          key: lane.key,
+          base: lane.base,
+          tip: sha,
+          brief: lane.brief,
+          diffPath: lane.diffPath,
+          checkout: lane.checkout,
+        }),
   };
-  const text = prompt("review.md", vars);
+  const text = prompt(lane === undefined ? "review.md" : "review-lane.md", vars);
   const callbacks =
     opts.onOutput === undefined
       ? undefined
