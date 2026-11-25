@@ -109,7 +109,11 @@ export function swapWorkerEnv(
     if (/[\r\n]/.test(value)) continue;
     out[key] = value;
   }
-  return { ...out, ...extra };
+  for (const [key, value] of Object.entries(extra)) {
+    if (key.startsWith("=") || value === "" || /[\r\n]/.test(value)) continue;
+    out[key] = value;
+  }
+  return out;
 }
 
 /**
@@ -204,6 +208,7 @@ export function swapWorkerArgv(
   marker: string,
   go: string,
   parentPid: number,
+  busyToken?: string,
 ): string[] {
   return [
     argv0,
@@ -224,5 +229,6 @@ export function swapWorkerArgv(
     go,
     "--parent-pid",
     String(parentPid),
+    ...(busyToken === undefined ? [] : ["--busy-token", busyToken]),
   ];
 }

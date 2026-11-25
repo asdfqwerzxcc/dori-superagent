@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { main } from "../src/cli.ts";
 import { runLeadSwap } from "../src/lead-swap.ts";
@@ -48,6 +48,7 @@ describe("dori lead-restart", () => {
     expect(r.out).toContain(`LEADSWAP command ${buildLeadCommand("omo", session, prompt, process.platform)}`);
     expect(r.out).not.toContain("duty.md");
     expect(w.calls.filter((c) => c.cmd === "taskkill")).toEqual([]);
+    expect(existsSync(join(d.store.root, "state", "lead-restart.busy"))).toBe(false);
     expect(
       w.calls.filter(
         (c) => c.cmd === "herdr" && c.argv[0] === "pane" && (c.argv[1] === "send-text" || c.argv[1] === "send-keys"),

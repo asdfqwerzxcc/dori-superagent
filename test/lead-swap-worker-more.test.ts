@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { markLeadRestartBusy } from "../src/lead-restart-busy.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const until = async <T>(what: string, read: () => T | undefined, ms = 8000): Promise<T> => {
@@ -14,11 +15,15 @@ const until = async <T>(what: string, read: () => T | undefined, ms = 8000): Pro
   throw new Error(`timed out waiting for ${what}`);
 };
 
-const worker = (extra: (paths: { sessionA: string; sessionB: string }) => string[]) => {
+const worker = (
+  extra: (paths: { sessionA: string; sessionB: string }) => string[],
+  opts: { pane?: string | null; busy?: (home: string) => string | undefined } = {},
+) => {
   const dir = mkdtempSync(join(tmpdir(), "dori-worker-more-"));
   const home = join(dir, "home");
   const bin = join(dir, "bin");
   mkdirSync(home, { recursive: true });
+  const busyToken = opts.busy?.(home);
   mkdirSync(bin, { recursive: true });
   writeFileSync(join(bin, "herdr.cmd"), "@echo off\r\necho pane_not_found 1>&2\r\nexit /b 1\r\n");
   const marker = join(dir, "ready.txt");
@@ -34,12 +39,12 @@ const worker = (extra: (paths: { sessionA: string; sessionB: string }) => string
       "lead-restart",
       ...extra({ sessionA, sessionB }),
       "--swap-worker",
-      "--pane",
-      "w1:p1",
+      ...(opts.pane === null ? [] : ["--pane", opts.pane ?? "w1:p1"]),
       "--marker",
       marker,
       "--go",
       go,
+      ...(busyToken === undefined ? [] : ["--busy-token", busyToken]),
     ],
     {
       env: {
@@ -70,8 +75,30 @@ describe.skipIf(process.platform !== "win32")("the lead-swap worker edge paths",
       expect(code).not.toBe(0);
       expect(await w.stdout).toContain("worker=1 pid=");
       const log = readFileSync(join(w.home, "state", "lead-restart.log"), "utf8");
+      const lines = log.trim().split("\n");
+      expect(lines[0]).toContain("LEADSWAP start");
+      expect(lines.findIndex((line) => line.includes("WARN go file not removed"))).toBeGreaterThan(0);
       expect(log).toContain("WARN go file not removed");
       expect(log).not.toContain("LEADSWAP killed");
+    } finally {
+      try {
+        w.p.kill();
+      } catch {}
+    }
+  });
+
+  test("a worker that finds no lead after go clears the parent marker", async () => {
+    const w = worker(({ sessionA }) => ["--session", sessionA], {
+      pane: null,
+      busy: (home) => markLeadRestartBusy(home, "w1:p1", 60_000),
+    });
+    try {
+      await until("the worker marker", () => (existsSync(w.marker) ? true : undefined));
+      writeFileSync(w.go, "go");
+      const code = await Promise.race([w.p.exited, sleep(8000).then(() => "timeout" as const)]);
+      expect(code).not.toBe("timeout");
+      expect(code).toBe(2);
+      expect(existsSync(join(w.home, "state", "lead-restart.busy"))).toBe(false);
     } finally {
       try {
         w.p.kill();

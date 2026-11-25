@@ -102,7 +102,7 @@ describe("ensure-up decisions", () => {
 
   test("a restart in progress keeps ensure-up from raising a second lead", async () => {
     const home = homeWithLead("w9:p1");
-    markLeadRestartBusy(home, "w9:p1");
+    const busy = markLeadRestartBusy(home, "w9:p1");
     let calls = 0;
     const states: EnsureUpState[] = [];
     const state = await ensureUpCheck({
@@ -118,7 +118,7 @@ describe("ensure-up decisions", () => {
     expect(state).toBe("alive");
     expect(calls).toBe(0);
     expect(states).toEqual(["alive"]);
-    clearLeadRestartBusy(home);
+    clearLeadRestartBusy(home, busy);
     const after = await ensureUpCheck({
       home,
       exec: LEAD_SHELL,

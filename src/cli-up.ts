@@ -5,6 +5,7 @@ import { promptsDir, type Deps } from "./harness.ts";
 import { reviewLabel } from "./lane-gate.ts";
 import { paneWorktreeMismatch } from "./lane-worktree.ts";
 import { leadRestartBusy } from "./lead-restart-busy.ts";
+import { leadStarting, markLeadStarting } from "./lead-starting.ts";
 import { loopArgs, readLoopCaps } from "./loop-caps.ts";
 import { refText } from "./refs.ts";
 import { reviewRunLines } from "./review-drain.ts";
@@ -83,6 +84,13 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
       return;
     }
   }
+  const start = leadStarting(d.store.root);
+  if (start.starting) {
+    await supervise(d, !supervisorAlive(d.store.root));
+    console.log(`UP lead starting (attempts=${start.attempts}); not opening another lead`);
+    return;
+  }
+  markLeadStarting(d.store.root);
   const caps = readLoopCaps(d.store.root);
   const rt = d.runtimes.default;
   const env = { DORI_HOME: d.store.root };

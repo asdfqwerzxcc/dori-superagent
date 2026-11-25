@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { launchOutOfTree, swapWorkerEnv } from "../src/lead-swap-detach.ts";
+import { markLeadRestartBusy } from "../src/lead-restart-busy.ts";
 import type { Exec } from "../src/runtime/exec.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -148,6 +149,8 @@ describe("the lead-swap worker launcher", () => {
     const go = join(dir, "go.txt");
     const session = join(home, "session.jsonl");
     writeFileSync(session, '{"type":"session"}\n');
+    const parentToken = markLeadRestartBusy(home, "w1:p1", 60_000);
+    expect(parentToken).toBeDefined();
     const p = Bun.spawn(
       [
         process.execPath,
@@ -164,6 +167,8 @@ describe("the lead-swap worker launcher", () => {
         go,
         "--go-timeout-ms",
         "250",
+        "--busy-token",
+        parentToken!,
       ],
       {
         env: {

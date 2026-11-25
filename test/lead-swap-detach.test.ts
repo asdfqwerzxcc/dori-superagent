@@ -190,4 +190,32 @@ describe("the out-of-tree lead swap", () => {
       if (await alive(lead.pid)) await kill(lead.pid);
     }
   });
+
+  test("the worker argv carries the parent busy token", () => {
+    const argv = swapWorkerArgv(
+      "bun",
+      "cli.ts",
+      {
+        pane: { runtime: "herdr", id: "w1:p1" },
+        session: "s",
+        prompt: "p",
+        command: "c",
+        target: [1],
+        matched: [1],
+        drainMs: 0,
+        force: false,
+      },
+      "m",
+      "g",
+      7,
+      "tok",
+    );
+    expect(argv).toContain("--busy-token");
+    expect(argv).toContain("tok");
+  });
+
+  test("the extra worker environment is filtered like the base", () => {
+    const env = swapWorkerEnv({}, { DORI_AGENT_CMD: "safe\nbad", DORI_HOME: "C:\\dori" });
+    expect(env).toEqual({ DORI_HOME: "C:\\dori" });
+  });
 });

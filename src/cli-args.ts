@@ -93,7 +93,8 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
                                               once the pane is a shell; --dry-run prints PID, session and engine only
                                               from inside the lead on Windows, exit 0 means handed to an out-of-tree worker
                                               internal worker flags: --swap-worker, --pane REF, --prompt FILE, --drain-ms N,
-                                              --marker FILE, --go FILE, --go-timeout-ms N (not for operators)
+                                              --marker FILE, --go FILE, --go-timeout-ms N, --parent-pid N, --busy-token TOKEN
+                                              (not for operators)
   dori plugin list | enable <name> | disable <name>
                                               the registry and state/plugins.json; the supervisor re-reads it every 5 s
   dori remote add <name> --ssh <user@host> [--repo PATH] [--os linux|windows]

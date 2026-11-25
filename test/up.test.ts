@@ -99,7 +99,7 @@ describe("dori up", () => {
     w.addPane("w1:p1", "shell");
     const d = w.deps();
     d.store.setRole("lead", href("w1:p1"));
-    markLeadRestartBusy(d.store.root, "w1:p1");
+    const busy = markLeadRestartBusy(d.store.root, "w1:p1");
     const { out } = await captureIo(async () => {
       await up(d, "/w");
       return 0;
@@ -107,7 +107,7 @@ describe("dori up", () => {
     expect(d.store.roles().lead).toEqual(href("w1:p1"));
     expect(out).toBe("UP lead restart in progress; not opening a second lead");
     expect(w.calls.filter((c) => c.cmd === "herdr" && (c.argv[1] === "create" || c.argv[1] === "split"))).toEqual([]);
-    clearLeadRestartBusy(d.store.root);
+    clearLeadRestartBusy(d.store.root, busy);
     const { out: after } = await captureIo(async () => {
       await up(d, "/w");
       return 0;
