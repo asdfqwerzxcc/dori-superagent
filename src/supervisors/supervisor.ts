@@ -8,8 +8,9 @@ import { pluginRunEntry } from "../plugins/plugin.ts";
 import { isPluginEnabled, removePluginRecord, writePluginRecord } from "../plugins/state.ts";
 import { claimSupervisor, killTree } from "../supervisor-run.ts";
 import { pidAlive, stateDir, writeSupervisorRecord, type UnitRecord } from "../supervisors.ts";
+import { CORE_UNITS, type CoreName } from "./core-units.ts";
 import { unitPaneLayer } from "./unit-mode.ts";
-import type { PaneUnit } from "./panes.ts";
+import type { PaneUnit, PlacedUnit } from "./panes.ts";
 import { runPluginUnit } from "./plugins.ts";
 import { paneCommand, runUnitInPane } from "./units.ts";
 import { DEFAULT_MAX_LANES, DEFAULT_MAX_STARTS, loopArgs, readLoopCaps, type LoopCaps } from "../loop-caps.ts";
@@ -17,9 +18,7 @@ import { DEFAULT_MAX_LANES, DEFAULT_MAX_STARTS, loopArgs, readLoopCaps, type Loo
 const RESTART_MS = 5_000;
 const BEAT_MS = 30_000;
 
-type CoreName = "discord-gateway" | "duty" | "loop";
-const CORE: readonly CoreName[] = ["discord-gateway", "duty", "loop"];
-const ORDER: readonly string[] = [...CORE, ...PLUGINS.map((p) => p.name)];
+const ORDER: readonly string[] = [...CORE_UNITS, ...PLUGINS.map((p) => p.name)];
 
 type Unit = {
   readonly name: CoreName;
@@ -31,12 +30,8 @@ type Unit = {
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
- * One supervisor for every long-lived child: the Discord gateway, duty and the hourly loop stay core, and ensure-up,
- * update-check and gateway-catchup run as plugin children from the registry. Each child stays a separate process, so an
- * exception in one cannot take the delivery path down with it. On a runtime that answers, each unit runs as a plain
- * command in its own titled pane in the `dori-ops` workspace; a missing or broken runtime falls back to the same
- * headless children with one warning line. Output: `SUPERVISED <event>` lines; one record (state/supervisor.json) and
- * one beat (state/supervisor-heartbeat) every 30 s, plus a gateway-heartbeat compatibility write for the boot guard.
+ * One supervisor for every long-lived child, each a separate process: a pane in `dori-ops` when a runtime answers, else
+ * the same headless child. Output: `SUPERVISED <event>` lines and a record plus beat every 30 s.
  */
 export async function runSupervisor(): Promise<never> {
   const home = process.env["DORI_HOME"] ?? join(homedir(), ".dori");
@@ -64,11 +59,7 @@ export async function runSupervisor(): Promise<never> {
 
   const units = new Map<string, UnitRecord>();
   const pluginStarted = new Map<string, number>();
-  const list = (): UnitRecord[] =>
-    ORDER.flatMap((name) => {
-      const unit = units.get(name);
-      return unit === undefined ? [] : [unit];
-    });
+  const list = (): UnitRecord[] => ORDER.map((name) => units.get(name)).filter((u): u is UnitRecord => u !== undefined);
   const startedAt = Date.now();
   const write = () =>
     writeSupervisorRecord(home, { name: "supervisor", pid: process.pid, startedAt, units: list(), at: Date.now() });
@@ -104,6 +95,7 @@ export async function runSupervisor(): Promise<never> {
     name,
     command: paneCommand(process.execPath, [entry, ...args], panes?.shell ?? "sh"),
     marker: [entry, ...args],
+    program: process.execPath,
   });
 
   const specs: readonly Unit[] = [
@@ -152,6 +144,19 @@ export async function runSupervisor(): Promise<never> {
     return child;
   };
 
+  const unplace =
+    (name: string) =>
+    (placed: PlacedUnit | undefined): void => {
+      const cur = units.get(name);
+      if (cur !== undefined) {
+        units.set(name, { name: cur.name, pid: cur.pid, at: cur.at });
+        write();
+        return;
+      }
+      if (placed === undefined) return;
+      units.set(name, { name, pid: placed.pid, at: Date.now() });
+      write();
+    };
   const pluginStart =
     (name: string) =>
     (pid: number, pane?: string): void => {
@@ -194,6 +199,7 @@ export async function runSupervisor(): Promise<never> {
       enabled,
       onStart: (placed) => pluginStart(plugin.name)(placed.pid, placed.pane.id),
       onExit: pluginStop(plugin.name),
+      onUnplace: unplace(plugin.name),
       alive: pidAlive,
       log,
       sleep,
@@ -226,6 +232,7 @@ export async function runSupervisor(): Promise<never> {
         units.delete(spec.name);
         write();
       },
+      onUnplace: unplace(spec.name),
       alive: pidAlive,
       log,
       sleep,

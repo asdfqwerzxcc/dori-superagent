@@ -4,7 +4,10 @@ import { pidAlive } from "./process-liveness.ts";
 import { ensureSupervisors, killSupervisorTree, waitEnsureUp, waitFresh } from "./supervisor-run.ts";
 import {
   ageMs,
+  CORE_UNITS,
   ensureUpOff,
+  formatEnsureUp,
+  formatSupervised,
   heartbeatPath,
   restartMissing,
   stateDir,
@@ -13,18 +16,38 @@ import {
   type EnsureUpHealth,
   type SupervisorHealth,
 } from "./supervisors.ts";
+import { formatUnitPlacement, printable } from "./unit-placement.ts";
 
 export type RestartResult = {
   readonly ok: boolean;
   readonly elapsedMs: number;
   readonly killed: readonly number[];
   readonly health: readonly SupervisorHealth[];
+  /** The units this home runs (core plus enabled plugins), so the caller can name every headless one. */
+  readonly expected: readonly string[];
   readonly ensureUp: EnsureUpHealth;
   readonly wsHeartbeatAgeMs?: number;
   readonly off: boolean;
   readonly retried: boolean;
   readonly missing: readonly string[];
 };
+
+/**
+ * What `dori restart` prints, in order: each supervisor's line, the unit placement line, ensure-up, every missing piece,
+ * then the verdict. Exported so the printed line itself is tested, not only the pieces it is built from.
+ */
+export function restartLines(r: RestartResult, units: "panes" | "headless"): string[] {
+  const ws = r.wsHeartbeatAgeMs === undefined ? "missing" : `${Math.round(r.wsHeartbeatAgeMs / 1000)}s`;
+  const retried = r.retried ? " retried=1" : "";
+  const verdict = `${r.ok ? "RESTARTED" : "RESTART INCOMPLETE"} killed=${r.killed.length} ms=${r.elapsedMs} ws=${ws}${retried} units=${units}`;
+  return [
+    ...formatSupervised(r.health),
+    formatUnitPlacement(r.health, r.expected),
+    formatEnsureUp(r.ensureUp, r.off),
+    ...r.missing.map((part) => `RESTART MISSING ${printable(part)}`),
+    verdict,
+  ];
+}
 
 /** What a restart needs from outside; tests replace it to drive a partial failure and its retry without real processes. */
 type RestartIo = {
@@ -61,7 +84,7 @@ export async function restartSupervisors(
   const started = io.now();
   const killed = await io.kill(); // A replacement must not start while an old tree lives, or it exits as a duplicate.
   for (let i = 0; i < 40 && killed.some(pidAlive); i++) await io.sleep(250);
-  const expected = ["discord-gateway", "duty", "loop", ...enabledPluginNames(home)];
+  const expected = [...CORE_UNITS, ...enabledPluginNames(home)];
   const wanted = !ensureUpOff(home) && isPluginEnabled(home, "ensure-up");
   const beats = [heartbeatPath(home, "supervisor"), join(stateDir(home), WS_HEARTBEAT)];
   const settle = async () => {
@@ -96,6 +119,7 @@ export async function restartSupervisors(
     elapsedMs: now - started,
     killed,
     health: attempt.health,
+    expected,
     ensureUp: attempt.ensureUp,
     ...(wsAge !== undefined ? { wsHeartbeatAgeMs: wsAge } : {}),
     off: !wanted,

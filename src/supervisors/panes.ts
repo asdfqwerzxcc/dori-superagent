@@ -1,10 +1,15 @@
 import type { RuntimeKind, SessionRef } from "../runtime/types.ts";
 
-/** One unit as the pane layer needs it: the pane title, the shell command line, and the argv pieces that identify its process. */
+/**
+ * One unit as the pane layer needs it: the pane title, the shell command line, the argv pieces that identify its
+ * process, and the executable it runs as.
+ */
 export type PaneUnit = {
   readonly name: string;
   readonly command: string;
   readonly marker: readonly string[];
+  /** The unit's interpreter (the supervisor's own executable); kept for adapters that can use it. */
+  readonly program?: string;
 };
 
 /** Where a unit runs: its pane and the unit process the supervisor watches. */
@@ -14,11 +19,15 @@ export type PlacedUnit = { readonly pid: number; readonly pane: SessionRef };
 export type PaneProbe =
   | { readonly kind: "running"; readonly pid: number }
   | { readonly kind: "stopped" }
-  | { readonly kind: "unknown"; readonly why: string };
+  /** `pid` is the foreground process the runtime sees but cannot name: a hint only for a pane this supervisor typed into. */
+  | { readonly kind: "unknown"; readonly why: string; readonly pid?: number };
 
 /** Liveness could not be read: the unit must wait, never start a second copy. */
 export class PaneUnknown extends Error {}
-/** A pane refused to start the unit and would not close: opening another would duplicate it. */
+/**
+ * A pane was typed into and would not close. Its pending line may still run, so the unit must wait for the pane to go
+ * and never start a headless copy beside it.
+ */
 export class PaneCloseFailed extends Error {}
 
 /**
@@ -35,110 +44,40 @@ export interface PaneAdapter {
   open(name: string): Promise<SessionRef>;
   /** Starts the unit's command line in the pane. */
   start(ref: SessionRef, command: string): Promise<void>;
-  /** What runs in THIS pane; never another same-titled pane's process. */
-  pid(ref: SessionRef, marker: readonly string[]): Promise<PaneProbe>;
+  /** What runs in THIS pane; never another same-titled pane's process. `program` is the unit's interpreter. */
+  pid(ref: SessionRef, marker: readonly string[], program?: string): Promise<PaneProbe>;
   /** Closes the pane (its tab on herdr); a pane that is already gone is not an error. */
   close(ref: SessionRef): Promise<void>;
 }
+
+/** Pane ids with a typed line that has not become the unit yet; kept across a supervisor restart. */
+export type PendingPanes = {
+  /** `undefined` when the store is unreadable: placement then treats every stopped pane as possibly pending. */
+  readonly read: () => readonly string[] | undefined;
+  readonly write: (ids: readonly string[]) => void;
+};
 
 export type PaneUnitsOptions = {
   readonly adapter: PaneAdapter;
   readonly log: (line: string) => void;
   readonly sleep: (ms: number) => Promise<void>;
+  /** One placement's whole budget across reuse and every fresh pane; no line after the first is typed past it. */
   readonly pidTimeoutMs?: number;
   readonly pidPollMs?: number;
+  /** How long one typed command line is given to become the pane's process. */
+  readonly startWindowMs?: number;
+  /** Start attempts per placement, the reused pane included; each later one goes into a fresh pane. */
+  readonly startAttempts?: number;
+  readonly retryBaseMs?: number;
+  readonly retryCapMs?: number;
+  /** Test seam: the clock the placement budget and the backoff windows read. */
+  readonly now?: () => number;
   /** Close attempts before giving up; a unit is never duplicated after a failed close. */
   readonly closeAttempts?: number;
+  /** Where typed panes are remembered; a restart loads them so a pending line is never typed over. */
+  readonly pending?: PendingPanes;
+  /** How long an hc pane whose foreground cannot be named is doubted before it is closed and replaced (default 10 s). */
+  readonly unknownWaitMs?: number;
 };
 
 export const oneLine = (e: unknown): string => (e instanceof Error ? e.message : String(e)).split("\n")[0] ?? "";
-
-/**
- * The placement rules shared by every runtime: a unit whose pane still has its process is adopted, never duplicated; a
- * pane whose unit died is reused; a pane that will not start the unit is closed (retried) and only then replaced. An
- * unreadable liveness or a failed close ends placement instead of starting a second copy.
- */
-export class PaneUnits {
-  constructor(private readonly o: PaneUnitsOptions) {}
-
-  get kind(): RuntimeKind {
-    return this.o.adapter.kind;
-  }
-
-  async place(unit: PaneUnit): Promise<PlacedUnit> {
-    await this.o.adapter.ready();
-    const found = await this.o.adapter.panes(unit.name);
-    let stopped: SessionRef | undefined;
-    let unknown: string | undefined;
-    for (const ref of found) {
-      const probe = await this.o.adapter.pid(ref, unit.marker);
-      if (probe.kind === "running") return { pid: probe.pid, pane: ref };
-      if (probe.kind === "unknown") unknown ??= probe.why;
-      else stopped ??= ref;
-    }
-    if (unknown !== undefined) throw new PaneUnknown(`cannot tell whether ${unit.name} runs: ${unknown}`);
-    if (stopped !== undefined) {
-      const pid = await this.reuse(stopped, unit);
-      if (pid !== undefined) return { pid, pane: stopped };
-    }
-    const fresh = await this.o.adapter.open(unit.name);
-    try {
-      await this.o.adapter.start(fresh, unit.command);
-      const probe = await this.waitPid(fresh, unit.marker);
-      if (probe.kind === "running") return { pid: probe.pid, pane: fresh };
-      if (probe.kind === "unknown") throw new PaneUnknown(`cannot tell whether ${unit.name} started: ${probe.why}`);
-      throw new Error(`no ${unit.name} process appeared in ${fresh.id}`);
-    } catch (e) {
-      // A pane whose liveness is unreadable may still hold the unit: closing it could kill it, and leaving it be is the
-      // only way to be sure no second copy runs.
-      if (!(e instanceof PaneUnknown)) await this.closeRetry(unit.name, fresh);
-      throw e;
-    }
-  }
-
-  /** Closes a unit's pane; the caller turns a throw into a warning. */
-  close(ref: SessionRef): Promise<void> {
-    return this.o.adapter.close(ref);
-  }
-
-  private async reuse(ref: SessionRef, unit: PaneUnit): Promise<number | undefined> {
-    try {
-      await this.o.adapter.start(ref, unit.command);
-    } catch (e) {
-      this.o.log(`SUPERVISED ${unit.name}_pane_start_failed reason=${oneLine(e)}`);
-      if (!(await this.closeRetry(unit.name, ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
-      return undefined;
-    }
-    const probe = await this.waitPid(ref, unit.marker);
-    if (probe.kind === "running") return probe.pid;
-    if (probe.kind === "unknown") throw new PaneUnknown(`cannot tell whether ${unit.name} started: ${probe.why}`);
-    this.o.log(`SUPERVISED ${unit.name}_pane_start_failed reason=no ${unit.name} process appeared in ${ref.id}`);
-    if (!(await this.closeRetry(unit.name, ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
-    return undefined;
-  }
-
-  private async closeRetry(name: string, ref: SessionRef): Promise<boolean> {
-    const attempts = Math.max(1, this.o.closeAttempts ?? 2);
-    let last: unknown;
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      try {
-        await this.o.adapter.close(ref);
-        return true;
-      } catch (e) {
-        last = e;
-      }
-    }
-    this.o.log(`SUPERVISED ${name}_pane_close_failed reason=${oneLine(last)}`);
-    return false;
-  }
-
-  private async waitPid(ref: SessionRef, marker: readonly string[]): Promise<PaneProbe> {
-    const deadline = Date.now() + (this.o.pidTimeoutMs ?? 10_000);
-    for (;;) {
-      const probe = await this.o.adapter.pid(ref, marker);
-      if (probe.kind === "running") return probe;
-      if (Date.now() >= deadline) return probe;
-      await this.o.sleep(this.o.pidPollMs ?? 300);
-    }
-  }
-}

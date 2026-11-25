@@ -32,6 +32,7 @@ export type SupervisorHealth = {
   readonly pid?: number;
   readonly alive: boolean;
   readonly heartbeatAgeMs?: number;
+  readonly startedAt?: number;
   readonly units: readonly UnitHealth[];
 };
 export type EnsureUpHealth = { readonly pid?: number; readonly alive: boolean; readonly heartbeatAgeMs?: number };
@@ -141,6 +142,7 @@ export function supervisorHealth(
       ...(record !== undefined ? { pid: record.pid } : {}),
       alive: live,
       ...(beat !== undefined ? { heartbeatAgeMs: beat } : {}),
+      ...(record !== undefined ? { startedAt: record.startedAt } : {}),
       units: (record?.units ?? []).map((u) => ({
         name: u.name,
         pid: u.pid,
@@ -172,13 +174,21 @@ export function ensureUpHealth(
   };
 }
 
+/** The units every supervisor runs before its plugins; a restart waits for these by name. */
+export { CORE_UNITS } from "./supervisors/core-units.ts";
+
 const secs = (ms: number | undefined): string =>
   ms === undefined || !Number.isFinite(ms) ? "missing" : `${Math.max(0, Math.round(ms / 1000))}s`;
+
+import { printable } from "./unit-placement.ts";
 
 /** `SUPERVISED supervisor up pid=N hb=Ks units=a:1@pane,b:2(dead)` for `dori status` and `dori restart`. */
 export function formatSupervisor(h: SupervisorHealth): string {
   const units = h.units
-    .map((u) => `${u.name}:${u.pid ?? "?"}${u.pane === undefined ? "" : `@${u.pane}`}${u.alive ? "" : "(dead)"}`)
+    .map(
+      (u) =>
+        `${printable(u.name)}:${u.pid ?? "?"}${u.pane === undefined ? "" : `@${printable(u.pane)}`}${u.alive ? "" : "(dead)"}`,
+    )
     .join(",");
   return `SUPERVISED ${h.name.padEnd(10)} ${h.alive ? "up" : "DOWN"} pid=${h.pid ?? "?"} hb=${secs(h.heartbeatAgeMs)}${units ? ` units=${units}` : ""}`;
 }

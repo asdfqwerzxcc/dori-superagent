@@ -1,6 +1,7 @@
 import type { SessionRef } from "../runtime/types.ts";
 import type { PlacedUnit } from "./panes.ts";
-import { oneLine, PaneUnknown } from "./panes.ts";
+import { oneLine, PaneCloseFailed, PaneUnknown } from "./panes.ts";
+import { printable } from "../unit-placement.ts";
 
 /** The shell a pane's run/send types into: PowerShell on Windows herdr panes, sh everywhere hc runs. */
 export type PaneShell = "powershell" | "sh";
@@ -24,6 +25,8 @@ export type RunUnitOptions = {
   readonly headless: () => Promise<never>;
   readonly onStart: (placed: PlacedUnit) => void;
   readonly onExit: () => void;
+  /** The unit is no longer in a pane but is not gone: clear just its recorded pane before the headless child starts. */
+  readonly onUnplace?: (placed: PlacedUnit | undefined) => void;
   readonly alive: (pid: number) => boolean;
   readonly enabled?: () => boolean;
   readonly log: (line: string) => void;
@@ -37,9 +40,16 @@ export type RunUnitOptions = {
  * placement failure falls back to the headless loop with one warning; a disabled plugin's pane is closed and waits.
  */
 export async function runUnitInPane(o: RunUnitOptions): Promise<never> {
+  const say = (line: string): void => {
+    try {
+      o.log(line);
+    } catch {}
+  };
   const poll = o.pollMs ?? 1_000;
   const restart = o.restartMs ?? 5_000;
   let unknownLogged = false;
+  let closeHeldLogged = false;
+  let last: PlacedUnit | undefined;
   for (;;) {
     if (o.enabled !== undefined && !o.enabled()) {
       await o.sleep(poll);
@@ -48,20 +58,35 @@ export async function runUnitInPane(o: RunUnitOptions): Promise<never> {
     let placed: PlacedUnit;
     try {
       placed = await o.place();
+      last = placed;
     } catch (e) {
       // An unreadable process list is not a dead unit: retry placement instead of starting a headless second copy.
       if (e instanceof PaneUnknown) {
         if (!unknownLogged) {
-          o.log(`SUPERVISED ${o.name}_pane_unknown reason=${oneLine(e)}`);
+          say(`SUPERVISED ${printable(o.name)}_pane_unknown reason=${printable(oneLine(e))}`);
           unknownLogged = true;
         }
         await o.sleep(poll);
         continue;
       }
-      o.log(`SUPERVISED ${o.name}_pane_fallback reason=${oneLine(e)}`);
+      // A pane that was typed into and would not close may still run that line: wait for it instead of putting the unit
+      // headless beside it. Placement will adopt the line if it starts, else close the pane and replace it.
+      if (e instanceof PaneCloseFailed) {
+        if (!closeHeldLogged) {
+          say(`SUPERVISED ${printable(o.name)}_pane_close_held reason=${printable(oneLine(e))}`);
+          closeHeldLogged = true;
+        }
+        await o.sleep(poll);
+        continue;
+      }
+      say(`SUPERVISED ${printable(o.name)}_pane_fallback reason=${printable(oneLine(e))}`);
+      // No unit runs in a pane any more: clear only the pane, so a headless child failing to start leaves the unit
+      // recorded (dead) instead of unrecorded.
+      o.onUnplace?.(last);
       return o.headless();
     }
     unknownLogged = false;
+    closeHeldLogged = false;
     o.onStart(placed);
     let stopped = false;
     while (o.alive(placed.pid)) {
@@ -73,15 +98,15 @@ export async function runUnitInPane(o: RunUnitOptions): Promise<never> {
     }
     o.onExit();
     if (stopped) {
-      o.log(`SUPERVISED ${o.name}_stop pane=${placed.pane.id}`);
+      say(`SUPERVISED ${printable(o.name)}_stop pane=${printable(placed.pane.id)}`);
       try {
         await o.close(placed.pane);
       } catch (e) {
-        o.log(`SUPERVISED ${o.name}_pane_close_failed reason=${oneLine(e)}`);
+        say(`SUPERVISED ${printable(o.name)}_pane_close_failed reason=${printable(oneLine(e))}`);
       }
       continue;
     }
-    o.log(`SUPERVISED ${o.name}_exit code=? pane=${placed.pane.id}`);
+    say(`SUPERVISED ${printable(o.name)}_exit code=? pane=${printable(placed.pane.id)}`);
     await o.sleep(restart);
   }
 }

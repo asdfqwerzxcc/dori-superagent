@@ -13,13 +13,17 @@ import { groupId } from "./runtime/group.ts";
 import { openSession, type SessionRef } from "./runtime/types.ts";
 import { RuntimeChoiceError } from "./runtime/select.ts";
 import { superviseHome, type SupervisedState } from "./supervisor-run.ts";
-import { pluginLines } from "./plugins/state.ts";
-import { formatEnsureUp, formatSupervised, supervisorHealth } from "./supervisors.ts";
+import { pluginLines, enabledPluginNames } from "./plugins/state.ts";
+import { CORE_UNITS, formatEnsureUp, formatSupervised, supervisorHealth } from "./supervisors.ts";
+import { formatUnitPlacement } from "./unit-placement.ts";
 import { unitMode } from "./supervisors/unit-mode.ts";
 import { scanWorktrees } from "./worktrees.ts";
 
 const supervisorAlive = (root: string): boolean =>
   supervisorHealth(root).some((h) => h.name === "supervisor" && h.alive);
+
+/** A supervisor younger than this may still be registering its units, so its UNITS line is a startup snapshot. */
+const STARTUP_WINDOW_MS = 30_000;
 
 /**
  * The lead is the pane that answers the human, so it must never hold its turn on a foreground child: the engine
@@ -57,6 +61,19 @@ function renderPrompt(d: Deps, name: string): string {
   return out;
 }
 
+/**
+ * The `UNITS panes=…` line for a live supervisor in pane mode. A young record (started within 30 s) is labelled
+ * `snapshot=startup`, so a starting unit is never shown as lost; a dead record or a headless home prints nothing.
+ */
+const showUnitPlacement = (d: Deps, state: SupervisedState, mode: "panes" | "headless"): void => {
+  if (mode !== "panes") return;
+  const supervisor = state.health.find((h) => h.name === "supervisor");
+  if (supervisor?.alive !== true || supervisor.pid === undefined) return;
+  const expected = [...CORE_UNITS, ...enabledPluginNames(d.store.root)];
+  const young = supervisor.startedAt !== undefined && Date.now() - supervisor.startedAt < STARTUP_WINDOW_MS;
+  console.log(formatUnitPlacement(state.health, expected, young));
+};
+
 const ensureLine = (state: SupervisedState): string =>
   state.off ? "off" : state.ensureUp.alive ? `pid=${state.ensureUp.pid ?? "?"}` : "DOWN";
 
@@ -80,8 +97,9 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
     if (liveness !== "gone") {
       if (liveness === "alive") clearLeadStarting(d.store.root);
       // A dead supervisor is the one thing this path must start; an alive one is left exactly as it is.
-      await supervise(d, !supervisorAlive(d.store.root));
+      const state = await supervise(d, !supervisorAlive(d.store.root));
       console.log(`UP lead ${liveness}; ensuring units only (lead=${refText(previous)}) units=${units}`);
+      showUnitPlacement(d, state, units);
       return;
     }
   }
@@ -135,6 +153,7 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
       `UP runtime=${rt.kind} lead=${refText(lead)} duty=${refText(duty)} loops=supervised ensure-up=${ensureLine(state)} units=${units}`,
     );
     for (const line of formatSupervised(state.health)) console.log(line);
+    showUnitPlacement(d, state, units);
     console.log(formatEnsureUp(state.ensureUp, state.off));
     await retire();
     return;

@@ -1,8 +1,12 @@
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Exec } from "../runtime/exec.ts";
 import { ConfigError, RuntimeChoiceError, readRuntimeChoice } from "../runtime/select.ts";
 import type { RuntimeKind } from "../runtime/types.ts";
-import { oneLine, PaneUnits } from "./panes.ts";
+import { stateDir } from "../supervisors.ts";
+import { PaneUnits } from "./pane-units.ts";
+import { printable } from "../unit-placement.ts";
+import { oneLine, type PendingPanes } from "./panes.ts";
 import { HcPanes } from "./panes-hc.ts";
 import { HerdrPanes } from "./panes-herdr.ts";
 import type { PaneShell } from "./units.ts";
@@ -29,6 +33,73 @@ export type OpenUnitPanesOptions = {
   readonly exists?: (path: string) => boolean;
   readonly shell?: PaneShell;
 };
+
+/**
+ * Typed pane ids on disk: a supervisor restarted in the middle of a 10 s start window must still know which pane holds a
+ * pending line. A missing file is an empty set; an unreadable or malformed file reads as undefined, so placement treats
+ * every stopped pane as possibly pending instead of typing over it. Writes use a temp file and a rename, so a crash never
+ * leaves a truncated set; a failure is logged and placement keeps going.
+ */
+export function panePendingStore(home: string, warn?: (line: string) => void): PendingPanes {
+  const dir = stateDir(home);
+  const path = join(dir, "panes-pending.json");
+  const marker = `${path}.degraded`;
+  const failed = (what: string, e: unknown): void => {
+    try {
+      warn?.(`SUPERVISED panes_pending_${what} reason=${printable(oneLine(e))}`);
+    } catch {}
+  };
+  return {
+    read: () => {
+      if (existsSync(marker)) return undefined;
+      let text: string;
+      try {
+        text = readFileSync(path, "utf8");
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === "ENOENT")
+          // No file in an existing state directory is a trustworthy empty set; no state directory is unknown.
+          return existsSync(dir) ? [] : undefined;
+        failed("unreadable", e);
+        return undefined;
+      }
+      try {
+        const raw: unknown = JSON.parse(text);
+        if (!Array.isArray(raw) || raw.some((id) => typeof id !== "string")) throw new Error("not a list of ids");
+        return raw;
+      } catch (e) {
+        failed("unreadable", e);
+        return undefined;
+      }
+    },
+    write: (ids) => {
+      const tmp = `${path}.tmp`;
+      try {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(tmp, `${JSON.stringify(ids)}\n`);
+        renameSync(tmp, path);
+        try {
+          rmSync(marker, { force: true });
+        } catch {}
+      } catch (e) {
+        failed("write_failed", e);
+        // A stale set would let a restart retype into a pane whose pending line is not represented: make the file read
+        // as unreadable instead, so every stopped pane is treated as pending. If that also fails, the old set stays.
+        try {
+          writeFileSync(path, "{}\n");
+        } catch (again) {
+          failed("write_failed_unreadable", again);
+          // Both writes failed: a stale valid file would be trusted after a restart, so leave a marker that reads as
+          // unreadable too. If even this write fails, the stale set is the documented residual risk.
+          try {
+            writeFileSync(marker, `${new Date().toISOString()}\n`);
+          } catch (markerError) {
+            failed("degraded_marker_failed", markerError);
+          }
+        }
+      }
+    },
+  };
+}
 
 /**
  * The pane layer when the chosen runtime answers, else undefined after one warning line: a missing runtime (or a broken
@@ -72,7 +143,7 @@ export async function openUnitPanes(o: OpenUnitPanesOptions): Promise<UnitPanes 
   }
   o.log(`SUPERVISED panes ready runtime=${kind}`);
   return {
-    units: new PaneUnits({ adapter, log: o.log, sleep: o.sleep }),
+    units: new PaneUnits({ adapter, log: o.log, sleep: o.sleep, pending: panePendingStore(o.home, o.log) }),
     shell: o.shell ?? (kind === "hc" || process.platform !== "win32" ? "sh" : "powershell"),
   };
 }

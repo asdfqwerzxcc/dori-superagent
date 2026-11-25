@@ -29,15 +29,51 @@ command in its own pane instead of a headless pipe, so `herdr pane list` shows t
 - **Log**: `herdr pane read <pane> --lines 200` (or `hc read <terminal>`) is the unit's log in this mode; headless
   children keep writing `state/gateway.log` / `state/loops.log`.
 - **No duplicates**: before opening a pane, the supervisor looks for every pane with the unit's title in the ops
-  workspace and adopts the one whose own shell subtree holds the unit process (herdr: the process's parent chain reaches
-  the pane's `shell_pid`; hc: the terminal's foreground). Two same-titled panes cannot be confused. A dead unit restarts
-  in that same pane; a pane that refuses the command is closed (retried) and only a confirmed close is replaced. A close
-  that keeps failing, or a process list that cannot be read, never starts a second copy: the close failure falls back to
-  the headless child, and unknown liveness waits and retries placement.
+  workspace and adopts the one whose own shell subtree holds the unit process, matched by pid and command: herdr reports
+  a foreground command line whose interpreter is the unit's own program and whose argv is exactly the unit's script and
+  args, and the pane's `shell_pid` plus the parent links confirm its `bun` child; hc reports the terminal's foreground
+  command line against the same interpreter. Any foreground entry that cannot be identified as the pane's own shell is
+  doubt, even when a bun child exists and even when herdr reports no pid for it; when herdr reports no readable command
+  line for the entry in front, the shell's sole bun child is accepted (a path form herdr reports differently must not
+  leave the unit unplaced forever). hc has no process tree, so a foreground it cannot name is doubt: if this supervisor
+  typed into that pane, its pid is the unit; otherwise the pane is closed after a bounded wait (10 s when it is the only
+  candidate, `_pane_doubt_closed`) and replaced, so a foreign bun cannot suppress the unit and an unnameable unit still
+  starts. When a named or hinted pane already is the unit, an unnamed hc leftover is closed at once (duplicate cleanup,
+  no wait) and a herdr leftover is only logged (`_pane_doubt_left`).
+  A dead unit restarts in that same pane; a pane that refuses the command is closed (retried) and only a confirmed close
+  is replaced. A process list that cannot be read waits and retries placement, and a typed pane that will not close
+  waits too (`_pane_close_held`), because its pending line could still run. A fallback clears only the recorded pane,
+  not the unit, so a headless child that fails to start still leaves a dead record instead of no record.
+- **Start retry**: a command line typed into a shell can be swallowed while the shell is still starting or still
+  finishing its previous job. The first typed line gets 10 s (the old wait's budget, kept for a slow bun start under
+  antivirus or load; a unit seen by the read just before the close is adopted), then its pane is **closed with that
+  pending input** and the next line goes into a fresh pane after a 1 s, then 2 s backoff (the 4 s cap applies only when
+  more attempts are configured; three attempts at most). A line is never typed twice into one shell, so a pending first
+  line can never run later as an untracked copy, and a pane that will not close is waited on instead of replaced by a
+  headless copy. The typed panes are persisted in `state/panes-pending.json`, so a `dori restart` in the middle of a
+  start window closes that pane instead of typing over the pending line. The file is replaced atomically (temp file
+  plus rename) and a failed write is logged; if it cannot be read, every stopped pane is treated as possibly holding a
+  pending line and is closed before reuse, so an unreadable file costs a reopen but never a duplicate line. While the
+  file is unreadable the supervisor does not write a new set at all (a filtered set would drop panes it never scanned);
+  it stays in close-before-reuse mode until a restart reads a readable file. A failed write replaces the file with
+  `{}` (valid JSON, read as unreadable), and if even that fails it leaves `panes-pending.json.degraded`, which also
+  reads as unreadable, so a restart still fails safe; only when the marker cannot be written either does the stale set
+  remain. A missing state directory is unknown rather than a trusted empty set. An adopted unnamed hc pane stays in the
+  set, so a restarted supervisor adopts the same live unit again instead of closing and recreating it after 10 s. The 30 s budget covers the reuse of an existing pane, every `open`, and every line after the first; a pane
+  opened past the deadline is closed without a line being typed. All units share one `dori-ops` workspace even when
+  they start at once.
 - **Fallback**: a missing runtime, no runtime on PATH, or a runtime that does not answer at startup logs one
-  `SUPERVISED panes_unavailable ... headless=1` line and keeps the headless children. A pane that fails later logs
-  `SUPERVISED <unit>_pane_fallback ...` and falls back; an unreadable process tree logs `_pane_unknown` once and keeps
-  retrying placement instead of starting a second copy.
+  `SUPERVISED panes_unavailable ... headless=1` line and keeps the headless children. A pane that fails later (after its
+  close was confirmed) logs `SUPERVISED <unit>_pane_fallback ...` and falls back; an unreadable process tree logs
+  `_pane_unknown` once and keeps retrying placement instead of starting a second copy. `dori restart` and `dori up` then
+  print `UNITS panes=<live placed>/<expected> headless=<units|none> dead=<units|none> missing=<units|none>`: `panes`
+  counts a unit recorded in a pane whose unit pid is alive (the runtime pane itself is not re-queried), `dead` counts any
+  recorded unit whose pid died (with or without a pane), and `headless` counts a recorded unit without a pane whose pid
+  is alive. In `up`, a supervisor that started less than 30 s ago is labelled `UNITS snapshot=startup` (its units may
+  still be registering), and a dead supervisor record or a headless home prints no `UNITS` line; `restart` always prints
+  it, with `units=headless` naming every unit headless. Unit, pane and log names are stripped of terminal control
+  characters before they reach any line, including the `_pane_*` log lines and the restart's missing parts. The core
+  names come from one list shared by the supervisor and the restart/up expectations.
 - **Restart**: killing a unit process is noticed within a second and the unit is started again in its pane after the
   usual 5 s delay; `dori restart` kills and restarts the supervisor, and the panes are reused, not duplicated.
 
@@ -50,8 +86,9 @@ runtime still logs one `panes_unavailable ... headless=1` line and keeps the hea
 
 The pane command line is quoted for the pane's shell (PowerShell on Windows herdr, `sh` for hc). On herdr the unit is
 the direct `bun` child of the pane's shell in the OS process tree, so `process-info`'s shell pid plus the parent links
-identify it without a command-line query; hc reads its terminal's foreground process. The supervisor records
-`name:pid@pane`; `dori status` prints it.
+identify it; when herdr reports a foreground command line, the unit's script and args are matched there first, and no
+command-line scan is ever spawned. hc reads its terminal's foreground process and command line. The supervisor records
+`name:pid@pane`; `dori status` prints it, and `dori restart` / `dori up` add the `UNITS` line naming any headless unit.
 
 The supervisor never asks PowerShell for process status. A recorded pid is checked with `kernel32!OpenProcess` on
 Windows, or `kill(pid, 0)` on POSIX, and the process tree is a Toolhelp32 snapshot on Windows (one hidden `ps` on POSIX).
