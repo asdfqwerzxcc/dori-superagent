@@ -7,6 +7,12 @@ import { join } from "node:path";
 import { gh, headSha, parsePr } from "./gate.ts";
 import { prompt, type Deps } from "./harness.ts";
 import { loadHooks, loadReviewSettings, substitute } from "./hooks.ts";
+import type { ExecOptions } from "./runtime/exec.ts";
+
+/** Windows caps one CreateProcess command line near 32,767 chars; leave room for the executable and its flags. */
+const HOOK_ARGV_LIMIT = 30_000;
+
+const argvLength = (argv: readonly string[]): number => argv.reduce((total, part) => total + part.length + 1, 0);
 
 /** One chunk of a reviewer's output as it arrives; the background worker records it as progress. */
 export type ReviewOutput = { readonly stream: "stdout" | "stderr"; readonly chunk: string };
@@ -34,24 +40,47 @@ export async function review(
     diff,
   };
   const text = prompt("review.md", vars);
-  const execOpts =
+  const callbacks =
     opts.onOutput === undefined
       ? undefined
       : {
           onStdout: (chunk: string) => opts.onOutput?.({ stream: "stdout", chunk }),
           onStderr: (chunk: string) => opts.onOutput?.({ stream: "stderr", chunk }),
         };
-  const [cmd, ...argv] = hook
-    ? substitute(hook, { ...vars, text })
-    : [d.agentCmd, "-p", "--no-session", "-nt", ...(model ? ["--model", model] : []), text];
-  const res = await d.exec(cmd ?? d.agentCmd, argv, execOpts);
+  const execOptions = (stdin?: string): ExecOptions | undefined =>
+    callbacks === undefined && stdin === undefined
+      ? undefined
+      : { ...(callbacks ?? {}), ...(stdin === undefined ? {} : { stdin }) };
+  let cmd: string;
+  let argv: readonly string[];
+  let stdin: string | undefined;
+  if (hook !== undefined) {
+    const parts = substitute(hook, { ...vars, text });
+    const length = argvLength(parts);
+    if (length > HOOK_ARGV_LIMIT)
+      throw new Error(
+        `hooks.reviewCommand argv is ${length} chars (limit ${HOOK_ARGV_LIMIT}); shorten the hook template instead of ` +
+          `putting {text} or {diff} in argv`,
+      );
+    const [hookCmd, ...hookArgv] = parts;
+    cmd = hookCmd ?? d.agentCmd;
+    argv = hookArgv;
+  } else {
+    // `-` makes omo prepend stdin to the prompt, so a large diff never has to fit in the OS argv.
+    cmd = d.agentCmd;
+    argv = ["-p", "--no-session", "-nt", ...(model ? ["--model", model] : []), "-"];
+    stdin = text;
+  }
+  const res = await d.exec(cmd, argv, execOptions(stdin));
   const first = [...res.stdout.matchAll(/^VERDICT:\s*(CLEAR|BLOCK)\b/gm)].at(-1);
   // A reviewer that cannot answer is a provider problem, not a verdict: retry once on the configured fallback so a
   // disabled or saturated primary never turns into a silent "no receipt" failure.
   const fallback = hook === undefined ? loadReviewSettings(d.store.root).fallbackModel : undefined;
   const retry =
     first === undefined && fallback !== undefined && fallback !== model
-      ? await d.exec(d.agentCmd, ["-p", "--no-session", "--model", fallback, text], execOpts).catch(() => undefined)
+      ? await d
+          .exec(d.agentCmd, ["-p", "--no-session", "--model", fallback, "-"], execOptions(text))
+          .catch(() => undefined)
       : undefined;
   const answered = retry ?? res;
   const out = retry ? `${res.stdout}\n${retry.stdout}` : res.stdout;

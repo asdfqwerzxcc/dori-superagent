@@ -185,4 +185,43 @@ describe("review + merge gate", () => {
     if (posixModes) expect(statSync(diagnostic).mode & 0o777).toBe(0o600);
     expect(d.store.receipt("o/r#9", head)).toBeUndefined();
   });
+
+  test("a 40K+ diff reaches the reviewer on stdin, not argv, and its VERDICT is parsed", async () => {
+    const { w, d } = setup();
+    const diff = `diff --git a/x b/x\n+${"x".repeat(45_000)}\n`;
+    w.gh = (argv) => {
+      if (argv[1] === "view") return { code: 0, stdout: JSON.stringify({ headRefOid: head, title: "t", body: "b" }) };
+      if (argv[1] === "diff") return { code: 0, stdout: diff };
+      return { code: 1, stdout: "" };
+    };
+    let seen: { argv: readonly string[]; stdin?: string | undefined } | undefined;
+    w.reviewer = (argv, options) => {
+      seen = { argv, stdin: options?.stdin };
+      return { code: 0, stdout: "ok\nVERDICT: CLEAR" };
+    };
+    expect((await review(d, "o/r#99")).verdict).toBe("CLEAR");
+    expect(seen?.argv).toContain("-");
+    expect(seen?.argv.join(" ")).not.toContain("diff --git");
+    expect(seen?.stdin).toContain(diff.slice(0, 60));
+    expect(seen?.stdin?.length ?? 0).toBeGreaterThan(40_000);
+  });
+
+  test("a reviewCommand hook that would exceed the argv limit fails before spawning", async () => {
+    const { w, d } = setup();
+    const diff = `diff --git a/x b/x\n+${"x".repeat(45_000)}\n`;
+    writeFileSync(join(d.store.root, "config.json"), JSON.stringify({ hooks: { reviewCommand: ["hook", "{diff}"] } }));
+    w.gh = (argv) => {
+      if (argv[1] === "view") return { code: 0, stdout: JSON.stringify({ headRefOid: head, title: "t", body: "b" }) };
+      if (argv[1] === "diff") return { code: 0, stdout: diff };
+      return { code: 1, stdout: "" };
+    };
+    let called = false;
+    w.reviewer = () => {
+      called = true;
+      return { code: 0, stdout: "VERDICT: CLEAR" };
+    };
+    await expect(review(d, "o/r#98")).rejects.toThrow("hooks.reviewCommand argv is");
+    await expect(review(d, "o/r#98")).rejects.toThrow("shorten the hook template");
+    expect(called).toBe(false);
+  });
 });

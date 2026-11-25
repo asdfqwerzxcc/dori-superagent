@@ -8,13 +8,14 @@ export type SpawnedProcess = { readonly pid?: number; kill(): void };
  * `onSpawn` gets the running process, so a caller that gives up on it can kill it. `onStdout`/`onStderr` receive output
  * as it arrives; the final result still carries the whole text. `group` starts the child as its own process group, so
  * killing the tree cannot reach this process. On Windows the child is also hidden, because a detached console opens a
- * terminal window that outlives it.
+ * terminal window that outlives it. `stdin` is fed to the child over a pipe, so a prompt can exceed the OS argv limit.
  */
 export type ExecOptions = {
   readonly onSpawn?: (proc: SpawnedProcess) => void;
   readonly onStdout?: (chunk: string) => void;
   readonly onStderr?: (chunk: string) => void;
   readonly group?: boolean;
+  readonly stdin?: string;
 };
 export type Exec = (cmd: string, argv: readonly string[], options?: ExecOptions) => Promise<ExecResult>;
 
@@ -42,7 +43,7 @@ export const spawnExec: Exec = async (cmd, argv, options) => {
   const proc = Bun.spawn([cmd, ...argv], {
     stdout: "pipe",
     stderr: "pipe",
-    stdin: "ignore",
+    stdin: options?.stdin === undefined ? "ignore" : new Blob([options.stdin]),
     // A detached console child would otherwise get a Windows Terminal window of its own; hiding it keeps behavior.
     windowsHide: true,
     ...(options?.group === true ? { detached: true } : {}),
