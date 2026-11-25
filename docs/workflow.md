@@ -56,6 +56,20 @@ Lee: "이게 나의 정형적인 워크플로우가 될 거야. 어떠한 프로
 
 즉 "리뷰를 어디서 하느냐"만 다르고, **한 번들 = 한 사람 승인** 원칙은 번들 모드에서 유지된다.
 
+### 착지 모드별 정확한 명령
+
+모드의 정의는 위 3.5에서 정리했고, 실행 순서와 전제만 여기 모아 둔다.
+
+| 모드 | 범위 | 정확한 명령 |
+| --- | --- | --- |
+| **레인 게이트(기본)** | 레인 1개 = 영수증 1개 = PR 1개 | `dori review --lane <key>` → `dori review <owner/repo#N> --background` → `dori review <key> --attest --verdict CLEAR\|BLOCK --reviewer <name> --evidence <link>` → `dori merge <key>` |
+| **번들 게이트(선택)** | 여러 레인 = 한 PR, 구성원마다 CLEAR 영수증 | `dori bundle open <id> --title T` → `dori bundle add <id> <lane-key>...` → `dori bundle land <id>` → `dori merge <owner/repo#N> --bundle <id>` |
+
+- `--background`는 PR head가 `dori review --lane`이 녹화한 `lane/<key>@<tip>`의 diff와 같을 때만 그 lane diff로 리뷰한다. head가 다르면 일반 PR 리뷰로 떨어져 lane 영수증이 붙지 않는다.
+- `merge --bundle`은 번들 PR head에 CLEAR 영수증이 있거나, 기록된 구성원 전원이 각자의 sha에서 CLEAR일 때 통과한다.
+
+기본은 레인 게이트다. `dori merge <key>` 한 번이 push → PR 생성 → 체크 green(또는 `checks=none`) 확인 → merge commit → 원격 브랜치 삭제 시도(best-effort, 실패하면 머지는 유지한 채 WARN)를 묶어서 한다. 번들은 여러 레인을 한 PR로 묶어야 할 때만 명시적으로 쓴다(`dori bundle open`/`add`/`land`).
+
 ## 4. 지금 상태
 
 - 레인 게이트: **있음**(`dori review --lane`(요청) → `dori review <key> --attest`(영수증) → `dori merge <key>` — push → PR → 체크 green → merge commit → 브랜치 삭제)
