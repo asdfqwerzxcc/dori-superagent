@@ -83,8 +83,14 @@ export class Store extends StoreRecords {
     rmSync(join(this.root, "lanes", `${key}.json`), { force: true });
   }
 
+  /**
+   * The lane that can still take a message for this session. `lost` is terminal like `done`/`dropped`: the pane is
+   * gone and `dori start` refuses the key, so only a run of the duty loop would keep retrying its inbox.
+   */
   laneBySession(ref: SessionRef): Lane | undefined {
-    return this.lanes().find((l) => sameSession(l.sessionRef, ref) && l.status !== "done" && l.status !== "dropped");
+    return this.lanes().find(
+      (l) => sameSession(l.sessionRef, ref) && l.status !== "done" && l.status !== "dropped" && l.status !== "lost",
+    );
   }
 
   /** roles.json holds ref strings (refText), so an older binary still parses it; a bare value is a herdr pane. */
