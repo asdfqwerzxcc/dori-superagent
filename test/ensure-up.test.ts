@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Exec } from "../src/runtime/exec.ts";
+import { clearLeadRestartBusy, markLeadRestartBusy } from "../src/lead-restart-busy.ts";
 import {
   ensureUpCheck,
   ensureUpStopped,
@@ -97,6 +98,38 @@ describe("ensure-up decisions", () => {
     expect(state).toBe("down");
     expect(calls).toBe(1);
     expect(states).toEqual(["down"]);
+  });
+
+  test("a restart in progress keeps ensure-up from raising a second lead", async () => {
+    const home = homeWithLead("w9:p1");
+    markLeadRestartBusy(home, "w9:p1");
+    let calls = 0;
+    const states: EnsureUpState[] = [];
+    const state = await ensureUpCheck({
+      home,
+      exec: LEAD_SHELL,
+      up: async () => {
+        calls += 1;
+        return { code: 0, detail: "" };
+      },
+      log: () => {},
+      report: (s) => states.push(s),
+    });
+    expect(state).toBe("alive");
+    expect(calls).toBe(0);
+    expect(states).toEqual(["alive"]);
+    clearLeadRestartBusy(home);
+    const after = await ensureUpCheck({
+      home,
+      exec: LEAD_SHELL,
+      up: async () => {
+        calls += 1;
+        return { code: 0, detail: "" };
+      },
+      log: () => {},
+    });
+    expect(after).toBe("down");
+    expect(calls).toBe(1);
   });
 
   test("a live lead alone is alive and raises nothing", async () => {

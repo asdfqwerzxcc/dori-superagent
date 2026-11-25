@@ -4,6 +4,7 @@ import { shq } from "./delivery.ts";
 import { promptsDir, type Deps } from "./harness.ts";
 import { reviewLabel } from "./lane-gate.ts";
 import { paneWorktreeMismatch } from "./lane-worktree.ts";
+import { leadRestartBusy } from "./lead-restart-busy.ts";
 import { loopArgs, readLoopCaps } from "./loop-caps.ts";
 import { refText } from "./refs.ts";
 import { reviewRunLines } from "./review-drain.ts";
@@ -65,6 +66,12 @@ const ensureLine = (state: SupervisedState): string =>
  */
 export async function up(d: Deps, cwd: string, retireOld = false): Promise<void> {
   const previous = d.store.roles().lead;
+  if (leadRestartBusy(d.store.root)) {
+    // The kill -> shell -> relaunch window is legitimate: a second lead here would split the conversation.
+    await supervise(d, !supervisorAlive(d.store.root));
+    console.log("UP lead restart in progress; not opening a second lead");
+    return;
+  }
   const units = unitMode(d.store.root);
   // A live lead owns the human conversation: opening a second workspace and duty would split it and orphan this one.
   if (!retireOld && previous !== undefined) {

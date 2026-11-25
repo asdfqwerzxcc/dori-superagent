@@ -68,6 +68,8 @@ describe("the out-of-tree lead swap", () => {
       {
         DORI_HOME: "C:\\dori",
         DORI_HERDR_SESSION: "dori",
+        DORI_RUNTIME: "hc",
+        DORI_TELEMETRY: "0",
         DORI_TOKEN: "secret",
         HERDR_PANE_ID: "w1:p1",
         PATH: "C:\\bin",
@@ -79,6 +81,8 @@ describe("the out-of-tree lead swap", () => {
     expect(env).toEqual({
       DORI_HOME: "C:\\dori",
       DORI_HERDR_SESSION: "dori",
+      DORI_RUNTIME: "hc",
+      DORI_TELEMETRY: "0",
       PATH: "C:\\bin",
       DORI_AGENT_CMD: "omo",
     });
@@ -100,6 +104,7 @@ describe("the out-of-tree lead swap", () => {
       },
       "C:\\state\\ready",
       "C:\\state\\go",
+      4242,
     );
     expect(argv).toEqual([
       "bun",
@@ -119,6 +124,8 @@ describe("the out-of-tree lead swap", () => {
       "C:\\state\\ready",
       "--go",
       "C:\\state\\go",
+      "--parent-pid",
+      "4242",
     ]);
   });
 

@@ -39,6 +39,34 @@ export type LaunchedSwap = { readonly pid: number; readonly go: () => void };
 
 const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
+const safeRemove = (path: string): void => {
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // Best effort: a cleanup failure must not decide the launch result.
+  }
+};
+
+const removeLauncher = async (path: string): Promise<void> => {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      rmSync(path, { force: true });
+      return;
+    } catch {
+      await Bun.sleep(50);
+    }
+  }
+  safeRemove(path);
+};
+
+const killLauncher = async (exec: Exec, pid: number): Promise<void> => {
+  try {
+    await exec("taskkill", ["/PID", String(pid), "/T", "/F"], {});
+  } catch {
+    // Best effort: a worker that never gets go also aborts on its own gate.
+  }
+};
+
 const powershellPath = (): string =>
   join(process.env["SystemRoot"] ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 
@@ -65,6 +93,8 @@ const WORKER_ENV = new Set([
   "DORI_HOME",
   "DORI_HERDR_SESSION",
   "DORI_AGENT_CMD",
+  "DORI_RUNTIME",
+  "DORI_TELEMETRY",
 ]);
 
 /** The minimal worker environment: never a blanket DORI_/HERDR_ copy, so unrelated tokens cannot land in the .ps1. */
@@ -91,8 +121,8 @@ export function swapWorkerEnv(
 export async function launchOutOfTree(exec: Exec, launch: OutOfTreeLaunch): Promise<LaunchedSwap> {
   mkdirSync(dirname(launch.marker), { recursive: true });
   mkdirSync(launch.launcherDir, { recursive: true });
-  rmSync(launch.marker, { force: true });
-  rmSync(launch.go, { force: true });
+  safeRemove(launch.marker);
+  safeRemove(launch.go);
   const launcher = join(launch.launcherDir, `lead-swap-${process.pid}-${Date.now()}.ps1`);
   try {
     const body = [
@@ -122,15 +152,16 @@ export async function launchOutOfTree(exec: Exec, launch: OutOfTreeLaunch): Prom
     const deadline = Date.now() + (launch.readyMs ?? 5000);
     while (Date.now() < deadline) {
       if (existsSync(launch.marker)) {
-        rmSync(launch.marker, { force: true });
+        safeRemove(launch.marker);
         return { pid, go: () => writeFileSync(launch.go, String(pid)) };
       }
       await Bun.sleep(100);
     }
-    throw new Error(`the out-of-tree swap pid=${pid} did not report ready within 5000ms`);
+    await killLauncher(exec, pid);
+    throw new Error(`the out-of-tree swap pid=${pid} did not report ready within ${launch.readyMs ?? 5000}ms`);
   } finally {
     // The launcher carries the worker env in plaintext; it must not outlive any failed or completed start.
-    rmSync(launcher, { force: true });
+    await removeLauncher(launcher);
   }
 }
 
@@ -166,7 +197,14 @@ export function insideLeadTree(
 }
 
 /** The worker's argv: the same CLI, the resolved plan as explicit flags, the go gate, and no second delegation. */
-export function swapWorkerArgv(argv0: string, cli: string, plan: LeadSwapPlan, marker: string, go: string): string[] {
+export function swapWorkerArgv(
+  argv0: string,
+  cli: string,
+  plan: LeadSwapPlan,
+  marker: string,
+  go: string,
+  parentPid: number,
+): string[] {
   return [
     argv0,
     cli,
@@ -184,5 +222,7 @@ export function swapWorkerArgv(argv0: string, cli: string, plan: LeadSwapPlan, m
     marker,
     "--go",
     go,
+    "--parent-pid",
+    String(parentPid),
   ];
 }

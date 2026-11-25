@@ -23,13 +23,21 @@ describe("the lead-swap worker launcher", () => {
     const marker = join(dir, "ready.txt");
     const go = join(dir, "go.txt");
     let launcherText = "";
-    const exec: Exec = async () => {
+    const calls: string[][] = [];
+    const exec: Exec = async (cmd, argv) => {
+      calls.push([cmd, ...argv]);
       const name = ps1(dir)[0];
       if (name !== undefined) launcherText = readFileSync(join(dir, name), "utf8");
       return { code: 0, stdout: "PID=12345", stderr: "" };
     };
     const env = swapWorkerEnv(
-      { DORI_HOME: "C:\\dori", DORI_TOKEN: "secret", PATH: "C:\\bin" },
+      {
+        DORI_HOME: "C:\\dori",
+        DORI_RUNTIME: "hc",
+        DORI_TELEMETRY: "0",
+        DORI_TOKEN: "secret",
+        PATH: "C:\\bin",
+      },
       { DORI_AGENT_CMD: "omo" },
     );
     await expect(
@@ -44,8 +52,11 @@ describe("the lead-swap worker launcher", () => {
       }),
     ).rejects.toThrow("did not report ready");
     expect(launcherText).toContain("DORI_HOME");
+    expect(launcherText).toContain("DORI_RUNTIME");
+    expect(launcherText).toContain("DORI_TELEMETRY");
     expect(launcherText).not.toContain("DORI_TOKEN");
     expect(ps1(dir)).toEqual([]);
+    expect(calls.some((c) => c[0] === "taskkill" && c.includes("12345") && c.includes("/T"))).toBe(true);
   });
 
   test("a WMI refusal leaves no launcher either", async () => {
@@ -122,6 +133,7 @@ describe("the lead-swap worker launcher", () => {
       expect(code).not.toBe(0);
       expect(out).toContain("worker=1 pid=");
       expect(err).not.toContain("usage");
+      expect(existsSync(join(home, "state", "lead-restart.busy"))).toBe(false);
     },
   );
 
@@ -171,9 +183,14 @@ describe("the lead-swap worker launcher", () => {
     const stdout = new Response(p.stdout).text();
     const code = await Promise.race([p.exited, sleep(8000).then(() => "timeout" as const)]);
     expect(code).not.toBe("timeout");
-    expect(code).not.toBe(0);
+    expect(code).toBe(2);
     expect(existsSync(marker)).toBe(true);
     expect(existsSync(go)).toBe(false);
-    expect(await stdout).toContain("worker=1 pid=");
+    expect(existsSync(join(home, "state", "lead-restart.busy"))).toBe(false);
+    const log = readFileSync(join(home, "state", "lead-restart.log"), "utf8");
+    expect(log).toContain("worker aborted: go timeout");
+    expect(log).not.toContain("LEADSWAP killed");
+    expect(log).not.toContain("RESTARTED");
+    expect(await stdout).toBe("");
   });
 });

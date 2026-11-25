@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readJson } from "../json-file.ts";
+import { leadRestartBusy } from "../lead-restart-busy.ts";
 import { refFromText } from "../refs.ts";
 import { spawnExec, type Exec } from "../runtime/exec.ts";
 import { HcRuntime } from "../runtime/hc/index.ts";
@@ -122,6 +123,10 @@ export async function ensureUpCheck(opts: EnsureUpOptions = {}): Promise<EnsureU
   if (ensureUpStopped(home)) {
     opts.report?.("off", `ENSURE_UP off (${ENSURE_UP_OFF})`);
     return "off";
+  }
+  if (leadRestartBusy(home)) {
+    opts.report?.("alive", "ENSURE_UP lead restart in progress");
+    return "alive";
   }
   try {
     const lead = await leadStatus(home, exec);
