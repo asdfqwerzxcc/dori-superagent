@@ -4,7 +4,14 @@ import { join } from "node:path";
 import { writeEnsureUpRecord, writeSupervisorRecord } from "../src/supervisors.ts";
 import { pidAlive, processStartTimeMs, terminateProcess } from "../src/process-liveness.ts";
 import { writePluginRecord } from "../src/plugins/state.ts";
-import { claimSupervisor, ensureSupervisors, killSupervisorTree, recordedChildren } from "../src/supervisor-run.ts";
+import {
+  claimSupervisor,
+  ensureSupervisors,
+  killSupervisorTree,
+  recordedAlive,
+  strictRecordedAlive,
+  recordedChildren,
+} from "../src/supervisor-run.ts";
 import { NOW, homeWithState } from "./supervisor-fixtures.ts";
 
 const recordedTree = () => {
@@ -50,6 +57,28 @@ describe("record-based restarts", () => {
       }),
     ).toEqual([4343]);
     expect(killed).toEqual([4343]);
+  });
+
+  test("the default tree kill uses the strict 2 s start identity", async () => {
+    const home = homeWithState();
+    const real = processStartTimeMs(process.ppid);
+    if (real === null) throw new Error("the parent has no readable OS start");
+    writeSupervisorRecord(home, {
+      name: "supervisor",
+      pid: process.ppid,
+      startedAt: real - 5_000,
+      units: [],
+      at: NOW,
+    });
+    const killed: number[] = [];
+    const result = await killSupervisorTree(home, {
+      kill: (pid) => {
+        killed.push(pid);
+        return true;
+      },
+    });
+    expect(result).toEqual([]);
+    expect(killed).toEqual([]);
   });
 
   test("recordedChildren lists each child once", () => {
@@ -116,4 +145,13 @@ test("a stale recorded supervisor is taken over and its pid terminated", async (
   expect(claimSupervisor(home, join(home, "state"))).toBeUndefined();
   await child.exited;
   expect(pidAlive(child.pid)).toBe(false);
+});
+
+test("an unreadable start time is doubt, not a reused pid", () => {
+  const child = { pid: process.ppid, at: Date.now() };
+  expect(recordedAlive(child, { started: () => null })).toBe(true);
+  expect(recordedAlive(child, { started: () => child.at + 60_000 })).toBe(false);
+  expect(strictRecordedAlive(child, { alive: () => true, started: () => child.at })).toBe(true);
+  expect(strictRecordedAlive(child, { alive: () => false, started: () => child.at })).toBe(false);
+  expect(strictRecordedAlive(child, { alive: () => true, started: () => child.at + 5_000 })).toBe(false);
 });

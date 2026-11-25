@@ -12,7 +12,7 @@ import { reviewRunLines } from "./review-drain.ts";
 import { groupId } from "./runtime/group.ts";
 import { openSession, type SessionRef } from "./runtime/types.ts";
 import { RuntimeChoiceError } from "./runtime/select.ts";
-import { superviseHome, type SupervisedState } from "./supervisor-run.ts";
+import { superviseHome, type SupervisedState } from "./supervise-home.ts";
 import { pluginLines, enabledPluginNames } from "./plugins/state.ts";
 import { CORE_UNITS, formatEnsureUp, formatSupervised, supervisorHealth } from "./supervisors.ts";
 import { formatUnitPlacement } from "./unit-placement.ts";
@@ -37,8 +37,8 @@ const LEAD_ENV = { OMO_TASK_DEFAULT_BACKGROUND: "1" } as const;
 
 const supervise = (d: Deps, startMissing: boolean): Promise<SupervisedState> =>
   d.supervise !== undefined
-    ? d.supervise(d.store.root, { startMissing })
-    : superviseHome(d.store.root, { startMissing });
+    ? d.supervise(d.store.root, { startMissing, log: (line) => console.log(line) })
+    : superviseHome(d.store.root, { startMissing, log: (line) => console.log(line) });
 
 /** A registered lead is replaced when its pane is gone OR is only a shell: a bare shell holds no conversation. A probe
  * that fails is doubt, and doubt must not add a second lead. */

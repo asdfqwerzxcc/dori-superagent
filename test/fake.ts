@@ -8,7 +8,7 @@ import { HerdrRuntime } from "../src/runtime/herdr/index.ts";
 import { Runtimes } from "../src/runtime/registry.ts";
 import type { AgentStatus, RuntimeKind, SessionRef } from "../src/runtime/types.ts";
 import { Store, type HostLoad } from "../src/store.ts";
-import type { SupervisedState } from "../src/supervisor-run.ts";
+import type { SupervisedState } from "../src/supervise-home.ts";
 import type { DutyCounts, TelemetryEvent, Usage } from "../src/telemetry.ts";
 import { FakeHc } from "./fake-hc.ts";
 
@@ -93,7 +93,9 @@ export class World {
   }
 
   /** `dori up` asks the Deps for the supervised half of the stack; the fake records the call and answers off. */
-  superviseCalls: { startMissing: boolean }[] = [];
+  superviseCalls: { startMissing: boolean; hasLog: boolean }[] = [];
+  /** A line the fake's supervisor logs through the opts logger, for the CLI wiring test. */
+  superviseLog: string | undefined;
   supervised: SupervisedState = { health: [], ensureUp: { alive: false }, off: true };
 
   exec: Exec = async (cmd, argv, options) => {
@@ -211,7 +213,8 @@ export class World {
       host: () => this.host,
       usage: this.recorder,
       supervise: async (_home, opts) => {
-        this.superviseCalls.push({ startMissing: opts?.startMissing ?? false });
+        this.superviseCalls.push({ startMissing: opts?.startMissing ?? false, hasLog: opts?.log !== undefined });
+        if (this.superviseLog !== undefined) opts?.log?.(this.superviseLog);
         return this.supervised;
       },
     };
