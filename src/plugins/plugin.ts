@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pidAlive, processStartTimeMs } from "../process-liveness.ts";
 
@@ -42,7 +42,7 @@ export const pluginPath = (home: string, name: string, ext: "json" | "tick" | "l
 /** One file per plugin child that idled on a lock another live child holds, so a duplicate stays visible. */
 export const contendersDir = (home: string, name: string): string => join(pluginDir(home), `${name}.contenders`);
 
-export type Contender = { readonly pid: number; readonly at: number };
+export type Contender = { readonly pid: number; readonly at: number; readonly beat?: number };
 
 /** The OS start time is stable for a pid; a different value means the pid was reused. */
 export const START_SLACK_MS = 2_000;
@@ -72,7 +72,7 @@ export function leaveContenders(home: string, name: string, pid: number = proces
   } catch {}
 }
 
-export type PluginLock = Contender & { readonly startedAt?: number };
+export type PluginLock = { readonly pid: number; readonly at: number; readonly startedAt: number | null };
 
 /** The lock's holder: a version 1 owner inside the lock directory, or an older file for migration. */
 export function readPluginLock(home: string, name: string): PluginLock | undefined {
@@ -89,9 +89,10 @@ export function readPluginLock(home: string, name: string): PluginLock | undefin
   if (raw === undefined) return undefined;
   const pid = Number(raw["pid"]);
   const at = Number(raw["at"]);
-  const startedAt = Number(raw["startedAt"]);
+  const rawStart = raw["startedAt"];
+  const startedAt = rawStart === null || rawStart === undefined ? null : Number(rawStart);
   if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(at)) return undefined;
-  return { pid, at, ...(Number.isInteger(startedAt) && startedAt > 0 ? { startedAt } : {}) };
+  return { pid, at, startedAt: startedAt !== null && Number.isInteger(startedAt) && startedAt > 0 ? startedAt : null };
 }
 
 /** A contender is evidence only while the pid is alive and its OS start time matches the recorded moment. */
@@ -130,7 +131,11 @@ export function readContenders(home: string, name: string, opts: ReadContendersO
       if (Number.isInteger(pid) && pid > 0 && Number.isInteger(at) && at > 0) contender = { pid, at };
     } catch {}
     if (contender !== undefined && same(contender)) {
-      live.push(contender);
+      let beat: number | undefined;
+      try {
+        beat = statSync(path).mtimeMs;
+      } catch {}
+      live.push({ ...contender, ...(beat === undefined ? {} : { beat }) });
       continue;
     }
     try {

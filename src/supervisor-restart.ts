@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { enabledPluginNames, isPluginEnabled } from "./plugins/state.ts";
 import { pidAlive } from "./process-liveness.ts";
-import { ensureSupervisors, killSupervisorTree, recordedAlive, waitFresh } from "./supervisor-run.ts";
+import { ensureSupervisors, killSupervisorTree, waitFresh } from "./supervisor-run.ts";
 import {
   dedupeEnsureUp,
   dedupeLine,
@@ -131,10 +131,11 @@ export async function restartSupervisors(
   }
   // Wait for a live, start-time-matched unit before the second pass; a stale record must not stand in for it.
   if (wanted) await io.waitUnit(home, "ensure-up", 10_000);
-  const dupes = mergeEnsureUpDedupe(before, await io.dedupe(home), pidAlive, recordedAlive);
+  const dupes = mergeEnsureUpDedupe(before, await io.dedupe(home), pidAlive);
   const ensureUp = dupes.killed.length === 0 ? attempt.ensureUp : await io.waitEnsureUp(home, wanted, 15_000);
   const dedupeFailed = dupes.failed ?? [];
-  const ok = attempt.ok && (!wanted || ensureUp.alive) && dedupeFailed.length === 0;
+  const dedupeUnverified = dupes.unverified ?? [];
+  const ok = attempt.ok && (!wanted || ensureUp.alive) && dedupeFailed.length === 0 && dedupeUnverified.length === 0;
   const now = io.now();
   const wsAge = ageMs(beats[1]!, now);
   const missing = ok
@@ -150,6 +151,7 @@ export async function restartSupervisors(
           now,
         }),
         ...(dedupeFailed.length === 0 ? [] : [`ensure-up dedupe failed=${dedupeFailed.join(",")}`]),
+        ...(dedupeUnverified.length === 0 ? [] : [`ensure-up dedupe unverified=${dedupeUnverified.join(",")}`]),
       ];
   return {
     ok,

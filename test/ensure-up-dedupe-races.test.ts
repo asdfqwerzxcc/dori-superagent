@@ -202,7 +202,7 @@ describe("a lock takeover during the cleanup", () => {
     const h = harness([HOLDER]);
     h.startAt.set(HOLDER, NOW - 60_000);
     const result = await dedupe(home, h);
-    expect(result).toEqual({ killed: [] });
+    expect(result).toEqual({ killed: [], unverified: [HOLDER] });
     expect(result.kept).toBeUndefined();
   });
 
