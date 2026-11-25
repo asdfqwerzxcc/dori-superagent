@@ -8,7 +8,7 @@ import { HerdrRuntime } from "../src/runtime/herdr/index.ts";
 import { Runtimes } from "../src/runtime/registry.ts";
 import type { AgentStatus, RuntimeKind, SessionRef } from "../src/runtime/types.ts";
 import { Store, type HostLoad } from "../src/store.ts";
-import type { SupervisedState } from "../src/supervisor-run.ts";
+import type { SupervisedState } from "../src/supervise-home.ts";
 import type { DutyCounts, TelemetryEvent, Usage } from "../src/telemetry.ts";
 import { FakeHc } from "./fake-hc.ts";
 
