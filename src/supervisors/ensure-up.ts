@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { readJson } from "../json-file.ts";
 import { leadRestartBusy } from "../lead-restart-busy.ts";
-import { leadStarting } from "../lead-starting.ts";
+import { leadStarting, clearLeadStarting } from "../lead-starting.ts";
 import { refFromText } from "../refs.ts";
 import { spawnExec, type Exec } from "../runtime/exec.ts";
 import { HcRuntime } from "../runtime/hc/index.ts";
@@ -142,6 +142,7 @@ export async function ensureUpCheck(opts: EnsureUpOptions = {}): Promise<EnsureU
     // A lead pane that answers `shell` has no agent: it is as down as a gone pane, and waiting for `gone` left a bare
     // shell unrepaired for 33 minutes (2026-11-25).
     if (lead !== "gone" && lead !== "absent" && lead !== "shell") {
+      clearLeadStarting(home);
       opts.report?.("alive", "ENSURE_UP alive");
       return "alive";
     }

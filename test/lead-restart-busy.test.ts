@@ -6,6 +6,7 @@ import {
   clearLeadRestartBusy,
   leadRestartBusy,
   leadRestartTtl,
+  LEAD_RESTART_OWNER_GRACE_MS,
   markLeadRestartBusy,
 } from "../src/lead-restart-busy.ts";
 import {
@@ -57,6 +58,41 @@ describe("the lead restart busy marker", () => {
     utimesSync(busyPath(h), old, old);
     expect(leadRestartBusy(h)).toBe(false);
     expect(existsSync(busyPath(h))).toBe(false);
+  });
+  test("a dead owner stops blocking after a short grace", () => {
+    const h = home();
+    mkdirSync(join(h, "state"), { recursive: true });
+    const now = Date.now();
+    writeFileSync(
+      busyPath(h),
+      JSON.stringify({
+        pane: "w1:p1",
+        pid: 999999,
+        token: "dead",
+        at: now - LEAD_RESTART_OWNER_GRACE_MS - 1,
+        until: now + 60_000,
+      }),
+    );
+    expect(leadRestartBusy(h, now)).toBe(false);
+    expect(existsSync(busyPath(h))).toBe(false);
+  });
+
+  test("a fresh dead owner keeps the parent-to-worker grace", () => {
+    const h = home();
+    mkdirSync(join(h, "state"), { recursive: true });
+    const now = Date.now();
+    writeFileSync(
+      busyPath(h),
+      JSON.stringify({ pane: "w1:p1", pid: 999999, token: "dead", at: now, until: now + 60_000 }),
+    );
+    expect(leadRestartBusy(h, now)).toBe(true);
+    expect(leadRestartBusy(h, now + LEAD_RESTART_OWNER_GRACE_MS + 1)).toBe(false);
+  });
+
+  test("a live owner survives the owner grace", () => {
+    const h = home();
+    markLeadRestartBusy(h, "w1:p1", 60_000);
+    expect(leadRestartBusy(h, Date.now() + LEAD_RESTART_OWNER_GRACE_MS + 1)).toBe(true);
   });
 });
 

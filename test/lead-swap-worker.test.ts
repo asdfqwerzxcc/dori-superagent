@@ -50,6 +50,7 @@ describe("the lead-swap worker launcher", () => {
         go,
         launcherDir: dir,
         readyMs: 150,
+        identity: () => true,
       }),
     ).rejects.toThrow("did not report ready");
     expect(launcherText).toContain("DORI_HOME");
@@ -74,6 +75,29 @@ describe("the lead-swap worker launcher", () => {
         readyMs: 150,
       }),
     ).rejects.toThrow("Win32_Process.Create failed");
+    expect(ps1(dir)).toEqual([]);
+  });
+
+  test("a ready timeout does not kill a pid whose launcher identity is gone", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "dori-launcher-"));
+    const calls: string[][] = [];
+    const exec: Exec = async (cmd, argv) => {
+      calls.push([cmd, ...argv]);
+      return { code: 0, stdout: "PID=12345", stderr: "" };
+    };
+    await expect(
+      launchOutOfTree(exec, {
+        argv: ["bun", "worker.ts"],
+        env: swapWorkerEnv({ DORI_HOME: "C:\\dori" }, {}),
+        cwd: dir,
+        marker: join(dir, "ready.txt"),
+        go: join(dir, "go.txt"),
+        launcherDir: dir,
+        readyMs: 150,
+        identity: () => false,
+      }),
+    ).rejects.toThrow("did not report ready");
+    expect(calls.some((c) => c[0] === "taskkill")).toBe(false);
     expect(ps1(dir)).toEqual([]);
   });
 

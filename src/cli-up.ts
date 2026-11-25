@@ -5,7 +5,7 @@ import { promptsDir, type Deps } from "./harness.ts";
 import { reviewLabel } from "./lane-gate.ts";
 import { paneWorktreeMismatch } from "./lane-worktree.ts";
 import { leadRestartBusy } from "./lead-restart-busy.ts";
-import { leadStarting, markLeadStarting } from "./lead-starting.ts";
+import { leadStarting, markLeadStarting, clearLeadStarting } from "./lead-starting.ts";
 import { loopArgs, readLoopCaps } from "./loop-caps.ts";
 import { refText } from "./refs.ts";
 import { reviewRunLines } from "./review-drain.ts";
@@ -78,6 +78,7 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
   if (!retireOld && previous !== undefined) {
     const liveness = await leadLiveness(d, previous);
     if (liveness !== "gone") {
+      if (liveness === "alive") clearLeadStarting(d.store.root);
       // A dead supervisor is the one thing this path must start; an alive one is left exactly as it is.
       await supervise(d, !supervisorAlive(d.store.root));
       console.log(`UP lead ${liveness}; ensuring units only (lead=${refText(previous)}) units=${units}`);
@@ -85,23 +86,29 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
     }
   }
   const start = leadStarting(d.store.root);
-  if (start.starting) {
+  if (!retireOld && start.starting) {
     await supervise(d, !supervisorAlive(d.store.root));
     console.log(`UP lead starting (attempts=${start.attempts}); not opening another lead`);
     return;
   }
-  markLeadStarting(d.store.root);
   const caps = readLoopCaps(d.store.root);
   const rt = d.runtimes.default;
   const env = { DORI_HOME: d.store.root };
   const agent = (name: string) => `${d.agentCmd} --append-system-prompt ${shq(renderPrompt(d, name))}`;
+  markLeadStarting(d.store.root);
   // herdr ignores the group of a workspace-root session and reports the new workspace as the lead ref's group.
-  const lead = await openSession(
-    rt,
-    { name: "dori", role: "lead", container: "workspace-root", cwd, env: LEAD_ENV, group: groupId(d.store.root) },
-    agent("lead.md"),
-  );
-  d.store.setRole("lead", lead);
+  let lead: SessionRef;
+  try {
+    lead = await openSession(
+      rt,
+      { name: "dori", role: "lead", container: "workspace-root", cwd, env: LEAD_ENV, group: groupId(d.store.root) },
+      agent("lead.md"),
+    );
+    d.store.setRole("lead", lead);
+  } catch (e) {
+    clearLeadStarting(d.store.root);
+    throw e;
+  }
   const group = lead.group;
   const inGroup = group === undefined ? {} : { group };
   const duty = await openSession(

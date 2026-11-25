@@ -106,6 +106,47 @@ describe.skipIf(process.platform !== "win32")("the lead-swap worker edge paths",
     }
   });
 
+  test("a worker with an invalid drain does not write ready", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "dori-worker-args-"));
+    const home = join(dir, "home");
+    mkdirSync(home, { recursive: true });
+    const marker = join(dir, "ready.txt");
+    const go = join(dir, "go.txt");
+    const p = Bun.spawn(
+      [
+        process.execPath,
+        join(import.meta.dir, "..", "src", "cli.ts"),
+        "lead-restart",
+        "--swap-worker",
+        "--pane",
+        "w1:p1",
+        "--marker",
+        marker,
+        "--go",
+        go,
+        "--drain-ms",
+        "-1",
+      ],
+      {
+        env: {
+          ...process.env,
+          DORI_HOME: home,
+          DORI_RUNTIME: "herdr",
+          DORI_HERDR_SESSION: "no-such-session",
+          DORI_TELEMETRY: "0",
+        },
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        windowsHide: true,
+      },
+    );
+    const code = await p.exited;
+    expect(code).toBe(2);
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(go)).toBe(false);
+  });
+
   test("a positional session wins over --session", async () => {
     const w = worker(({ sessionA, sessionB }) => [sessionA, "--session", sessionB]);
     try {

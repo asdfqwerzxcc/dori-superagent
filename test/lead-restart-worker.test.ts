@@ -4,9 +4,9 @@ import { dirname, join } from "node:path";
 import { parse } from "../src/cli-args.ts";
 import { leadRestart } from "../src/cli-lead-restart.ts";
 import { runLeadSwap } from "../src/lead-swap.ts";
-import { World } from "./fake.ts";
+import { World, href } from "./fake.ts";
+import { markLeadStarting, leadStarting } from "../src/lead-starting.ts";
 import { captureStdout, engineLine, options, promptText, rowsFor, scratch, shellOnly } from "./lead-restart-setup.ts";
-
 describe("dori lead-restart worker", () => {
   test("a failed out-of-tree launch kills nothing", async () => {
     const s = scratch();
@@ -111,5 +111,62 @@ describe("dori lead-restart worker", () => {
     expect(killed).not.toContain(6000);
     expect(r.target).toEqual([26976]);
     expect(lines[0]).toMatch(/worker=1 pid=\d+$/);
+  });
+  test.skipIf(process.platform !== "win32")("a successful restart clears the start grace", async () => {
+    const w = new World();
+    const base = w.exec;
+    let killed = false;
+    let launched = false;
+    w.exec = async (cmd, argv, opts) => {
+      if (cmd === "taskkill") {
+        killed = true;
+        w.panes.get("w1:p1")!.status = "shell";
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      const r = await base(cmd, argv, opts);
+      if (cmd === "herdr" && argv[0] === "pane" && argv[1] === "send-text") {
+        launched = true;
+        w.panes.get("w1:p1")!.status = "working";
+      }
+      return r;
+    };
+    const d = w.deps();
+    const pane = w.addPane("w1:p1", "idle");
+    pane.shellPid = 100;
+    pane.cwd = "C:\\Users\\USER";
+    d.store.setRole("lead", href("w1:p1"));
+    const prompt = join(d.store.root, "prompts", "lead.md");
+    mkdirSync(dirname(prompt), { recursive: true });
+    writeFileSync(prompt, promptText);
+    const session = join(d.store.root, "session.jsonl");
+    writeFileSync(session, '{"type":"session"}\n');
+    markLeadStarting(d.store.root);
+    const oldRows = rowsFor(prompt);
+    const newRows = [
+      ...oldRows.filter((p) => p.pid === 100),
+      {
+        pid: 9001,
+        command: `bun "C:\\Users\\USER\\node_modules\\omo-ai\\bin\\omo.js" --append-system-prompt "${prompt}"`,
+        parent: 100,
+      },
+    ];
+    w.reviewer = async (argv) => {
+      if (argv[0] === "--version") return { code: 0, stdout: `${engineLine}\n`, stderr: "" };
+      if (argv.some((a) => a.includes("Win32_Process"))) {
+        const rows = killed ? (launched ? newRows : shellOnly) : oldRows;
+        return {
+          code: 0,
+          stdout: JSON.stringify(
+            rows.map((r) => ({ ProcessId: r.pid, ParentProcessId: r.parent ?? 0, CommandLine: r.command })),
+          ),
+          stderr: "",
+        };
+      }
+      return { code: 1, stdout: "", stderr: `unexpected ${argv.join(" ")}` };
+    };
+    const a = parse(["lead-restart", "--pane", "w1:p1", "--session", session, "--prompt", prompt, "--drain-ms", "0"]);
+    const r = await captureStdout(() => leadRestart(d, a));
+    expect(r.code).toBe(0);
+    expect(leadStarting(d.store.root).starting).toBe(false);
   });
 });

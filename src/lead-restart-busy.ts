@@ -5,9 +5,12 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { pidAlive } from "./process-liveness.ts";
 
 export const LEAD_RESTART_BUSY = "lead-restart.busy";
+/** Legacy fallback for a record without `until`; production writes `leadRestartTtl` (390 s at the default drain). */
 export const LEAD_RESTART_BUSY_MS = 5 * 60_000;
+export const LEAD_RESTART_OWNER_GRACE_MS = 10_000;
 export const LEAD_RESTART_MARGIN_MS = 60_000;
 
 export type LeadRestartBusyRecord = {
@@ -50,6 +53,20 @@ export function leadRestartBusy(home: string, now: number = Date.now()): boolean
       rmSync(pathOf(home), { force: true });
     } catch {
       // A stale marker is ignored even if the file cannot be removed now.
+    }
+    return false;
+  }
+  if (
+    record !== undefined &&
+    now - record.at > LEAD_RESTART_OWNER_GRACE_MS &&
+    Number.isInteger(record.pid) &&
+    record.pid > 0 &&
+    !pidAlive(record.pid)
+  ) {
+    try {
+      rmSync(pathOf(home), { force: true });
+    } catch {
+      // An ownerless marker is ignored even if the file cannot be removed now.
     }
     return false;
   }

@@ -6,6 +6,7 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { failureDetail } from "./delivery.ts";
+import { launcherStillOurs } from "./lead-swap-identity.ts";
 import type { Proc } from "./lead-process-list.ts";
 import type { Exec } from "./runtime/exec.ts";
 import type { SessionRef } from "./runtime/types.ts";
@@ -33,6 +34,8 @@ export type OutOfTreeLaunch = {
   readonly launcherDir: string;
   /** How long to wait for the worker's ready marker; tests shorten it. */
   readonly readyMs?: number;
+  /** A test seam for the launcher identity check; production uses the command line and creation time. */
+  readonly identity?: (pid: number, startedAt: number) => boolean;
 };
 
 export type LaunchedSwap = { readonly pid: number; readonly go: () => void };
@@ -59,7 +62,12 @@ const removeLauncher = async (path: string): Promise<void> => {
   safeRemove(path);
 };
 
-const killLauncher = async (exec: Exec, pid: number): Promise<void> => {
+const killLauncher = async (exec: Exec, pid: number, verify: () => Promise<boolean>): Promise<void> => {
+  try {
+    if (!(await verify())) return;
+  } catch {
+    return;
+  }
   try {
     await exec("taskkill", ["/PID", String(pid), "/T", "/F"], {});
   } catch {
@@ -147,6 +155,7 @@ export async function launchOutOfTree(exec: Exec, launch: OutOfTreeLaunch): Prom
       "if ($r.ReturnValue -ne 0) { Write-Output ('RET=' + $r.ReturnValue); exit 1 }",
       "Write-Output ('PID=' + $r.ProcessId)",
     ].join("; ");
+    const startedAt = Date.now();
     const result = await exec(powershellPath(), ["-NoProfile", "-NonInteractive", "-Command", script], {});
     const pid = Number(/PID=(\d+)/.exec(result.stdout)?.[1]);
     if (result.code !== 0 || !Number.isInteger(pid) || pid <= 0) {
@@ -161,7 +170,13 @@ export async function launchOutOfTree(exec: Exec, launch: OutOfTreeLaunch): Prom
       }
       await Bun.sleep(100);
     }
-    await killLauncher(exec, pid);
+    await killLauncher(
+      exec,
+      pid,
+      launch.identity === undefined
+        ? () => launcherStillOurs(exec, pid, startedAt, launcher)
+        : async () => launch.identity!(pid, startedAt),
+    );
     throw new Error(`the out-of-tree swap pid=${pid} did not report ready within ${launch.readyMs ?? 5000}ms`);
   } finally {
     // The launcher carries the worker env in plaintext; it must not outlive any failed or completed start.

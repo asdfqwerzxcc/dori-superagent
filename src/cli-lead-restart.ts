@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { type Args, one, parse } from "./cli-args.ts";
 import { defaultDeps, type Deps } from "./harness.ts";
 import { clearLeadRestartBusy, leadRestartTtl, markLeadRestartBusy } from "./lead-restart-busy.ts";
+import { clearLeadStarting } from "./lead-starting.ts";
 import { listAllProcesses } from "./lead-process-list.ts";
 import { launchOutOfTree, type LeadSwapPlan, swapWorkerArgv, swapWorkerEnv } from "./lead-swap-detach.ts";
 import { readRuntimeBuild } from "./lead-swap-target.ts";
@@ -63,14 +64,28 @@ export async function leadRestart(d: Deps, a: Args, sessionArg?: string): Promis
       // The worker runs without a console; the file above is the record.
     }
   };
-  writeMarker(one(a, "marker"));
   const goTimeoutArg = one(a, "go-timeout-ms");
   const goTimeoutMs = goTimeoutArg === undefined ? 30_000 : Number(goTimeoutArg);
   if (!Number.isFinite(goTimeoutMs) || goTimeoutMs < 0)
     throw new Refusal("--go-timeout-ms must be a non-negative number");
   const parentPidArg = one(a, "parent-pid");
   const parentPid = parentPidArg === undefined ? undefined : Number(parentPidArg);
+  if (parentPidArg !== undefined && (!Number.isInteger(parentPid) || (parentPid ?? 0) <= 0))
+    throw new Refusal("--parent-pid must be a positive integer");
   const parentBusyToken = one(a, "busy-token");
+  const paneArg = one(a, "pane");
+  const paneRef = paneArg === undefined ? undefined : refFromText(paneArg);
+  const drainMsArg = one(a, "drain-ms");
+  const drainSeconds = one(a, "drain-timeout");
+  const drainMs =
+    drainMsArg !== undefined
+      ? Number(drainMsArg)
+      : drainSeconds === undefined
+        ? Number(process.env["DORI_DRAIN_TIMEOUT_MS"] ?? 180_000)
+        : Number(drainSeconds) * 1000;
+  if (!Number.isFinite(drainMs) || drainMs < 0)
+    throw new Refusal("--drain-ms or --drain-timeout must be a non-negative number");
+  writeMarker(one(a, "marker"));
   const goGate = await waitForGo(one(a, "go"), goTimeoutMs);
   if (goGate.result === "timeout") {
     appendLog(
@@ -83,8 +98,7 @@ export async function leadRestart(d: Deps, a: Args, sessionArg?: string): Promis
   const worker = a.flags.has("swap-worker");
   const dryRun = a.flags.has("dry-run");
   try {
-    const paneArg = one(a, "pane");
-    const lead = paneArg === undefined ? d.store.roles().lead : refFromText(paneArg);
+    const lead = paneRef ?? d.store.roles().lead;
     if (lead === undefined)
       throw new Refusal(
         paneArg === undefined
@@ -106,16 +120,6 @@ export async function leadRestart(d: Deps, a: Args, sessionArg?: string): Promis
     const promptArg = one(a, "prompt");
     const promptPath = promptArg ?? (existsSync(promptDefault) ? promptDefault : undefined);
     const platform = process.platform;
-    const drainMsArg = one(a, "drain-ms");
-    const drainSeconds = one(a, "drain-timeout");
-    const drainMs =
-      drainMsArg !== undefined
-        ? Number(drainMsArg)
-        : drainSeconds === undefined
-          ? Number(process.env["DORI_DRAIN_TIMEOUT_MS"] ?? 180_000)
-          : Number(drainSeconds) * 1000;
-    if (!Number.isFinite(drainMs) || drainMs < 0)
-      throw new Refusal("--drain-ms or --drain-timeout must be a non-negative number");
     const session = sessionArg ?? one(a, "session");
     const busyToken = dryRun ? undefined : markLeadRestartBusy(home, refText(lead), leadRestartTtl(drainMs));
     // A Windows swap started inside the lead's own tree is handed to WMI: a killed Bun/Node ancestor takes the whole
@@ -195,6 +199,7 @@ export async function leadRestart(d: Deps, a: Args, sessionArg?: string): Promis
         clearLeadRestartBusy(home, parentBusyToken);
       } else if (result?.outcome !== "delegated") clearLeadRestartBusy(home, busyToken);
     }
+    if (result.outcome === "restarted") clearLeadStarting(home);
     return result.code;
   } catch (e) {
     if (worker && parentBusyToken !== undefined) clearLeadRestartBusy(home, parentBusyToken);
