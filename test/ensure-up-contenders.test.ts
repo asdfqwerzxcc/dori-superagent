@@ -76,6 +76,7 @@ describe("the contender registry", () => {
         calls.push({ pid: c.pid, at: c.at });
         return false;
       },
+      started: () => NOW + 60_000,
     });
     expect(live).toEqual([]);
     expect(calls).toEqual([{ pid: CONTENDER, at: NOW }]);
@@ -87,6 +88,15 @@ describe("the contender registry", () => {
     joinContenders(home, "other", process.ppid);
     expect(readContenders(home, "ensure-up")).toEqual([]);
     expect(readContenders(home, "other").map((c) => c.pid)).toEqual([process.ppid]);
+  });
+
+  test("a null start keeps the contender marker", () => {
+    const home = homeWithState();
+    mkdirSync(contendersDir(home), { recursive: true });
+    const path = join(contendersDir(home), "7007.json");
+    writeFileSync(path, JSON.stringify({ pid: 7007, at: NOW }));
+    expect(readContenders(home, "ensure-up", { same: () => false, started: () => null })).toEqual([]);
+    expect(existsSync(path)).toBe(true);
   });
 
   test("a directory or a malformed file is skipped, never thrown on", () => {

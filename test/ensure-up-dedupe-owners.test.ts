@@ -23,12 +23,19 @@ const writeLock = (home: string, pid: number, startedAt?: number): void => {
   );
 };
 
-const writeSupervisor = (home: string, unitPid: number, unitAt: number): void => {
+const writeSupervisor = (home: string, unitPid: number, unitAt: number, unitStartedAt?: number): void => {
   writeSupervisorRecord(home, {
     name: "supervisor",
     pid: 7001,
     startedAt: NOW - 60_000,
-    units: [{ name: "ensure-up", pid: unitPid, at: unitAt }],
+    units: [
+      {
+        name: "ensure-up",
+        pid: unitPid,
+        at: unitAt,
+        ...(unitStartedAt === undefined ? {} : { startedAt: unitStartedAt }),
+      },
+    ],
     at: NOW,
   });
 };
@@ -45,7 +52,7 @@ const harness = (pids: readonly number[]): Harness => ({ alive: new Set(pids), s
 describe("ensure-up owners and kill fences", () => {
   test("a disabled plugin ends a unit registered 5s after its process start", async () => {
     const home = homeWithState();
-    writeSupervisor(home, HOLDER, NOW);
+    writeSupervisor(home, HOLDER, NOW, NOW - 5_000);
     const h = harness([HOLDER]);
     h.startAt.set(HOLDER, NOW - 5_000);
     const result = await dedupeEnsureUp(home, {
@@ -58,6 +65,32 @@ describe("ensure-up owners and kill fences", () => {
       keep: false,
     });
     expect(result).toEqual({ killed: [HOLDER] });
+  });
+
+  test("a stale unit record does not shield a reused pid or kill the real replacement", async () => {
+    const home = homeWithState();
+    const staleUnit = 7400;
+    const keeper = 7401;
+    const replacement = 7402;
+    writeSupervisor(home, staleUnit, NOW - 60_000);
+    writeEnsureUpRecord(home, { pid: staleUnit, startedAt: NOW, at: NOW });
+    writePluginRecord(home, { name: "ensure-up", pid: replacement, startedAt: NOW, at: NOW });
+    writeLock(home, keeper, NOW);
+    const h = harness([staleUnit, keeper, replacement]);
+    h.startAt.set(staleUnit, NOW);
+    h.startAt.set(keeper, NOW);
+    h.startAt.set(replacement, NOW);
+    const result = await dedupeEnsureUp(home, {
+      alive: (pid) => h.alive.has(pid),
+      kill: (pid) => {
+        h.alive.delete(pid);
+        return true;
+      },
+      started: (pid) => h.startAt.get(pid) ?? null,
+    });
+    expect(result.kept).toBe(keeper);
+    expect(result.killed).toContain(staleUnit);
+    expect(result.killed).not.toContain(replacement);
   });
 
   test("a unit replaced between reads is not treated as a duplicate", async () => {

@@ -103,7 +103,7 @@ export async function waitSupervisorUnit(
   const deadline = now() + timeoutMs;
   for (;;) {
     const unit = (supervisorRecord(home, "supervisor")?.units ?? []).find(
-      (u) => u.name === name && alive(u.pid) && same({ pid: u.pid, at: u.at }),
+      (u) => u.name === name && alive(u.pid) && same({ pid: u.pid, at: u.startedAt ?? u.at }),
     );
     if (unit !== undefined) return true;
     if (now() >= deadline) return false;
@@ -156,14 +156,20 @@ export async function superviseHome(home: string, opts: SuperviseHomeOptions): P
       ...(opts.started === undefined ? {} : { started: opts.started }),
     });
   }
-  const dedupe = mergeEnsureUpDedupe(first, await dedupeEnsureUp(home, dedupeOpts), alive);
+  const mergeSame =
+    opts.same ??
+    ((child: RecordedChild): boolean =>
+      child.pid === process.pid ||
+      strictRecordedAlive(child, { alive, ...(opts.started === undefined ? {} : { started: opts.started }) }));
+  const dedupe = mergeEnsureUpDedupe(first, await dedupeEnsureUp(home, dedupeOpts), alive, mergeSame);
   const cleaned = dedupeLine(dedupe);
   if (cleaned !== undefined) log(cleaned);
   let ensureUp = await waitEnsureUp(home, wantUp, supervised ? 15_000 : 0, wait);
   // The dedupe already elected the keeper strictly; alive is the standby test here.
   const standby = dedupe.kept !== undefined && alive(dedupe.kept);
   // The supervisor owns the plugin; only a home nobody supervises starts one here, and only with no live keeper.
-  if (!opts.startMissing && !supervised && wantUp && !ensureUp.alive && !standby) {
+  // This also covers a startMissing call in pane mode, where no supervisor process exists to own the plugin.
+  if (!supervised && wantUp && !ensureUp.alive && !standby) {
     spawned(pluginRunEntry(), home, ["ensure-up"]);
     ensureUp = await waitEnsureUp(home, true, 10_000, wait);
   }

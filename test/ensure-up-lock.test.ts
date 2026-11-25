@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { readPluginLock } from "../src/plugins/plugin.ts";
 import { acquirePluginLock, lockHeldByRecord, releaseLockIfOwner } from "../src/plugins/run.ts";
 import { processStartTimeMs } from "../src/process-liveness.ts";
 
@@ -93,6 +94,56 @@ describe("the plugin lock", () => {
     const [outA, outB] = await Promise.all([new Response(a.stdout).text(), new Response(b.stdout).text()]);
     await Promise.all([a.exited, b.exited]);
     expect([outA.trim(), outB.trim()].sort()).toEqual(["no", "yes"]);
+  });
+
+  test("a delayed takeover cannot rename a fresh owner's lock", () => {
+    const home = homeWithState();
+    const path = lockPath(home);
+    mkdirSync(path);
+    writeFileSync(
+      join(path, "owner.json"),
+      JSON.stringify({ version: 1, token: "stale", pid: 7003, at: 100, startedAt: 100 }),
+    );
+    const fresh = 7100;
+    let swapped = false;
+    const deps = {
+      alive: (pid: number) => pid === 7003 || pid === fresh,
+      started: (pid: number) => {
+        if (pid !== 7003) return 200;
+        // A claims after this process read the stale record, before its takeover rename.
+        swapped = true;
+        rmSync(path, { recursive: true, force: true });
+        mkdirSync(path);
+        writeFileSync(
+          join(path, "owner.json"),
+          JSON.stringify({ version: 1, token: "fresh", pid: fresh, at: 200, startedAt: 200 }),
+        );
+        return 50; // the stale record's start no longer matches
+      },
+    };
+    expect(acquirePluginLock(path, deps)).toBe(false);
+    expect(swapped).toBe(true);
+    expect((JSON.parse(readFileSync(join(path, "owner.json"), "utf8")) as { pid: number }).pid).toBe(fresh);
+  });
+
+  test("a claim writes a complete owner atomically", () => {
+    const home = homeWithState();
+    const path = lockPath(home);
+    expect(acquirePluginLock(path)).toBe(true);
+    const record = JSON.parse(readFileSync(join(path, "owner.json"), "utf8")) as { pid: number; token: string };
+    expect(record.pid).toBe(process.pid);
+    expect(typeof record.token).toBe("string");
+    expect(readdirSync(path).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+
+  test("a truncated owner with a live temp claimant is doubt, not absent", () => {
+    const home = homeWithState();
+    const path = lockPath(home);
+    mkdirSync(path);
+    writeFileSync(join(path, "owner.json"), "{");
+    writeFileSync(join(path, `.owner.${process.ppid}.abc.tmp`), "{");
+    expect(readPluginLock(home, "ensure-up")).toEqual({ pid: process.ppid, at: 0, startedAt: null });
+    expect(acquirePluginLock(path)).toBe(false);
   });
 
   test("a claim whose write cannot read the start time still holds its own lock", () => {

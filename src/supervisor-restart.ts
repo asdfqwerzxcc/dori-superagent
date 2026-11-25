@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { enabledPluginNames, isPluginEnabled } from "./plugins/state.ts";
 import { pidAlive } from "./process-liveness.ts";
-import { ensureSupervisors, killSupervisorTree, waitFresh } from "./supervisor-run.ts";
+import { ensureSupervisors, killSupervisorTree, strictRecordedAlive, waitFresh } from "./supervisor-run.ts";
 import {
   dedupeEnsureUp,
   dedupeLine,
@@ -131,8 +131,14 @@ export async function restartSupervisors(
   }
   // Wait for a live, start-time-matched unit before the second pass; a stale record must not stand in for it.
   if (wanted) await io.waitUnit(home, "ensure-up", 10_000);
-  const dupes = mergeEnsureUpDedupe(before, await io.dedupe(home), pidAlive);
-  const ensureUp = dupes.killed.length === 0 ? attempt.ensureUp : await io.waitEnsureUp(home, wanted, 15_000);
+  const dupes = mergeEnsureUpDedupe(
+    before,
+    await io.dedupe(home),
+    pidAlive,
+    (child) => child.pid === process.pid || strictRecordedAlive(child),
+  );
+  // The attempt read predates the unit wait and both dedupe passes: always re-read the beat after them.
+  const ensureUp = await io.waitEnsureUp(home, wanted, 15_000);
   const dedupeFailed = dupes.failed ?? [];
   const dedupeUnverified = dupes.unverified ?? [];
   const ok = attempt.ok && (!wanted || ensureUp.alive) && dedupeFailed.length === 0 && dedupeUnverified.length === 0;

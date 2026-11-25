@@ -7,11 +7,13 @@ import { PLUGINS } from "../plugins/registry.ts";
 import { pluginRunEntry } from "../plugins/plugin.ts";
 import { isPluginEnabled, removePluginRecord, writePluginRecord } from "../plugins/state.ts";
 import { claimSupervisor, killTree } from "../supervisor-run.ts";
+import { processStartTimeMs } from "../process-liveness.ts";
 import { pidAlive, stateDir, writeSupervisorRecord, type UnitRecord } from "../supervisors.ts";
 import { CORE_UNITS, type CoreName } from "./core-units.ts";
 import { unitPaneLayer } from "./unit-mode.ts";
 import type { PaneUnit, PlacedUnit } from "./panes.ts";
 import { runPluginUnit } from "./plugins.ts";
+import { spawnPluginChild } from "./plugin-spawn.ts";
 import { paneCommand, runUnitInPane } from "./units.ts";
 import { DEFAULT_MAX_LANES, DEFAULT_MAX_STARTS, loopArgs, readLoopCaps, type LoopCaps } from "../loop-caps.ts";
 
@@ -59,6 +61,7 @@ export async function runSupervisor(): Promise<never> {
 
   const units = new Map<string, UnitRecord>();
   const pluginStarted = new Map<string, number>();
+  const startedOf = (pid: number): number => processStartTimeMs(pid) ?? Date.now();
   const list = (): UnitRecord[] => ORDER.map((name) => units.get(name)).filter((u): u is UnitRecord => u !== undefined);
   const startedAt = Date.now();
   const write = () =>
@@ -114,7 +117,7 @@ export async function runSupervisor(): Promise<never> {
       });
       const pid = child.pid;
       if (pid !== undefined) {
-        units.set(spec.name, { name: spec.name, pid, at: Date.now() });
+        units.set(spec.name, { name: spec.name, pid, at: Date.now(), startedAt: startedOf(pid) });
         write();
       }
       const emit = (chunk: Buffer) => logs[spec.log].write(chunk);
@@ -131,39 +134,32 @@ export async function runSupervisor(): Promise<never> {
     }
   };
 
-  const spawnPlugin = (name: string) => {
-    const child = spawn(process.execPath, [pluginRun, name], {
-      stdio: ["ignore", "pipe", "pipe"],
-      cwd: home,
-      windowsHide: true,
-      env: { ...process.env, DORI_HOME: home, DORI_VERIFY_PROMPT: "1" },
-    });
-    const emit = (chunk: Buffer) => logs.loops.write(chunk);
-    child.stdout?.on("data", emit);
-    child.stderr?.on("data", emit);
-    return child;
-  };
-
   const unplace =
     (name: string) =>
     (placed: PlacedUnit | undefined): void => {
       const cur = units.get(name);
       if (cur !== undefined) {
-        units.set(name, { name: cur.name, pid: cur.pid, at: cur.at });
+        units.set(name, {
+          name: cur.name,
+          pid: cur.pid,
+          at: cur.at,
+          ...(cur.startedAt === undefined ? {} : { startedAt: cur.startedAt }),
+        });
         write();
         return;
       }
       if (placed === undefined) return;
-      units.set(name, { name, pid: placed.pid, at: Date.now() });
+      units.set(name, { name, pid: placed.pid, at: Date.now(), startedAt: startedOf(placed.pid) });
       write();
     };
   const pluginStart =
     (name: string) =>
     (pid: number, pane?: string): void => {
       const at = Date.now();
-      pluginStarted.set(name, at);
-      units.set(name, { name, pid, at, ...(pane === undefined ? {} : { pane }) });
-      writePluginRecord(home, { name, pid, startedAt: at, at });
+      const began = startedOf(pid);
+      pluginStarted.set(name, began);
+      units.set(name, { name, pid, at, startedAt: began, ...(pane === undefined ? {} : { pane }) });
+      writePluginRecord(home, { name, pid, startedAt: began, at });
       write();
     };
   const pluginStop = (name: string) => (): void => {
@@ -178,7 +174,7 @@ export async function runSupervisor(): Promise<never> {
     const headless = () =>
       runPluginUnit({
         name: plugin.name,
-        spawnChild: () => spawnPlugin(plugin.name),
+        spawnChild: () => spawnPluginChild(home, plugin.name, pluginRun, (chunk) => logs.loops.write(chunk)),
         stopChild: (pid) => killTree(pid),
         isEnabled: enabled,
         onStart: (pid) => pluginStart(plugin.name)(pid),
@@ -225,7 +221,13 @@ export async function runSupervisor(): Promise<never> {
       close: (pane) => panes.units.close(pane),
       headless,
       onStart: (placed) => {
-        units.set(spec.name, { name: spec.name, pid: placed.pid, at: Date.now(), pane: placed.pane.id });
+        units.set(spec.name, {
+          name: spec.name,
+          pid: placed.pid,
+          at: Date.now(),
+          startedAt: startedOf(placed.pid),
+          pane: placed.pane.id,
+        });
         write();
       },
       onExit: () => {

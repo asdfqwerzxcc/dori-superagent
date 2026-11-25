@@ -98,6 +98,45 @@ describe("supervisor plugin units", () => {
     expect(settled.map((s) => s.status)).toEqual(["rejected", "rejected"]);
   });
 
+  test("a live standby child is not restarted for a missing tick", async () => {
+    const child = new FakeChild(500);
+    let spawns = 0;
+    let stops = 0;
+    let startedResolve: () => void = () => {};
+    const started = new Promise<void>((resolve) => {
+      startedResolve = resolve;
+    });
+    const run = runPluginUnit({
+      name: "ensure-up",
+      spawnChild: () => {
+        spawns += 1;
+        return child;
+      },
+      stopChild: async () => {
+        stops += 1;
+      },
+      isEnabled: () => true,
+      onStart: () => startedResolve(),
+      onStop: () => {},
+      log: () => {},
+      sleep: async () => {
+        throw STOP;
+      },
+      pollMs: 5,
+      restartMs: 5,
+    });
+    await started;
+    // A waiting standby has no tick, but the supervisor restarts only after its child exits.
+    expect(spawns).toBe(1);
+    expect(stops).toBe(0);
+    child.exit(0);
+    const failure: unknown = await run.then(
+      () => undefined,
+      (e) => e,
+    );
+    expect(failure).toBe(STOP);
+  });
+
   test("disabling a plugin stops its running child and calls onStop once", async () => {
     let enabled = true;
     const child = new FakeChild(400);

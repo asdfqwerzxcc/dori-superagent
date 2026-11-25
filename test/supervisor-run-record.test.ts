@@ -9,6 +9,7 @@ import {
   ensureSupervisors,
   killSupervisorTree,
   recordedAlive,
+  strictRecordedAlive,
   recordedChildren,
 } from "../src/supervisor-run.ts";
 import { NOW, homeWithState } from "./supervisor-fixtures.ts";
@@ -128,4 +129,7 @@ test("an unreadable start time is doubt, not a reused pid", () => {
   const child = { pid: process.ppid, at: Date.now() };
   expect(recordedAlive(child, { started: () => null })).toBe(true);
   expect(recordedAlive(child, { started: () => child.at + 60_000 })).toBe(false);
+  expect(strictRecordedAlive(child, { alive: () => true, started: () => child.at })).toBe(true);
+  expect(strictRecordedAlive(child, { alive: () => false, started: () => child.at })).toBe(false);
+  expect(strictRecordedAlive(child, { alive: () => true, started: () => child.at + 5_000 })).toBe(false);
 });
