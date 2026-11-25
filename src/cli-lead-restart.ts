@@ -32,9 +32,9 @@ function writeMarker(path: string | undefined): void {
 }
 
 /** The worker holds before its first probe until the parent has logged the handoff and written the go file. */
-async function waitForGo(path: string | undefined): Promise<void> {
+async function waitForGo(path: string | undefined, timeoutMs: number): Promise<void> {
   if (path === undefined) return;
-  const deadline = Date.now() + 30_000;
+  const deadline = Date.now() + timeoutMs;
   while (!existsSync(path)) {
     if (Date.now() >= deadline) return;
     await Bun.sleep(100);
@@ -44,7 +44,11 @@ async function waitForGo(path: string | undefined): Promise<void> {
 
 export async function leadRestart(d: Deps, a: Args, sessionArg?: string): Promise<number> {
   writeMarker(one(a, "marker"));
-  await waitForGo(one(a, "go"));
+  const goTimeoutArg = one(a, "go-timeout-ms");
+  const goTimeoutMs = goTimeoutArg === undefined ? 30_000 : Number(goTimeoutArg);
+  if (!Number.isFinite(goTimeoutMs) || goTimeoutMs < 0)
+    throw new Refusal("--go-timeout-ms must be a non-negative number");
+  await waitForGo(one(a, "go"), goTimeoutMs);
   const paneArg = one(a, "pane");
   const lead = paneArg === undefined ? d.store.roles().lead : refFromText(paneArg);
   if (lead === undefined)

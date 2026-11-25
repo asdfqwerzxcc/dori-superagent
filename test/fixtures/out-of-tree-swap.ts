@@ -7,10 +7,11 @@ const [dir] = process.argv.slice(2);
 if (dir === undefined) throw new Error("usage: out-of-tree-swap.ts <dir>");
 const marker = join(dir, "worker-ready.txt");
 const go = join(dir, "worker-go.txt");
+const control = join(dir, "writer-control.txt");
 const writer = join(import.meta.dir, "out-of-tree-writer.ts");
 try {
 	const launched = await launchOutOfTree(spawnExec, {
-		argv: [process.execPath, writer, dir, marker],
+		argv: [process.execPath, writer, dir, marker, go, control],
 		env: { DORI_E2E: "1" },
 		cwd: process.cwd(),
 		marker,

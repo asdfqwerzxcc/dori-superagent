@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { insideLeadTree, launchOutOfTree, swapWorkerArgv, swapWorkerEnv } from "../src/lead-swap-detach.ts";
@@ -63,10 +63,12 @@ describe("the out-of-tree lead swap", () => {
     expect(insideLeadTree(procs, new Set([9]), 4)).toBe(false);
   });
 
-  test("the worker environment keeps DORI_/HERDR_ and the OS basics, and drops the rest", () => {
+  test("the worker environment is the minimal allowlist, never a DORI_/HERDR_ blanket", () => {
     const env = swapWorkerEnv(
       {
         DORI_HOME: "C:\\dori",
+        DORI_HERDR_SESSION: "dori",
+        DORI_TOKEN: "secret",
         HERDR_PANE_ID: "w1:p1",
         PATH: "C:\\bin",
         SECRET: "no",
@@ -76,7 +78,7 @@ describe("the out-of-tree lead swap", () => {
     );
     expect(env).toEqual({
       DORI_HOME: "C:\\dori",
-      HERDR_PANE_ID: "w1:p1",
+      DORI_HERDR_SESSION: "dori",
       PATH: "C:\\bin",
       DORI_AGENT_CMD: "omo",
     });
@@ -160,8 +162,8 @@ describe("the out-of-tree lead swap", () => {
         const text = readText(join(dir, "writer.pid"));
         return text === undefined || text === "" ? undefined : Number(text);
       });
+      await until("the writer to pass the go gate", () => readText(join(dir, "writer-go-seen.txt")));
       expect(readText(join(dir, "swap-error.txt"))).toBeUndefined();
-      const killedAt = Date.now();
       const killLead = Bun.spawn(["taskkill", "/PID", String(lead.pid), "/F"], {
         stdout: "ignore",
         stderr: "ignore",
@@ -169,10 +171,12 @@ describe("the out-of-tree lead swap", () => {
       });
       await killLead.exited;
       expect(await alive(lead.pid)).toBe(false);
-      await sleep(2500);
+      expect(await alive(writerPid)).toBe(true);
+      const controlAt = Date.now();
+      writeFileSync(join(dir, "writer-control.txt"), "done");
       const done = join(dir, "writer-done.txt");
-      expect(existsSync(done)).toBe(true);
-      expect(statSync(done).mtimeMs).toBeGreaterThan(killedAt);
+      await until("the writer to finish after the control file", () => (existsSync(done) ? true : undefined));
+      expect(statSync(done).mtimeMs).toBeGreaterThanOrEqual(controlAt);
       expect(await alive(writerPid)).toBe(true);
     } finally {
       if (writerPid !== undefined) await kill(writerPid);

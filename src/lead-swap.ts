@@ -1,4 +1,5 @@
 // The lead restart: drain, kill the pane's lead tree, wait for a shell, type the relaunch, and prove a new pid+engine.
+// Inside-lead Windows delegation: exit 0 means handed off, not restarted; the worker (worker=1) logs RESTARTED/FAILED.
 import { existsSync } from "node:fs";
 import { failureDetail } from "./delivery.ts";
 import { insideLeadTree, releaseSwap, targetScope, type LeadSwapPlan } from "./lead-swap-detach.ts";
@@ -129,7 +130,6 @@ export async function runLeadSwap(opts: LeadSwapOptions): Promise<LeadSwapResult
       return fail(`could not start the out-of-tree swap: ${failureDetail(e)}`);
     }
   }
-
   if (!opts.force) {
     opts.log(`LEADSWAP drain pane=${refText(opts.pane)} status=${first.status}`);
     const deadline = opts.now() + opts.drainMs;

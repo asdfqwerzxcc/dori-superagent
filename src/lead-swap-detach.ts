@@ -31,6 +31,8 @@ export type OutOfTreeLaunch = {
   /** The parent writes this after logging the handoff; the worker does not probe or kill before it exists. */
   readonly go: string;
   readonly launcherDir: string;
+  /** How long to wait for the worker's ready marker; tests shorten it. */
+  readonly readyMs?: number;
 };
 
 export type LaunchedSwap = { readonly pid: number; readonly go: () => void };
@@ -40,7 +42,7 @@ const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 const powershellPath = (): string =>
   join(process.env["SystemRoot"] ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 
-const PASS_ENV = new Set([
+const WORKER_ENV = new Set([
   "PATH",
   "Path",
   "PATHEXT",
@@ -60,9 +62,12 @@ const PASS_ENV = new Set([
   "NUMBER_OF_PROCESSORS",
   "OS",
   "PROCESSOR_ARCHITECTURE",
+  "DORI_HOME",
+  "DORI_HERDR_SESSION",
+  "DORI_AGENT_CMD",
 ]);
 
-/** The environment the out-of-tree worker needs: the OS basics, every DORI_/HERDR_ setting, then the caller's own. */
+/** The minimal worker environment: never a blanket DORI_/HERDR_ copy, so unrelated tokens cannot land in the .ps1. */
 export function swapWorkerEnv(
   base: Readonly<Record<string, string | undefined>>,
   extra: Readonly<Record<string, string>>,
@@ -70,7 +75,7 @@ export function swapWorkerEnv(
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(base)) {
     if (value === undefined || value === "" || key.startsWith("=")) continue;
-    if (!key.startsWith("DORI_") && !key.startsWith("HERDR_") && !PASS_ENV.has(key)) continue;
+    if (!WORKER_ENV.has(key)) continue;
     if (/[\r\n]/.test(value)) continue;
     out[key] = value;
   }
@@ -89,46 +94,44 @@ export async function launchOutOfTree(exec: Exec, launch: OutOfTreeLaunch): Prom
   rmSync(launch.marker, { force: true });
   rmSync(launch.go, { force: true });
   const launcher = join(launch.launcherDir, `lead-swap-${process.pid}-${Date.now()}.ps1`);
-  const body = [
-    "$ErrorActionPreference = 'Stop'",
-    `Remove-Item -LiteralPath ${quote(launcher)} -Force -ErrorAction SilentlyContinue`,
-    ...Object.entries(launch.env).map(
-      ([key, value]) => `[Environment]::SetEnvironmentVariable(${quote(key)}, ${quote(value)})`,
-    ),
-    `Set-Location -LiteralPath ${quote(launch.cwd)} -ErrorAction SilentlyContinue`,
-    `& ${launch.argv.map(quote).join(" ")}`,
-    "exit $LASTEXITCODE",
-  ];
-  writeFileSync(launcher, `\uFEFF${body.join("\r\n")}\r\n`, "utf8");
-  const commandLine = `"${powershellPath()}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${launcher}"`;
-  const script = [
-    "$startup = New-CimInstance -ClassName Win32_ProcessStartup -Namespace root/cimv2 -Property @{ ShowWindow = [uint16]0 } -ClientOnly",
-    `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ${quote(commandLine)}; ProcessStartupInformation = $startup }`,
-    "if ($r.ReturnValue -ne 0) { Write-Output ('RET=' + $r.ReturnValue); exit 1 }",
-    "Write-Output ('PID=' + $r.ProcessId)",
-  ].join("; ");
-  let result: Awaited<ReturnType<Exec>>;
   try {
-    result = await exec(powershellPath(), ["-NoProfile", "-NonInteractive", "-Command", script], {});
-  } catch (e) {
-    rmSync(launcher, { force: true });
-    throw e;
-  }
-  const pid = Number(/PID=(\d+)/.exec(result.stdout)?.[1]);
-  if (result.code !== 0 || !Number.isInteger(pid) || pid <= 0) {
-    rmSync(launcher, { force: true });
-    const why = (result.stderr || result.stdout).trim().replaceAll(/\s+/g, " ").slice(0, 300);
-    throw new Error(`Win32_Process.Create failed (${result.code}): ${why}`);
-  }
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    if (existsSync(launch.marker)) {
-      rmSync(launch.marker, { force: true });
-      return { pid, go: () => writeFileSync(launch.go, String(pid)) };
+    const body = [
+      "$ErrorActionPreference = 'Stop'",
+      `Remove-Item -LiteralPath ${quote(launcher)} -Force -ErrorAction SilentlyContinue`,
+      ...Object.entries(launch.env).map(
+        ([key, value]) => `[Environment]::SetEnvironmentVariable(${quote(key)}, ${quote(value)})`,
+      ),
+      `Set-Location -LiteralPath ${quote(launch.cwd)} -ErrorAction SilentlyContinue`,
+      `& ${launch.argv.map(quote).join(" ")}`,
+      "exit $LASTEXITCODE",
+    ];
+    writeFileSync(launcher, `\uFEFF${body.join("\r\n")}\r\n`, "utf8");
+    const commandLine = `"${powershellPath()}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${launcher}"`;
+    const script = [
+      "$startup = New-CimInstance -ClassName Win32_ProcessStartup -Namespace root/cimv2 -Property @{ ShowWindow = [uint16]0 } -ClientOnly",
+      `$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ${quote(commandLine)}; ProcessStartupInformation = $startup }`,
+      "if ($r.ReturnValue -ne 0) { Write-Output ('RET=' + $r.ReturnValue); exit 1 }",
+      "Write-Output ('PID=' + $r.ProcessId)",
+    ].join("; ");
+    const result = await exec(powershellPath(), ["-NoProfile", "-NonInteractive", "-Command", script], {});
+    const pid = Number(/PID=(\d+)/.exec(result.stdout)?.[1]);
+    if (result.code !== 0 || !Number.isInteger(pid) || pid <= 0) {
+      const why = (result.stderr || result.stdout).trim().replaceAll(/\s+/g, " ").slice(0, 300);
+      throw new Error(`Win32_Process.Create failed (${result.code}): ${why}`);
     }
-    await Bun.sleep(100);
+    const deadline = Date.now() + (launch.readyMs ?? 5000);
+    while (Date.now() < deadline) {
+      if (existsSync(launch.marker)) {
+        rmSync(launch.marker, { force: true });
+        return { pid, go: () => writeFileSync(launch.go, String(pid)) };
+      }
+      await Bun.sleep(100);
+    }
+    throw new Error(`the out-of-tree swap pid=${pid} did not report ready within 5000ms`);
+  } finally {
+    // The launcher carries the worker env in plaintext; it must not outlive any failed or completed start.
+    rmSync(launcher, { force: true });
   }
-  throw new Error(`the out-of-tree swap pid=${pid} did not report ready within 5000ms`);
 }
 
 /** The rows the target matcher may see: never the caller itself and never a swap worker's own argv. */
