@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Exec } from "../runtime/exec.ts";
 import { ConfigError, RuntimeChoiceError, readRuntimeChoice } from "../runtime/select.ts";
@@ -35,27 +35,43 @@ export type OpenUnitPanesOptions = {
 
 /**
  * Typed pane ids on disk: a supervisor restarted in the middle of a 10 s start window must still know which pane holds a
- * pending line. A missing or unreadable file is an empty set (worst case one pane is closed and reopened); a write
- * failure never stops placement.
+ * pending line. A missing file is an empty set; an unreadable or malformed file reads as undefined, so placement treats
+ * every stopped pane as possibly pending instead of typing over it. Writes use a temp file and a rename, so a crash never
+ * leaves a truncated set; a failure is logged and placement keeps going.
  */
-export function panePendingStore(home: string): PendingPanes {
+export function panePendingStore(home: string, warn?: (line: string) => void): PendingPanes {
   const dir = stateDir(home);
   const path = join(dir, "panes-pending.json");
+  const failed = (what: string, e: unknown): void => {
+    warn?.(`SUPERVISED panes_pending_${what} reason=${oneLine(e)}`);
+  };
   return {
     read: () => {
+      let text: string;
       try {
-        const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
-        return Array.isArray(raw) ? raw.filter((id): id is string => typeof id === "string") : [];
-      } catch {
-        return [];
+        text = readFileSync(path, "utf8");
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+        failed("unreadable", e);
+        return undefined;
+      }
+      try {
+        const raw: unknown = JSON.parse(text);
+        if (!Array.isArray(raw)) throw new Error("not a list");
+        return raw.filter((id): id is string => typeof id === "string");
+      } catch (e) {
+        failed("unreadable", e);
+        return undefined;
       }
     },
     write: (ids) => {
+      const tmp = `${path}.tmp`;
       try {
         mkdirSync(dir, { recursive: true });
-        writeFileSync(path, `${JSON.stringify(ids)}\n`);
-      } catch {
-        // A pane set that cannot be written only costs a reopen after a restart; placement itself keeps going.
+        writeFileSync(tmp, `${JSON.stringify(ids)}\n`);
+        renameSync(tmp, path);
+      } catch (e) {
+        failed("write_failed", e);
       }
     },
   };
@@ -103,7 +119,7 @@ export async function openUnitPanes(o: OpenUnitPanesOptions): Promise<UnitPanes 
   }
   o.log(`SUPERVISED panes ready runtime=${kind}`);
   return {
-    units: new PaneUnits({ adapter, log: o.log, sleep: o.sleep, pending: panePendingStore(o.home) }),
+    units: new PaneUnits({ adapter, log: o.log, sleep: o.sleep, pending: panePendingStore(o.home, o.log) }),
     shell: o.shell ?? (kind === "hc" || process.platform !== "win32" ? "sh" : "powershell"),
   };
 }

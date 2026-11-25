@@ -29,6 +29,14 @@ describe("supervisor records and heartbeats", () => {
     );
   });
 
+  test("the record's startedAt reaches SupervisorHealth for the startup snapshot label", () => {
+    const home = homeWithState();
+    beat(home, "supervisor-heartbeat");
+    supervisorRecord(home);
+    const [supervisor] = supervisorHealth(home, NOW);
+    expect(supervisor?.startedAt).toBe(NOW - 60_000);
+  });
+
   test("a stale beat or a dead recorded pid is DOWN, and a dead unit says so", () => {
     const home = homeWithState();
     beat(home, "supervisor-heartbeat", NOW - 300_000);

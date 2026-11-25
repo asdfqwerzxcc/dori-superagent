@@ -1,4 +1,5 @@
 import { printable } from "../unit-placement.ts";
+import { clearDoubtPanes, settleLine } from "./pane-settle.ts";
 import type { RuntimeKind, SessionRef } from "../runtime/types.ts";
 import {
   oneLine,
@@ -25,10 +26,13 @@ const UNKNOWN_WAIT_MS = 10_000;
  */
 export class PaneUnits {
   private readonly typed: Set<string>;
+  private readonly pendingUnreadable: boolean;
   private readonly unknownSince = new Map<string, number>();
 
   constructor(private readonly o: PaneUnitsOptions) {
-    this.typed = new Set(o.pending?.read() ?? []);
+    const loaded = o.pending?.read();
+    this.typed = new Set(loaded ?? []);
+    this.pendingUnreadable = o.pending !== undefined && loaded === undefined;
   }
 
   get kind(): RuntimeKind {
@@ -39,25 +43,35 @@ export class PaneUnits {
     await this.o.adapter.ready();
     const now = this.o.now ?? Date.now;
     const deadline = now() + (this.o.pidTimeoutMs ?? PID_BUDGET_MS);
-    const attempts = this.attempts();
+    const attempts = Math.max(1, this.o.startAttempts ?? START_ATTEMPTS);
     const stopped: SessionRef[] = [];
     const doubtful: SessionRef[] = [];
+    let hint: PlacedUnit | undefined;
     let unknown: string | undefined;
     for (const ref of await this.scan(unit.name)) {
       const probe = await this.probe(ref, unit);
       if (probe.kind === "running") {
+        // The named pane wins; a hinted leftover must not keep a second copy of the unit.
+        if (hint !== undefined) await this.closeRetry(unit.name, hint.pane);
         this.mark(ref.id, false);
         this.unknownSince.delete(unit.name);
         return { pid: probe.pid, pane: ref };
       }
       if (probe.kind === "unknown") {
-        const hinted = this.hinted(probe, ref);
-        if (hinted !== undefined) return hinted;
-        doubtful.push(ref);
-        unknown ??= probe.why;
+        const pid = this.hinted(probe, ref);
+        if (pid !== undefined) hint ??= { pid, pane: ref };
+        else {
+          doubtful.push(ref);
+          unknown ??= probe.why;
+        }
       } else {
         stopped.push(ref);
       }
+    }
+    if (hint !== undefined) {
+      this.mark(hint.pane.id, false);
+      this.unknownSince.delete(unit.name);
+      return hint;
     }
     if (unknown !== undefined) {
       if (!(await this.clearDoubt(unit, doubtful, now()))) {
@@ -67,40 +81,25 @@ export class PaneUnits {
       this.unknownSince.delete(unit.name);
     }
     // Every stopped pane the previous placement typed into may still hold that line: close them all, type into none.
+    const protectedPane = (id: string): boolean => this.typed.has(id) || this.pendingUnreadable;
     const closed = new Set<string>();
-    for (const ref of stopped.filter((r) => this.typed.has(r.id))) {
+    for (const ref of stopped.filter((r) => protectedPane(r.id))) {
       if (!(await this.closeRetry(unit.name, ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
       closed.add(ref.id);
     }
-    const reuse = stopped.find((r) => !closed.has(r.id) && !this.typed.has(r.id));
+    const reuse = stopped.find((r) => !closed.has(r.id) && !protectedPane(r.id));
     let lines = 0;
     let tries = 0;
     let lastStart: unknown;
+    if (reuse !== undefined && now() >= deadline) {
+      throw new Error(`no ${unit.name} process appeared: the placement budget ran out before a line was typed`);
+    }
     if (reuse !== undefined) {
       tries = 1;
-      try {
-        this.mark(reuse.id, true);
-        await this.o.adapter.start(reuse, unit.command);
-        lines = 1;
-      } catch (e) {
-        lastStart = e;
-        this.o.log(`SUPERVISED ${printable(unit.name)}_pane_start_failed reason=${printable(oneLine(e))}`);
-        if (!(await this.closeRetry(unit.name, reuse))) throw new PaneCloseFailed(`could not close ${reuse.id}`);
-      }
-      if (lines === 1) {
-        const probe = await this.settle(reuse, unit, deadline);
-        if (probe.kind === "running") {
-          this.mark(reuse.id, false);
-          return { pid: probe.pid, pane: reuse };
-        }
-        const hinted = this.hinted(probe, reuse);
-        if (hinted !== undefined) return hinted;
-        if (probe.kind === "unknown") throw new PaneUnknown(`cannot tell whether ${unit.name} started: ${probe.why}`);
-        this.o.log(
-          `SUPERVISED ${printable(unit.name)}_pane_start_failed reason=no ${printable(unit.name)} process appeared in ${printable(reuse.id)} after 1 attempt`,
-        );
-        if (!(await this.closeRetry(unit.name, reuse))) throw new PaneCloseFailed(`could not close ${reuse.id}`);
-      }
+      const outcome = await this.startIn(unit, reuse, deadline);
+      if (outcome.placed !== undefined) return outcome.placed;
+      if (outcome.typed) lines = 1;
+      else lastStart = outcome.failure;
     }
     const cap = Math.max(0, this.o.retryCapMs ?? RETRY_CAP_MS);
     let delay = Math.min(Math.max(0, this.o.retryBaseMs ?? RETRY_BASE_MS), cap);
@@ -115,31 +114,14 @@ export class PaneUnits {
       tries += 1;
       const fresh = await this.o.adapter.open(unit.name);
       if (now() >= deadline) {
-        if (!(await this.closeRetry(unit.name, fresh))) throw new PaneCloseFailed(`could not close ${fresh.id}`);
+        // Nothing was typed here: a pane that will not close is an empty leftover, not a pending unit.
+        await this.closeRetry(unit.name, fresh);
         break;
       }
-      try {
-        this.mark(fresh.id, true);
-        await this.o.adapter.start(fresh, unit.command);
-      } catch (e) {
-        lastStart = e;
-        this.o.log(`SUPERVISED ${printable(unit.name)}_pane_start_failed reason=${printable(oneLine(e))}`);
-        if (!(await this.closeRetry(unit.name, fresh))) throw new PaneCloseFailed(`could not close ${fresh.id}`);
-        continue;
-      }
-      lines += 1;
-      const probe = await this.settle(fresh, unit, deadline);
-      if (probe.kind === "running") {
-        this.mark(fresh.id, false);
-        return { pid: probe.pid, pane: fresh };
-      }
-      const hinted = this.hinted(probe, fresh);
-      if (hinted !== undefined) return hinted;
-      if (probe.kind === "unknown") throw new PaneUnknown(`cannot tell whether ${unit.name} started: ${probe.why}`);
-      this.o.log(
-        `SUPERVISED ${printable(unit.name)}_pane_start_failed reason=no ${printable(unit.name)} process appeared in ${printable(fresh.id)} after 1 attempt`,
-      );
-      if (!(await this.closeRetry(unit.name, fresh))) throw new PaneCloseFailed(`could not close ${fresh.id}`);
+      const outcome = await this.startIn(unit, fresh, deadline);
+      if (outcome.placed !== undefined) return outcome.placed;
+      if (outcome.typed) lines += 1;
+      else lastStart = outcome.failure;
     }
     if (lines === 0) {
       throw new Error(
@@ -157,28 +139,25 @@ export class PaneUnits {
     this.mark(ref.id, false);
   }
 
-  /** A foreground pid the runtime cannot name is the unit when this supervisor's line is the one typed into that pane. */
-  private hinted(probe: PaneProbe, ref: SessionRef): PlacedUnit | undefined {
+  /** The foreground pid of a pane this supervisor typed into, which the runtime cannot name; the caller adopts it. */
+  private hinted(probe: PaneProbe, ref: SessionRef): number | undefined {
     if (probe.kind !== "unknown" || probe.pid === undefined || !this.typed.has(ref.id)) return undefined;
-    this.mark(ref.id, false);
-    this.unknownSince.delete(ref.id);
-    return { pid: probe.pid, pane: ref };
+    return probe.pid;
   }
 
-  /** An unnamed hc foreground is doubt; after the bounded wait its pane is closed (no copy survives) and replaced. */
-  private async clearDoubt(unit: PaneUnit, panes: readonly SessionRef[], now: number): Promise<boolean> {
-    if (this.kind !== "hc" || panes.length === 0) return false;
-    const since = this.unknownSince.get(unit.name) ?? now;
-    this.unknownSince.set(unit.name, since);
-    if (now - since < (this.o.unknownWaitMs ?? UNKNOWN_WAIT_MS)) return false;
-    this.o.log(
-      `SUPERVISED ${printable(unit.name)}_pane_doubt_closed panes=${panes.length} after=${Math.round((now - since) / 1000)}s`,
+  private clearDoubt(unit: PaneUnit, panes: readonly SessionRef[], now: number): Promise<boolean> {
+    return clearDoubtPanes(
+      {
+        kind: this.kind,
+        waitMs: this.o.unknownWaitMs ?? UNKNOWN_WAIT_MS,
+        now,
+        log: this.o.log,
+        close: (ref) => this.closeRetry(unit.name, ref),
+      },
+      unit.name,
+      panes,
+      this.unknownSince,
     );
-    for (const ref of panes) {
-      if (!(await this.closeRetry(unit.name, ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
-    }
-    this.unknownSince.delete(unit.name);
-    return true;
   }
 
   private async scan(name: string): Promise<readonly SessionRef[]> {
@@ -198,12 +177,53 @@ export class PaneUnits {
   }
 
   /** A throw while reading the pane after typing is doubt, not a dead unit: the typed line may still run. */
-  private async settle(ref: SessionRef, unit: PaneUnit, deadline: number): Promise<PaneProbe> {
+  private settle(ref: SessionRef, unit: PaneUnit, deadline: number): Promise<PaneProbe> {
+    return settleLine(
+      {
+        probe: (r, marker, program) => this.o.adapter.pid(r, marker, program),
+        now: this.o.now ?? Date.now,
+        sleep: this.o.sleep,
+        pollMs: this.o.pidPollMs ?? 300,
+        windowMs: this.o.startWindowMs ?? START_WINDOW_MS,
+      },
+      ref,
+      unit.marker,
+      unit.program,
+      deadline,
+    );
+  }
+
+  /** Types one line and waits for it; a refusal closes the pane, a death closes it, an unreadable read is doubt. */
+  private async startIn(
+    unit: PaneUnit,
+    ref: SessionRef,
+    deadline: number,
+  ): Promise<{ readonly placed?: PlacedUnit; readonly typed: boolean; readonly failure?: unknown }> {
     try {
-      return await this.settled(ref, unit, deadline);
+      this.mark(ref.id, true);
+      await this.o.adapter.start(ref, unit.command);
     } catch (e) {
-      throw new PaneUnknown(`cannot read pane ${ref.id} after typing: ${oneLine(e)}`);
+      this.o.log(`SUPERVISED ${printable(unit.name)}_pane_start_failed reason=${printable(oneLine(e))}`);
+      if (!(await this.closeRetry(unit.name, ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
+      return { typed: false, failure: e };
     }
+    const probe = await this.settle(ref, unit, deadline);
+    if (probe.kind === "running") {
+      this.mark(ref.id, false);
+      return { placed: { pid: probe.pid, pane: ref }, typed: true };
+    }
+    const pid = this.hinted(probe, ref);
+    if (pid !== undefined) {
+      this.mark(ref.id, false);
+      this.unknownSince.delete(unit.name);
+      return { placed: { pid, pane: ref }, typed: true };
+    }
+    if (probe.kind === "unknown") throw new PaneUnknown(`cannot tell whether ${unit.name} started: ${probe.why}`);
+    this.o.log(
+      `SUPERVISED ${printable(unit.name)}_pane_start_failed reason=no ${printable(unit.name)} process appeared in ${printable(ref.id)} after 1 attempt`,
+    );
+    if (!(await this.closeRetry(unit.name, ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
+    return { typed: true };
   }
 
   private mark(id: string, typed: boolean): void {
@@ -226,25 +246,5 @@ export class PaneUnits {
     }
     this.o.log(`SUPERVISED ${printable(name)}_pane_close_failed reason=${printable(oneLine(last))}`);
     return false;
-  }
-
-  private attempts(): number {
-    return Math.max(1, this.o.startAttempts ?? START_ATTEMPTS);
-  }
-
-  /** Waits for the typed line to match, bounded by its window and the deadline; the read before the close adopts a late unit. */
-  private async settled(ref: SessionRef, unit: PaneUnit, deadline: number): Promise<PaneProbe> {
-    const now = this.o.now ?? Date.now;
-    const poll = this.o.pidPollMs ?? 300;
-    const until = Math.min(now() + Math.max(0, this.o.startWindowMs ?? START_WINDOW_MS), deadline);
-    let last: PaneProbe = { kind: "stopped" };
-    for (;;) {
-      last = await this.o.adapter.pid(ref, unit.marker, unit.program);
-      if (last.kind !== "stopped") return last;
-      if (now() >= until) break;
-      const pause = Math.min(poll, until - now());
-      if (pause > 0) await this.o.sleep(pause);
-    }
-    return this.o.adapter.pid(ref, unit.marker, unit.program);
   }
 }

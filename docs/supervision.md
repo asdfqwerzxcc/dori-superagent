@@ -49,8 +49,9 @@ command in its own pane instead of a headless pipe, so `herdr pane list` shows t
   more attempts are configured; three attempts at most). A line is never typed twice into one shell, so a pending first
   line can never run later as an untracked copy, and a pane that will not close is waited on instead of replaced by a
   headless copy. The typed panes are persisted in `state/panes-pending.json`, so a `dori restart` in the middle of a
-  start window closes that pane instead of typing over the pending line; an unreadable or unwritable file only costs a
-  reopen. The 30 s budget covers the reuse of an existing pane, every `open`, and every line after the first; a pane
+  start window closes that pane instead of typing over the pending line. The file is replaced atomically (temp file
+  plus rename) and a failed write is logged; if it cannot be read, every stopped pane is treated as possibly holding a
+  pending line and is closed before reuse, so an unreadable file costs a reopen but never a duplicate line. The 30 s budget covers the reuse of an existing pane, every `open`, and every line after the first; a pane
   opened past the deadline is closed without a line being typed. All units share one `dori-ops` workspace even when
   they start at once.
 - **Fallback**: a missing runtime, no runtime on PATH, or a runtime that does not answer at startup logs one

@@ -97,3 +97,86 @@ describe("the unit loop's once-per-situation logs", () => {
     ]);
   });
 });
+
+describe("a named pane outranks a hinted one", () => {
+  test("a typed unknown listed before a running pane does not hide the unit", async () => {
+    const pending = { read: () => ["p1"], write: () => {} };
+    const { adapter, units } = placement(
+      (pane) => (pane === "p1" ? { kind: "unknown", why: "no argv", pid: 950 } : RUNNING),
+      { windowMs: 0, kind: "hc", existing: [pref("p1"), pref("p2")], pending },
+    );
+    expect(await units.place(DUTY)).toEqual({ pid: 400, pane: pref("p2") });
+    expect(adapter.closed).toEqual(["p1"]);
+    expect(adapter.starts).toHaveLength(0);
+  });
+});
+
+describe("the placement budget before reuse and on an untyped close", () => {
+  test("a scan that spends the budget before a reused pane is typed leaves the pane alone", async () => {
+    const { adapter, units } = placement(() => STOPPED, {
+      windowMs: 0,
+      budgetMs: 100,
+      panesDelayMs: 200,
+      existing: [pref("p1")],
+    });
+    const failure: unknown = await units.place(DUTY).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(String(failure)).toContain("the placement budget ran out before a line was typed");
+    expect(adapter.starts).toEqual([]);
+    expect(adapter.closed).toEqual([]);
+  });
+
+  test("an untyped pane opened past the budget that will not close does not hold the unit", async () => {
+    const { adapter, logs, units } = placement(() => STOPPED, {
+      windowMs: 0,
+      budgetMs: 100,
+      openDelayMs: 200,
+      failClose: () => true,
+    });
+    const failure: unknown = await units.place(DUTY).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(failure).not.toBeInstanceOf(PaneCloseFailed);
+    expect(String(failure)).toContain("the placement budget ran out before a line was typed");
+    expect(adapter.starts).toEqual([]);
+    expect(logs.some((line) => line.includes("duty_pane_close_failed"))).toBe(true);
+  });
+});
+
+describe("an unreadable pending store", () => {
+  test("makes every stopped pane look typed: close it, type into a fresh one", async () => {
+    const pending = { read: () => undefined, write: () => {} };
+    const { adapter, units } = placement((pane) => (pane === "p2" ? RUNNING : STOPPED), {
+      windowMs: 0,
+      existing: [pref("p1")],
+      pending,
+    });
+    expect(await units.place(DUTY)).toEqual({ pid: 400, pane: pref("p2") });
+    expect(adapter.closed).toEqual(["p1"]);
+    expect(adapter.starts.map((s) => s.pane)).toEqual(["p2"]);
+  });
+});
+
+describe("the doubt timer after an adoption", () => {
+  test("a later doubt waits its full window instead of a stale one", async () => {
+    const existing = [pref("p1")];
+    const pending = { read: () => ["p1"], write: () => {} };
+    const { advance, units } = placement(
+      (pane) =>
+        pane === "p1" ? { kind: "unknown", why: "no argv", pid: 960 } : { kind: "unknown", why: "no argv", pid: 961 },
+      { windowMs: 0, kind: "hc", unknownWaitMs: 5_000, existing, pending },
+    );
+    expect(await units.place(DUTY)).toEqual({ pid: 960, pane: pref("p1") });
+    existing.length = 0;
+    existing.push(pref("p2"));
+    advance(4_000);
+    const failure: unknown = await units.place(DUTY).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(failure).toBeInstanceOf(PaneUnknown);
+  });
+});

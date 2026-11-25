@@ -19,6 +19,7 @@ export type ScriptedOptions = {
   readonly kind?: RuntimeKind;
   readonly unknownWaitMs?: number;
   readonly openDelayMs?: number;
+  readonly panesDelayMs?: number;
   readonly advance?: (ms: number) => void;
 };
 
@@ -38,6 +39,7 @@ export class ScriptedPanes implements PaneAdapter {
 
   async ready(): Promise<void> {}
   async panes(): Promise<readonly SessionRef[]> {
+    if (this.opts.panesDelayMs !== undefined) this.opts.advance?.(this.opts.panesDelayMs);
     const open = (id: string): boolean => !this.closed.includes(id);
     return [...(this.opts.existing ?? []).filter((r) => open(r.id)), ...this.opened.filter(open).map((id) => pref(id))];
   }
@@ -89,7 +91,7 @@ export function placement(script: Script, opts: ScriptedOptions) {
     ...(opts.pending === undefined ? {} : { pending: opts.pending }),
     ...(opts.unknownWaitMs === undefined ? {} : { unknownWaitMs: opts.unknownWaitMs }),
   });
-  return { adapter, logs, sleeps, units };
+  return { adapter, advance, logs, sleeps, units };
 }
 
 export const startsOn = (adapter: ScriptedPanes, pane: string): number =>

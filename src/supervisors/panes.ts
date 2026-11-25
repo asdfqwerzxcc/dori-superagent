@@ -52,7 +52,8 @@ export interface PaneAdapter {
 
 /** Pane ids with a typed line that has not become the unit yet; kept across a supervisor restart. */
 export type PendingPanes = {
-  readonly read: () => readonly string[];
+  /** `undefined` when the store is unreadable: placement then treats every stopped pane as possibly pending. */
+  readonly read: () => readonly string[] | undefined;
   readonly write: (ids: readonly string[]) => void;
 };
 
