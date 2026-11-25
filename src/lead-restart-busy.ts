@@ -8,8 +8,10 @@ import { dirname, join } from "node:path";
 import { pidAlive } from "./process-liveness.ts";
 
 export const LEAD_RESTART_BUSY = "lead-restart.busy";
-/** Legacy fallback for a record without `until`; production writes `leadRestartTtl` (390 s at the default drain). */
-export const LEAD_RESTART_BUSY_MS = 5 * 60_000;
+/** The default deadline at the default 180 s drain; production still computes it per swap. */
+export const LEAD_RESTART_BUSY_MS = 390_000;
+/** A record without `until` predates per-swap deadlines. */
+export const LEAD_RESTART_LEGACY_MS = 5 * 60_000;
 export const LEAD_RESTART_OWNER_GRACE_MS = 10_000;
 export const LEAD_RESTART_MARGIN_MS = 60_000;
 
@@ -44,7 +46,7 @@ export function leadRestartBusy(home: string, now: number = Date.now()): boolean
     until =
       record !== undefined && Number.isFinite(record.until)
         ? record.until
-        : statSync(pathOf(home)).mtimeMs + LEAD_RESTART_BUSY_MS;
+        : statSync(pathOf(home)).mtimeMs + LEAD_RESTART_LEGACY_MS;
   } catch {
     return false;
   }
