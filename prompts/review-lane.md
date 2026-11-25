@@ -10,7 +10,7 @@ Check the change against the lane's stated goal: correctness, regressions, missi
 
 A numbered requirement (`rN`) with no change or evidence behind it is a HIGH finding unless the lane marked it `handed-off` with the recipient. A new path, URL, repository or dependency with no reachability evidence is HIGH.
 
-List each finding as: severity (HIGH/MEDIUM/LOW), file:line, problem, fix.
+List each finding as: severity (HIGH/MEDIUM/LOW), file:line, problem, fix. Keep citation and inference apart: `file:line` or a command you ran is a citation, a reason you infer is labelled `inference`, and where the brief, commit message or PR does not say why, write `record is silent` instead of a reason.
 Then print exactly one final line:
 VERDICT: CLEAR   (no HIGH or MEDIUM findings)
 VERDICT: BLOCK   (at least one HIGH or MEDIUM finding)
