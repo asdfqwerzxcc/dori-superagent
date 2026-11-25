@@ -164,6 +164,18 @@ present, else origin; an upstream is refused), creates or updates the PR against
 pending or failed, merges with a merge commit, and deletes the remote branch. A repository with no configured workflows
 records `checks=none` and is not refused. The `dori merge <owner/repo#N>` form remains for non-lane PRs.
 
+### The bundle path: several lanes, one PR
+
+A bundle is explicit mode, not the default landing path: `dori bundle open <id> --title T` and `dori bundle add <id>
+<lane>...` record members, and `dori bundle land <id>` builds `bundle/<id>` and opens one PR for all of them. Each lane
+keeps its own receipt: `add` admits a lane only while its receipt is CLEAR and covers the current `lane/<key>` head (the
+exact tip or the same `patchId`+`contentId`), and the bundle record (`state/bundles/<id>.json`) keeps only
+`{lane, sha, verdict, reviewer}` per member, never a copy of the receipt. The bundle PR carries the gate verdict: a
+reviewer records it in `receipts/` against the bundle PR's head with `dori review <owner/repo#N> --attest ...`, and
+`dori merge <owner/repo#N> --bundle <id>` decides on that PR. A CLEAR receipt at the bundle head satisfies the review
+dimension by itself; otherwise the gate re-reads every recorded member receipt at the sha it was admitted on, refuses a
+member that moved or is no longer CLEAR, and then applies the shared check gate.
+
 ## `dori done`: close and clean up after the PR lands
 
 `dori done <key>` is the close path, not the landing path; `dori merge <key>` lands the PR. `done` refuses to close a
