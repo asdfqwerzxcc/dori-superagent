@@ -43,7 +43,7 @@ Lee: "이게 나의 정형적인 워크플로우가 될 거야. 어떠한 프로
 | 리뷰(PR·레인) | 2시간 | 250000 | 안전 지점에서 멈춤, 미검증 항목 명시, 불완전하면 `VERDICT: BLOCK` |
 | 레인 | 3시간 | 400000 | pause-safely: 현재 원자 단계 종료, `wip:` 커밋, `$DORI_HOME/briefs/<key>.state.md`, `--status waiting` |
 
-값의 단일 소스는 `src/worker-limits.ts`이고, `prompts/review.md`·`prompts/lane-footer.md`·`prompts/lead.md`에 렌더된다. 시간은 벽시계이고, 토큰은 워커가 자기 세션에서 읽는 값이다(하네스는 별도 토큰 카운터를 두지 않는다). 하네스는 나이로 실행을 죽이지 않는다: 워커가 스스로 멈추고 보고하며, 리드가 천장을 올릴지 작업을 쪼갤지 결정한다. 천장은 목표가 아니라 안전망이다.
+값의 단일 소스는 `src/worker-limits.ts`이고, `prompts/review.md`·`prompts/review-lane.md`·`prompts/lane-footer.md`·`prompts/duty.md`·`prompts/lead.md`에 렌더된다. 시간은 벽시계이고, 토큰은 워커가 자기 세션에서 읽는 값이다(하네스는 별도 토큰 카운터를 두지 않는다). 하네스는 나이로 실행을 죽이지 않는다: 워커가 스스로 멈추고 보고하며, 리드가 천장을 올릴지 작업을 쪼갤지 결정한다. 천장은 목표가 아니라 안전망이다.
 
 ### 안전 정지 (pause-safely)
 
