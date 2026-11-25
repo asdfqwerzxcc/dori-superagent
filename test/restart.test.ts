@@ -156,6 +156,8 @@ describe("dori restart", () => {
           healthWhereUnitsAreThisProcess(recovered ? [...CORE, "ensure-up"] : ["discord-gateway", "loop", "ensure-up"]),
         waitFresh: async () => true,
         waitEnsureUp: async () => ({ pid: process.pid, alive: true }),
+        waitUnit: async () => true,
+        dedupe: async () => ({ kept: process.pid, killed: [] }),
       },
     });
     expect(ensures).toBe(2);
@@ -163,6 +165,80 @@ describe("dori restart", () => {
     expect(result.ok).toBe(true);
     expect(result.missing).toEqual([]);
     expect(result.expected).toEqual([...CORE, "ensure-up"]);
+  });
+
+  test("the dedupe verdict travels with the restart result", async () => {
+    const home = homeWithOnlyEnsureUpEnabled();
+    const events: string[] = [];
+    const result = await restartSupervisors(home, {
+      timeoutMs: 1_000,
+      io: {
+        kill: async () => {
+          events.push("kill");
+          return [];
+        },
+        dedupe: async () => {
+          events.push("dedupe");
+          return { kept: process.pid, killed: [12] };
+        },
+        ensure: async () => {
+          events.push("ensure");
+          return [];
+        },
+        health: () => healthWhereUnitsAreThisProcess([...CORE, "ensure-up"]),
+        waitFresh: async () => true,
+        waitEnsureUp: async () => ({ pid: 11, alive: true }),
+        waitUnit: async () => {
+          events.push("waitUnit");
+          return true;
+        },
+        sleep: async () => {},
+        now: () => 1_000,
+      },
+    });
+    expect(events).toEqual(["kill", "dedupe", "ensure", "waitUnit", "dedupe"]);
+    expect(result.dupes).toEqual({ kept: process.pid, killed: [12] });
+    expect(result.ok).toBe(true);
+  });
+
+  test("a failed dedupe fails the restart verdict and names the pid", async () => {
+    const home = homeWithOnlyEnsureUpEnabled();
+    const result = await restartSupervisors(home, {
+      timeoutMs: 1_000,
+      io: {
+        kill: async () => [],
+        dedupe: async () => ({ kept: process.pid, killed: [], failed: [process.ppid] }),
+        ensure: async () => [],
+        health: () => healthWhereUnitsAreThisProcess([...CORE, "ensure-up"]),
+        waitFresh: async () => true,
+        waitEnsureUp: async () => ({ pid: 11, alive: true }),
+        waitUnit: async () => true,
+        sleep: async () => {},
+        now: () => 1_000,
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.missing).toContain(`ensure-up dedupe failed=${process.ppid}`);
+  });
+
+  test("a killed duplicate whose replacement never beats fails the verdict", async () => {
+    const home = homeWithOnlyEnsureUpEnabled();
+    const result = await restartSupervisors(home, {
+      timeoutMs: 1_000,
+      io: {
+        kill: async () => [],
+        dedupe: async () => ({ kept: process.pid, killed: [process.pid + 1] }),
+        ensure: async () => [],
+        health: () => healthWhereUnitsAreThisProcess([...CORE, "ensure-up"]),
+        waitFresh: async () => true,
+        waitEnsureUp: async () => ({ alive: false }),
+        waitUnit: async () => true,
+        sleep: async () => {},
+        now: () => 1_000,
+      },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.missing.length).toBeGreaterThan(0);
   });
 
   test("two failed attempts name each missing heartbeat and unit before the verdict", async () => {
@@ -184,6 +260,8 @@ describe("dori restart", () => {
         health: () => healthWhereUnitsAreThisProcess(["discord-gateway", "loop", "ensure-up"]),
         waitFresh: async () => false,
         waitEnsureUp: async () => ({ alive: false }),
+        waitUnit: async () => true,
+        dedupe: async () => ({ kept: process.pid, killed: [] }),
       },
     });
     expect(ensures).toBe(2);

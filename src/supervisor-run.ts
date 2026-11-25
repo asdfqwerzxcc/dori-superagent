@@ -1,14 +1,11 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { PLUGINS } from "./plugins/registry.ts";
-import { pluginRunEntry } from "./plugins/plugin.ts";
-import { isPluginEnabled, readPluginRecord } from "./plugins/state.ts";
+import { readPluginRecord } from "./plugins/state.ts";
 import { acquirePidLock } from "./pid-lock.ts";
 import { pidAlive, processStartTimeMs, startedNear, terminateProcess } from "./process-liveness.ts";
 import {
   ageMs,
-  ensureUpHealth,
-  ensureUpOff,
   ensureUpRecord,
   entryFor,
   freshSince,
@@ -17,7 +14,6 @@ import {
   SUPERVISORS,
   supervisorHealth,
   supervisorRecord,
-  type EnsureUpHealth,
   type SupervisorHealth,
   type SupervisorName,
 } from "./supervisors.ts";
@@ -57,9 +53,11 @@ export function recordedChildren(home: string): RecordedChild[] {
 }
 
 /** Alive and still the process the record named; an unreadable start time is doubt, not evidence of a reused pid. */
-export function recordedAlive(child: RecordedChild): boolean {
+export type RecordedAliveDeps = { readonly started?: (pid: number) => number | null };
+
+export function recordedAlive(child: RecordedChild, deps: RecordedAliveDeps = {}): boolean {
   if (child.pid === process.pid || !pidAlive(child.pid)) return false;
-  const started = processStartTimeMs(child.pid);
+  const started = (deps.started ?? processStartTimeMs)(child.pid);
   return started === null || Math.abs(started - child.at) <= 10_000;
 }
 
@@ -122,6 +120,7 @@ export type EnsureSupervisorsOptions = {
   readonly spawn?: typeof spawnDetached;
   readonly alive?: (pid: number) => boolean;
   readonly sleep?: (ms: number) => Promise<void>;
+  readonly now?: () => number;
 };
 
 /** Starts the supervisors whose record is absent or dead; a live recorded one is left alone (no process scan). */
@@ -143,43 +142,11 @@ export async function ensureSupervisors(
     await waitFresh(
       spawned.map((name) => heartbeatPath(home, name)),
       started,
-      { timeoutMs: waitMs, ...(deps.sleep === undefined ? {} : { sleep: deps.sleep }) },
+      {
+        timeoutMs: waitMs,
+        ...(deps.sleep === undefined ? {} : { sleep: deps.sleep }),
+        ...(deps.now === undefined ? {} : { now: deps.now }),
+      },
     );
-  return supervisorHealth(home);
-}
-
-/** Waits for the ensure-up loop to appear (the supervisor starts it), or returns its absent state at the deadline. */
-export async function waitEnsureUp(home: string, wanted: boolean, timeoutMs = 15_000): Promise<EnsureUpHealth> {
-  if (!wanted) return ensureUpHealth(home);
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const health = ensureUpHealth(home);
-    if (health.alive || Date.now() >= deadline) return health;
-    await Bun.sleep(250);
-  }
-}
-
-/** What `dori up` shows after it made sure the supervised half of the stack runs. */
-export type SupervisedState = {
-  readonly health: readonly SupervisorHealth[];
-  readonly ensureUp: EnsureUpHealth;
-  readonly off: boolean;
-};
-
-/**
- * Starts the supervisors that are missing (`startMissing`) or only reads their health, then reports the ensure-up
- * plugin and waits briefly for its first beat. `dori up` prints this; nothing here opens a workspace.
- */
-export async function superviseHome(home: string, opts: { readonly startMissing: boolean }): Promise<SupervisedState> {
-  const health = opts.startMissing ? await ensureSupervisors(home) : supervisorHealth(home);
-  const off = ensureUpOff(home);
-  const wantUp = !off && isPluginEnabled(home, "ensure-up");
-  const supervised = health.some((h) => h.name === "supervisor" && h.alive);
-  let ensureUp = await waitEnsureUp(home, wantUp, supervised ? 15_000 : 0);
-  // The supervisor owns the ensure-up plugin; only a pane-mode `dori up` starts it outside a supervisor.
-  if (!supervised && wantUp && !ensureUp.alive) {
-    spawnDetached(pluginRunEntry(), home, ["ensure-up"]);
-    ensureUp = await waitEnsureUp(home, true, 10_000);
-  }
-  return { health, ensureUp, off };
+  return supervisorHealth(home, deps.now?.() ?? Date.now(), alive);
 }

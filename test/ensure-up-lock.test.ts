@@ -1,0 +1,90 @@
+import { describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { acquirePluginLock, lockHeldByRecord, releaseLockIfOwner } from "../src/plugins/run.ts";
+import { processStartTimeMs } from "../src/process-liveness.ts";
+
+const NOW = 1_800_000_000_000;
+
+const homeWithState = (): string => {
+  const home = mkdtempSync(join(tmpdir(), "dori-lock-"));
+  mkdirSync(join(home, "state"), { recursive: true });
+  return home;
+};
+
+const lockPath = (home: string): string => {
+  mkdirSync(join(home, "state", "plugins"), { recursive: true });
+  return join(home, "state", "plugins", "ensure-up.lock");
+};
+
+const ownerPid = (path: string): number =>
+  (JSON.parse(readFileSync(join(path, "owner.json"), "utf8")) as { pid: number }).pid;
+
+describe("the plugin lock", () => {
+  test("a lock is held only by a pid whose recorded start time matches", () => {
+    const held = homeWithState();
+    const heldLock = lockPath(held);
+    const startedAt = processStartTimeMs(process.ppid);
+    writeFileSync(heldLock, JSON.stringify({ version: 1, pid: process.ppid, at: Date.now(), startedAt }));
+    expect(acquirePluginLock(heldLock)).toBe(false);
+
+    const stale = homeWithState();
+    const staleLock = lockPath(stale);
+    writeFileSync(staleLock, JSON.stringify({ version: 1, pid: process.ppid, at: Date.now(), startedAt: NOW }));
+    expect(acquirePluginLock(staleLock)).toBe(true);
+    expect(ownerPid(staleLock)).toBe(process.pid);
+  });
+
+  test("an unreadable start time is doubt, not a stale lock", () => {
+    const raw = { version: 1, pid: 7004, at: 0, startedAt: NOW };
+    expect(lockHeldByRecord(raw, { alive: () => true, started: () => null })).toBe(true);
+    expect(lockHeldByRecord(raw, { alive: () => true, started: () => NOW + 60_000 })).toBe(false);
+    expect(lockHeldByRecord(raw, { alive: () => true, started: () => NOW })).toBe(true);
+    expect(lockHeldByRecord(raw, { alive: () => false, started: () => NOW })).toBe(false);
+  });
+
+  test("a version 1 lock with a null start time is doubt, not stale", () => {
+    expect(lockHeldByRecord({ version: 1, pid: 7004, at: 0, startedAt: null }, { alive: () => true })).toBe(true);
+  });
+
+  test("a stale self-pid lock is taken over", () => {
+    const home = homeWithState();
+    const path = lockPath(home);
+    const own = processStartTimeMs(process.pid);
+    writeFileSync(
+      path,
+      JSON.stringify({ version: 1, pid: process.pid, at: Date.now(), startedAt: (own ?? Date.now()) + 60_000 }),
+    );
+    expect(acquirePluginLock(path)).toBe(true);
+    expect(ownerPid(path)).toBe(process.pid);
+  });
+
+  test("an old-format lock is taken over and a second contender cannot take the new one", () => {
+    const home = homeWithState();
+    const path = lockPath(home);
+    writeFileSync(path, JSON.stringify({ pid: process.ppid, at: Date.now() }));
+    expect(acquirePluginLock(path)).toBe(true);
+    expect(acquirePluginLock(path)).toBe(false);
+  });
+
+  test("a release removes only this process's lock", () => {
+    const home = homeWithState();
+    const path = lockPath(home);
+    mkdirSync(path);
+    writeFileSync(join(path, "owner.json"), JSON.stringify({ version: 1, pid: process.ppid, at: Date.now() }));
+    releaseLockIfOwner(path);
+    expect(existsSync(path)).toBe(true);
+    writeFileSync(
+      join(path, "owner.json"),
+      JSON.stringify({
+        version: 1,
+        pid: process.pid,
+        at: Date.now(),
+        startedAt: processStartTimeMs(process.pid),
+      }),
+    );
+    releaseLockIfOwner(path);
+    expect(existsSync(path)).toBe(false);
+  });
+});
