@@ -46,4 +46,14 @@ describe("exec", () => {
     ]);
     expect(r).toEqual({ code: 4, stdout: "out", stderr: "err" });
   });
+
+  test("spawnExec feeds a large stdin over a pipe, not argv", async () => {
+    const text = "x".repeat(40_000);
+    const r = await spawnExec(
+      process.execPath,
+      ["-e", "let n=0; for await (const c of process.stdin) n+=c.length; console.log(String(n))"],
+      { stdin: text },
+    );
+    expect(r).toEqual({ code: 0, stdout: "40000\n", stderr: "" });
+  });
 });

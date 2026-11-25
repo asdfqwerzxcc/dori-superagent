@@ -3,13 +3,18 @@
 // attests what it answered.
 
 import { need, one, type Args } from "./cli-args.ts";
-import { attest, isPrId, review } from "./gate.ts";
+import { attest, isPrId } from "./gate.ts";
 import type { Deps } from "./harness.ts";
 import { loadReviewSettings } from "./hooks.ts";
 import { laneReviewTarget } from "./lane-review-target.ts";
 import { Refusal } from "./refusal.ts";
+import { reviewRunLines } from "./review-drain.ts";
 import { finishJob, jobPath, killRecordedRun, legacyKillEnabled, readJob } from "./review-job.ts";
+import { review } from "./review-pr.ts";
 import { queueLaneReview, reviewJobId } from "./review-queue.ts";
+import { readRunJob, runPath } from "./review-run.ts";
+import { startBackgroundReview } from "./review-start.ts";
+import { runReviewJob } from "./review-worker.ts";
 
 export async function runReviewLane(
   d: Deps,
@@ -26,10 +31,31 @@ export async function runReviewLane(
   return 0;
 }
 
-/** `dori review`: a PR or lane attestation, a queued lane request, or the unchanged PR reviewer. */
+/** `dori review`: a PR or lane attestation, a queued lane request, a background review, or the unchanged PR reviewer. */
 export async function runReviewCommand(d: Deps, a: Args, x: string | undefined): Promise<number> {
   const lane = one(a, "lane");
   const legacyKill = a.flags.has("legacy-kill");
+  const jobId = one(a, "job");
+  if (jobId !== undefined) {
+    if (a.flags.has("background")) throw new Refusal("give --job or --background, not both");
+    if (lane !== undefined || a.flags.has("attest")) throw new Refusal("--job only runs a background review worker");
+    if (x !== undefined) {
+      const record = readRunJob(runPath(d.store.root, jobId));
+      if (record !== undefined && record.pr !== x) throw new Refusal(`job ${jobId} reviews ${record.pr}, not ${x}`);
+    }
+    const job = await runReviewJob(d, jobId);
+    console.log(
+      `REVIEW ${job.pr} ${job.state}${job.verdict === undefined ? "" : ` verdict=${job.verdict}`}` +
+        `${job.error === undefined ? "" : ` error=${job.error}`}`,
+    );
+    return job.state === "done" && job.verdict === "CLEAR" ? 0 : 1;
+  }
+  if (a.flags.has("list")) {
+    const lines = reviewRunLines(d);
+    for (const line of lines) console.log(line);
+    if (lines.length === 0) console.log("REVIEWS none");
+    return 0;
+  }
   if (a.flags.has("attest")) {
     if (lane !== undefined && x !== undefined) throw new Refusal("give a PR or --lane, not both");
     const target = lane ?? need(x, "PR or lane key");
@@ -57,6 +83,20 @@ export async function runReviewCommand(d: Deps, a: Args, x: string | undefined):
     });
     console.log(`ATTESTED ${target} tip=${r.tip} verdict=${r.verdict}${r.kept ? " (kept)" : ""}`);
     return r.verdict === "CLEAR" ? 0 : 1;
+  }
+  if (a.flags.has("background")) {
+    if (lane !== undefined) throw new Refusal("--background starts a PR review; give a PR, not --lane");
+    const pr = need(x, "PR");
+    if (!isPrId(pr)) throw new Refusal(`PR must look like owner/repo#123, got ${pr}`);
+    const started = await startBackgroundReview(d, pr, {
+      model: one(a, "model"),
+      restart: a.flags.has("restart"),
+    });
+    const { job } = started;
+    const where = job.session === undefined ? "" : ` session=${job.session}`;
+    const state = started.existing ? "REVIEW_RUNNING" : started.restarted ? "REVIEW_RESTARTED" : "REVIEW_STARTED";
+    console.log(`${state} ${job.pr} job=${job.job}${where} log=${job.log}`);
+    return 0;
   }
   if (lane !== undefined) {
     if (x !== undefined) throw new Refusal("give a PR or --lane, not both");

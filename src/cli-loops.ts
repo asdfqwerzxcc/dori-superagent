@@ -42,7 +42,9 @@ export async function runDuty(d: Deps, a: Args, x: string | undefined): Promise<
   try {
     for (;;) {
       for (const e of await dutyTick(d))
-        console.log(`DUTY ${[e.lane ?? e.pane, e.action].filter(Boolean).join(" ")}${e.detail ? `: ${e.detail}` : ""}`);
+        console.log(
+          `DUTY ${[e.lane ?? e.pane ?? e.pr, e.action].filter(Boolean).join(" ")}${e.detail ? `: ${e.detail}` : ""}`,
+        );
       if (one(a, "once")) break;
       await Bun.sleep(interval);
     }

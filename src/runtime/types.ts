@@ -29,7 +29,7 @@ export type SessionInfo = {
   readonly status?: AgentStatus;
   readonly agent?: string;
 };
-export type SessionRole = "lead" | "duty" | "duty-loop" | "hourly-loop" | "lane";
+export type SessionRole = "lead" | "duty" | "duty-loop" | "hourly-loop" | "lane" | "review";
 /**
  * Where the session is created. herdr: "workspace-root" = `workspace create` (the root pane is the session; the new workspace id
  * becomes the ref's group); "tab" = `tab create` in `group` (no --workspace when group is absent); "split-below" = `pane split`

@@ -42,7 +42,7 @@ export async function laneGate(d: Deps, lane: Lane): Promise<LaneGate> {
       ok: false,
       reason:
         `lane ${lane.key} at ${tip.slice(0, 12)}: a review request is queued (${job.state}, requested ${when}); ` +
-        `run the review in its own session with dori review <owner/repo#N>, then record the verdict with ` +
+        `run the review in its own session with dori review <owner/repo#N> --background, then record the verdict with ` +
         `dori review ${lane.key} --attest --verdict CLEAR|BLOCK ` +
         `--reviewer <name> --evidence <report>; run dori done ${lane.key} again once the receipt exists ` +
         `(or dori done --drop ${lane.key} --reason <text>)`,
@@ -61,7 +61,7 @@ export async function laneGate(d: Deps, lane: Lane): Promise<LaneGate> {
       ok: false,
       reason:
         `lane ${lane.key} at ${tip.slice(0, 12)} is ${receipt.verdict}${pending}; run: dori review --lane ${lane.key} to queue it again, ` +
-        `then attest the reviewer verdict (or dori done --drop ${lane.key} --reason <text>)`,
+        `then run dori review <owner/repo#N> --background and attest the reviewer verdict (or dori done --drop ${lane.key} --reason <text>)`,
     };
   }
   return { ok: true };

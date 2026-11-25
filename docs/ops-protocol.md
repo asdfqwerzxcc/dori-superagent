@@ -33,8 +33,8 @@
 
 ### 두 착지 모드: 레인 게이트(기본)와 번들(선택) (2026-11-23)
 
-- **레인 게이트(기본)**: 레인마다 `dori review --lane <key>`로 리뷰 요청을 기록하고, `dori review <owner/repo#N>`의 자체 세션 판정을 `dori review <key> --attest`로 영수증에 쓰면, `dori merge <key>`가 레인 브랜치를 자기 리모트(`fork`가 있으면 `fork`, 없으면 `origin`)에 푸시해 PR을 연다. PR 체크가 있으면 전부 green일 때 merge commit으로 머지하고, 워크플로가 없으면 `checks=none`으로 머지한다.
-- **리뷰 소유자**: `dori review --lane <key>`는 요청만 기록하고 `QUEUED <key> <tip> <job>`을 출력한다. 리뷰는 `dori review <owner/repo#N>`의 자체 세션에서 돌리고, 그 판정을 `dori review <key> --attest --verdict ... --reviewer ... --evidence ...`로 영수증에 쓴다. duty는 요청 상태와 만료만 보고하며 리뷰어를 띄우지 않는다.
+- **레인 게이트(기본)**: 레인마다 `dori review --lane <key>`로 리뷰 요청을 기록하고, `dori review <owner/repo#N> --background`의 자체 세션 판정을 `dori review <key> --attest`로 영수증에 쓰면, `dori merge <key>`가 레인 브랜치를 자기 리모트(`fork`가 있으면 `fork`, 없으면 `origin`)에 푸시해 PR을 연다. PR 체크가 있으면 전부 green일 때 merge commit으로 머지하고, 워크플로가 없으면 `checks=none`으로 머지한다.
+- **리뷰 소유자**: `dori review --lane <key>`는 요청만 기록하고 `QUEUED <key> <tip> <job>`을 출력한다. 리뷰는 리드가 `dori review <owner/repo#N> --background`로 자기 workspace의 탭에서 열고, 그 판정을 `dori review <key> --attest --verdict ... --reviewer ... --evidence ...`로 영수증에 쓴다. duty는 요청 상태와 진행 상황을 보고하며 리뷰어를 띄우지 않는다. 리뷰에는 시간 상한·도구 예산이 없고, 2시간을 넘기면 중단하지 않고 리드에게 1회 알린다. 동시 리뷰 수는 메모리(리뷰어당 약 500MB)로만 제한한다. `--background --restart`는 running row를 쓰지 못한 시작만 교체하고, reviewer 전체 출력은 `receipts/<pr>@<sha>.review.txt`(64KB 상한)에 남긴다.
 - **번들(선택)**: 여러 레인을 한 PR/한 승인으로 묶어야 할 때만 `bundle/<id>`를 만든다. 대표 이슈 하나만 `Closes`, 나머지는 `Refs`; 게이트는 구성원 영수증 또는 PR head 리뷰다.
 - 그래서 기본 원격 단위는 **레인 PR 하나**이고, 사람이 보는 단위도 그 PR이다. 번들은 brief가 레인들을 명시적으로 묶을 때만 등장한다.
 

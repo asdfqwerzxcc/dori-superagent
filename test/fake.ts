@@ -51,6 +51,8 @@ export class World {
   onHookKill: (() => void) | undefined;
   /** number of upcoming `pane send-keys` calls that fail (exit 1) */
   keyFails = 0;
+  /** `pane close` fails for every pane, like a runtime that is temporarily down. */
+  closeFails = false;
   gh: (argv: readonly string[]) => { code: number; stdout: string; stderr?: string } = () => ({ code: 1, stdout: "" });
   /** answers for `git`; the default is "not a repository", as a lane started outside a checkout sees it. */
   git: (argv: readonly string[]) => { code: number; stdout: string; stderr?: string } = () => ({
@@ -183,6 +185,7 @@ export class World {
       return ok({});
     }
     if (group === "pane" && verb === "close") {
+      if (this.closeFails) return { code: 1, stdout: "", stderr: "close failed" };
       this.panes.delete(id!);
       return ok({});
     }

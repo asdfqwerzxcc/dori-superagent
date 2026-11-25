@@ -1,18 +1,12 @@
-import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Deps } from "./harness.ts";
 import { tellLead } from "./inbox.ts";
 import { readJson, writeJson } from "./json-file.ts";
-import { HOUR } from "./loop-audit.ts";
 import { refText, sameSession } from "./refs.ts";
-import { killRunFile, queueDir, readRun } from "./review-job.ts";
 import type { HostLoad, Lane, LoopRun } from "./store-types.ts";
 
-const MEM_FREE_MIN_PCT = 10;
-/** An absolute floor too: 10% of 7.7 GB is 770 MB, less than one agent's private memory; 700 MB is what this host can actually keep free beside a lead. */
-const MEM_FREE_MIN_MB = 700;
-/** A legacy review runner marker older than this cannot belong to a review still in flight. */
-export const REVIEW_RUN_STALE_MS = HOUR;
+export { memoryLow } from "./host.ts";
 
 /** What `pull` learned about the starts it could not make; the hold notice reads it after `pull` returns. */
 export type PullOutcome = {
@@ -26,9 +20,6 @@ export type PullOutcome = {
 
 type HoldState = { readonly key: string; readonly at: number };
 const holdPath = (d: Deps): string => join(d.store.root, "state", "loop-hold.json");
-
-export const memoryLow = (host: HostLoad): boolean =>
-  host.memFreePct < MEM_FREE_MIN_PCT || host.memFreeMb < MEM_FREE_MIN_MB;
 
 /** A lane whose work is on main: closed as done, or READY with its item already marked done by the loop's sync. */
 const landed = (d: Deps, lane: Lane): boolean => {
@@ -62,53 +53,23 @@ async function closeLandedLanes(d: Deps, closed: string[], failed: string[]): Pr
   }
 }
 
-const mtimeOf = (path: string): number | undefined => {
-  try {
-    return statSync(path).mtimeMs;
-  } catch {
-    return undefined;
-  }
-};
-
-/** Legacy reviewer markers older than REVIEW_RUN_STALE_MS: the review is over, the process is leftover. */
-function closeStaleRunners(d: Deps, now: number, cleaned: string[], failed: string[]): void {
-  const dir = queueDir(d.store.root);
-  if (!existsSync(dir)) return;
-  for (const name of readdirSync(dir)) {
-    if (!name.endsWith(".running")) continue;
-    const path = join(dir, name);
-    const id = name.slice(0, -".running".length);
-    const [lane, tip] = id.split("@");
-    const run = lane !== undefined && tip !== undefined ? readRun(d.store.root, lane, tip) : undefined;
-    const at = run?.requestedAt ?? mtimeOf(path);
-    if (at === undefined || now - at < REVIEW_RUN_STALE_MS) continue;
-    const outcome = killRunFile(path);
-    if (outcome.state === "failed") failed.push(`review runner ${id}: ${outcome.why}`);
-    else if (outcome.state === "killed")
-      cleaned.push(`killed review runner ${id}${run?.pid === undefined ? "" : ` (pid ${run.pid})`}`);
-    else cleaned.push(`removed stale review runner marker ${id}`);
-  }
-}
-
 /**
  * Close what a memory hold may safely lose, then report what changed and how much memory came back. Runs only when
- * the loop is about to skip a start for low memory.
+ * the loop is about to skip a start for low memory. A live review is never touched: its age says nothing about whether
+ * it is still doing useful work.
  */
 export async function reclaimMemory(d: Deps, run: LoopRun): Promise<void> {
   const before = d.host();
   const closed: string[] = [];
-  const runner: string[] = [];
   const failed: string[] = [];
   await closeLandedLanes(d, closed, failed);
-  closeStaleRunners(d, d.now(), runner, failed);
   const after = d.host();
   run.reclaimed ??= [];
   run.reclaimed.push(
-    `memory reclaim: closed ${closed.length} landed lane(s), cleaned ${runner.length} review runner(s), ` +
-      `failed ${failed.length}; mem free ${before.memFreePct}% (${before.memFreeMb} MB) -> ` +
-      `${after.memFreePct}% (${after.memFreeMb} MB)`,
+    `memory reclaim: closed ${closed.length} landed lane(s), failed ${failed.length}; ` +
+      `mem free ${before.memFreePct}% (${before.memFreeMb} MB) -> ${after.memFreePct}% (${after.memFreeMb} MB)`,
   );
-  run.reclaimed.push(...closed, ...runner, ...failed);
+  run.reclaimed.push(...closed, ...failed);
 }
 
 export type HoldNotice = { readonly key: string; readonly text: string };
