@@ -95,7 +95,7 @@ export async function runUnitInPane(o: RunUnitOptions): Promise<never> {
       try {
         await o.close(placed.pane);
       } catch (e) {
-        o.log(`SUPERVISED ${o.name}_pane_close_failed reason=${oneLine(e)}`);
+        o.log(`SUPERVISED ${printable(o.name)}_pane_close_failed reason=${printable(oneLine(e))}`);
       }
       continue;
     }

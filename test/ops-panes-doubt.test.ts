@@ -180,3 +180,58 @@ describe("the doubt timer after an adoption", () => {
     expect(failure).toBeInstanceOf(PaneUnknown);
   });
 });
+
+describe("leftover panes are closed even when a named pane wins", () => {
+  test("a stopped typed pane after a running pane is closed", async () => {
+    const pending = { read: () => ["p2"], write: () => {} };
+    const { adapter, units } = placement((pane) => (pane === "p1" ? RUNNING : STOPPED), {
+      windowMs: 0,
+      existing: [pref("p1"), pref("p2")],
+      pending,
+    });
+    expect(await units.place(DUTY)).toEqual({ pid: 400, pane: pref("p1") });
+    expect(adapter.closed).toEqual(["p2"]);
+    expect(adapter.starts).toHaveLength(0);
+  });
+
+  test("a hinted pane after a running pane is closed", async () => {
+    const pending = { read: () => ["p2"], write: () => {} };
+    const { adapter, units } = placement(
+      (pane) => (pane === "p1" ? RUNNING : { kind: "unknown", why: "no argv", pid: 951 }),
+      { windowMs: 0, kind: "hc", existing: [pref("p1"), pref("p2")], pending },
+    );
+    expect(await units.place(DUTY)).toEqual({ pid: 400, pane: pref("p1") });
+    expect(adapter.closed).toEqual(["p2"]);
+    expect(adapter.starts).toHaveLength(0);
+  });
+
+  test("a hinted leftover that will not close is waited on, not skipped", async () => {
+    const pending = { read: () => ["p2"], write: () => {} };
+    const { adapter, units } = placement(
+      (pane) => (pane === "p1" ? RUNNING : { kind: "unknown", why: "no argv", pid: 952 }),
+      { windowMs: 0, kind: "hc", existing: [pref("p1"), pref("p2")], pending, failClose: () => true },
+    );
+    const failure: unknown = await units.place(DUTY).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(failure).toBeInstanceOf(PaneCloseFailed);
+    expect(adapter.starts).toHaveLength(0);
+  });
+});
+
+describe("a hinted unknown belongs to hc only", () => {
+  test("a herdr unknown pid is never adopted from the typed set", async () => {
+    const pending = { read: () => ["p1"], write: () => {} };
+    const { units } = placement(() => ({ kind: "unknown", why: "no argv", pid: 953 }), {
+      windowMs: 0,
+      existing: [pref("p1")],
+      pending,
+    });
+    const failure: unknown = await units.place(DUTY).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(failure).toBeInstanceOf(PaneUnknown);
+  });
+});

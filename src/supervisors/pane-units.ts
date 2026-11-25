@@ -46,32 +46,39 @@ export class PaneUnits {
     const attempts = Math.max(1, this.o.startAttempts ?? START_ATTEMPTS);
     const stopped: SessionRef[] = [];
     const doubtful: SessionRef[] = [];
-    let hint: PlacedUnit | undefined;
+    const hints: PlacedUnit[] = [];
+    let named: PlacedUnit | undefined;
     let unknown: string | undefined;
     for (const ref of await this.scan(unit.name)) {
       const probe = await this.probe(ref, unit);
-      if (probe.kind === "running") {
-        // The named pane wins; a hinted leftover must not keep a second copy of the unit.
-        if (hint !== undefined) await this.closeRetry(unit.name, hint.pane);
-        this.mark(ref.id, false);
-        this.unknownSince.delete(unit.name);
-        return { pid: probe.pid, pane: ref };
-      }
-      if (probe.kind === "unknown") {
+      if (probe.kind === "running") named ??= { pid: probe.pid, pane: ref };
+      else if (probe.kind === "unknown") {
         const pid = this.hinted(probe, ref);
-        if (pid !== undefined) hint ??= { pid, pane: ref };
-        else {
+        if (pid === undefined) {
           doubtful.push(ref);
           unknown ??= probe.why;
-        }
-      } else {
-        stopped.push(ref);
-      }
+        } else hints.push({ pid, pane: ref });
+      } else stopped.push(ref);
     }
-    if (hint !== undefined) {
-      this.mark(hint.pane.id, false);
+    // Every stopped pane a previous placement typed into, and every hinted pane this one will not adopt, may still
+    // hold a pending line: close them all before any pane is chosen, so no later line starts as an untracked copy.
+    const protectedPane = (id: string): boolean => this.typed.has(id) || this.pendingUnreadable;
+    const closed = new Set<string>();
+    const leftovers = named === undefined ? hints.slice(1) : hints;
+    for (const ref of [...stopped.filter((r) => protectedPane(r.id)), ...leftovers.map((h) => h.pane)]) {
+      if (!(await this.closeRetry(unit.name, ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
+      closed.add(ref.id);
+    }
+    if (named !== undefined) {
+      this.mark(named.pane.id, false);
       this.unknownSince.delete(unit.name);
-      return hint;
+      return named;
+    }
+    const adopt = hints[0];
+    if (adopt !== undefined) {
+      this.mark(adopt.pane.id, false);
+      this.unknownSince.delete(unit.name);
+      return adopt;
     }
     if (unknown !== undefined) {
       if (!(await this.clearDoubt(unit, doubtful, now()))) {
@@ -79,13 +86,6 @@ export class PaneUnits {
       }
     } else {
       this.unknownSince.delete(unit.name);
-    }
-    // Every stopped pane the previous placement typed into may still hold that line: close them all, type into none.
-    const protectedPane = (id: string): boolean => this.typed.has(id) || this.pendingUnreadable;
-    const closed = new Set<string>();
-    for (const ref of stopped.filter((r) => protectedPane(r.id))) {
-      if (!(await this.closeRetry(unit.name, ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
-      closed.add(ref.id);
     }
     const reuse = stopped.find((r) => !closed.has(r.id) && !protectedPane(r.id));
     let lines = 0;
@@ -141,7 +141,8 @@ export class PaneUnits {
 
   /** The foreground pid of a pane this supervisor typed into, which the runtime cannot name; the caller adopts it. */
   private hinted(probe: PaneProbe, ref: SessionRef): number | undefined {
-    if (probe.kind !== "unknown" || probe.pid === undefined || !this.typed.has(ref.id)) return undefined;
+    if (this.kind !== "hc" || probe.kind !== "unknown" || probe.pid === undefined || !this.typed.has(ref.id))
+      return undefined;
     return probe.pid;
   }
 
@@ -225,7 +226,6 @@ export class PaneUnits {
     if (!(await this.closeRetry(unit.name, ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
     return { typed: true };
   }
-
   private mark(id: string, typed: boolean): void {
     if (typed) this.typed.add(id);
     else this.typed.delete(id);

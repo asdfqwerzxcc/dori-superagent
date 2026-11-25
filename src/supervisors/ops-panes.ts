@@ -5,6 +5,7 @@ import { ConfigError, RuntimeChoiceError, readRuntimeChoice } from "../runtime/s
 import type { RuntimeKind } from "../runtime/types.ts";
 import { stateDir } from "../supervisors.ts";
 import { PaneUnits } from "./pane-units.ts";
+import { printable } from "../unit-placement.ts";
 import { oneLine, type PendingPanes } from "./panes.ts";
 import { HcPanes } from "./panes-hc.ts";
 import { HerdrPanes } from "./panes-herdr.ts";
@@ -43,7 +44,7 @@ export function panePendingStore(home: string, warn?: (line: string) => void): P
   const dir = stateDir(home);
   const path = join(dir, "panes-pending.json");
   const failed = (what: string, e: unknown): void => {
-    warn?.(`SUPERVISED panes_pending_${what} reason=${oneLine(e)}`);
+    warn?.(`SUPERVISED panes_pending_${what} reason=${printable(oneLine(e))}`);
   };
   return {
     read: () => {
@@ -57,8 +58,8 @@ export function panePendingStore(home: string, warn?: (line: string) => void): P
       }
       try {
         const raw: unknown = JSON.parse(text);
-        if (!Array.isArray(raw)) throw new Error("not a list");
-        return raw.filter((id): id is string => typeof id === "string");
+        if (!Array.isArray(raw) || raw.some((id) => typeof id !== "string")) throw new Error("not a list of ids");
+        return raw;
       } catch (e) {
         failed("unreadable", e);
         return undefined;
@@ -72,6 +73,13 @@ export function panePendingStore(home: string, warn?: (line: string) => void): P
         renameSync(tmp, path);
       } catch (e) {
         failed("write_failed", e);
+        // A stale set would let a restart retype into a pane whose pending line is not represented: make the file read
+        // as unreadable instead, so every stopped pane is treated as pending. If that also fails, the old set stays.
+        try {
+          writeFileSync(path, "{}\n");
+        } catch (again) {
+          failed("write_failed_unreadable", again);
+        }
       }
     },
   };

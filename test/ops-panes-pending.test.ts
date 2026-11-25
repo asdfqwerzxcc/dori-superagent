@@ -55,4 +55,35 @@ describe("the pending-pane store", () => {
     expect(store.read()).toBeUndefined();
     expect(warns.some((l) => /panes_pending_unreadable/.test(l))).toBe(true);
   });
+
+  test("a BOM in the file is sanitized in the warning", () => {
+    const dir = home();
+    mkdirSync(join(dir, "state"), { recursive: true });
+    writeFileSync(join(dir, "state", "panes-pending.json"), "\uFEFF[]");
+    const warns: string[] = [];
+    expect(panePendingStore(dir, (line) => warns.push(line)).read()).toBeUndefined();
+    const line = warns.find((l) => l.includes("panes_pending_unreadable"));
+    expect(line).toBeDefined();
+    expect(line).not.toContain("\uFEFF");
+    expect(line).toContain("?");
+  });
+
+  test("a mixed array is malformed, not a partial set", () => {
+    const dir = home();
+    mkdirSync(join(dir, "state"), { recursive: true });
+    writeFileSync(join(dir, "state", "panes-pending.json"), JSON.stringify(["w1:p1", 42]));
+    expect(panePendingStore(dir).read()).toBeUndefined();
+  });
+
+  test("a failed write makes the old file read as unreadable", () => {
+    const dir = home();
+    mkdirSync(join(dir, "state"), { recursive: true });
+    writeFileSync(join(dir, "state", "panes-pending.json"), JSON.stringify(["w1:p1"]));
+    mkdirSync(join(dir, "state", "panes-pending.json.tmp"), { recursive: true });
+    const warns: string[] = [];
+    const store = panePendingStore(dir, (line) => warns.push(line));
+    store.write(["w1:p2"]);
+    expect(warns.some((l) => /panes_pending_write_failed/.test(l))).toBe(true);
+    expect(store.read()).toBeUndefined();
+  });
 });

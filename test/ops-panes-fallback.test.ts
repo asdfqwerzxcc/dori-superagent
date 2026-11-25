@@ -8,6 +8,30 @@ import { placement, RUNNING, STOPPED } from "./ops-panes-scripted.ts";
 const STOP = new Error("stop the test loop");
 
 describe("a placement that never matches falls back to headless", () => {
+  test("a fallback reason with a control character is sanitized in the log", async () => {
+    const logs: string[] = [];
+    await runUnitInPane({
+      name: "duty",
+      place: async () => {
+        throw new Error("bad\u0007news");
+      },
+      close: async () => {},
+      headless: async () => {
+        throw STOP;
+      },
+      onStart: () => {},
+      onExit: () => {},
+      onUnplace: () => {},
+      alive: () => false,
+      log: (line) => logs.push(line),
+      sleep: async () => {},
+    }).catch(() => undefined);
+    const fallback = logs.find((line) => line.includes("_pane_fallback"));
+    expect(fallback).toBeDefined();
+    expect(fallback).toContain("bad?news");
+    expect(fallback).not.toContain("\u0007");
+  });
+
   test("the typed lines are spent, every pane is closed, the record drops its pane, and the line names the unit", async () => {
     const { adapter, units } = placement(() => STOPPED, { windowMs: 0, attempts: 2 });
     const logs: string[] = [];
