@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { World } from "./fake.ts";
 
 export type Repo = {
@@ -12,7 +13,7 @@ export type Repo = {
   remotes?: Record<string, string>;
   mergeBase?: string;
   diff?: string;
-  /** Answer for `git patch-id`; absent makes the call fail like git without a patch id. */
+  /** Answer for `git patch-id`; absent hashes the stdin diff (or returns a stable id when there is none). */
   patchId?: string;
   /** Output of `diff --quiet <branch> HEAD`; empty means the same tree (a squash merge). Defaults to `diff`. */
   contentDiff?: string;
@@ -37,8 +38,10 @@ export type Repo = {
 
 const defaultDiff = "diff --git a/src/x.ts b/src/x.ts\n+export const x = 1;\n";
 
+export const fakePatchId = (text: string): string => createHash("sha256").update(text).digest("hex").slice(0, 40);
+
 export function fakeGit(w: World, repo: Repo): void {
-  w.git = (argv) => {
+  w.git = (argv, stdin) => {
     const cwd = argv[0] === "-C" ? argv[1] : undefined;
     const args = argv[0] === "-C" ? argv.slice(2) : argv;
     const [cmd, sub] = args;
@@ -81,10 +84,10 @@ export function fakeGit(w: World, repo: Repo): void {
         ? { code: 1, stdout: "", stderr: "not an ancestor" }
         : { code: 0, stdout: "", stderr: "" };
     if (cmd === "merge-base") return { code: 0, stdout: `${repo.mergeBase ?? repo.head}\n` };
-    if (cmd === "patch-id")
-      return repo.patchId === undefined
-        ? { code: 1, stdout: "", stderr: "unhandled git patch-id" }
-        : { code: 0, stdout: `${repo.patchId} ${"0".repeat(40)}\n` };
+    if (cmd === "patch-id") {
+      const id = repo.patchId ?? (stdin === undefined || stdin.trim() === "" ? "0".repeat(40) : fakePatchId(stdin));
+      return { code: 0, stdout: `${id} ${"0".repeat(40)}\n` };
+    }
     if (args.includes("diff") && args.includes("--diff-filter=U")) return { code: 0, stdout: repo.conflictFiles ?? "" };
     if (args.includes("diff")) {
       if (args.includes("--quiet") && repo.diffError !== undefined)

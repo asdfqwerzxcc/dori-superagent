@@ -6,8 +6,10 @@ returns at once, and the worker records a PR receipt; its verdict is recorded as
 <key> --attest ...`. The foreground `dori review <owner/repo#N>` still runs one reviewer in the caller's process for a
 manual check. Both paths stop at the review ceiling (2 hours or 250000 tokens, whichever comes first; the constants live
 in `src/worker-limits.ts`): at the ceiling the reviewer stops at a safe point, lists what stayed unverified, and prints
-`VERDICT: BLOCK` when that could hide a HIGH or MEDIUM finding. The lane receipt schema is additive: `patchId` is
-optional, and older receipts need no migration. Once the lane receipt is CLEAR, `dori merge <key>` is the landing path.
+`VERDICT: BLOCK` when that could hide a HIGH or MEDIUM finding. The lane receipt schema is additive: `patchId` and
+`reviewedTip` are optional, and older receipts need no migration. `--attest` itself requires a saved lane diff whose
+patch-id matches the current `base..tip`, so a lane that commits after its review cannot be attested. Once the lane
+receipt is CLEAR, `dori merge <key>` is the landing path.
 
 Why: reviews must not run as children of the lead pane. A gate-review child keeps the lead `working`, holds its inbox
 and puts review work in the human's session (Lee, 2026-11-24). A separate reviewer session keeps the lead free for
@@ -78,7 +80,8 @@ a HIGH at the top of a long transcript is not lost.
 
 There is no review deadline in the harness: duty never kills, shortens or fails a review for its age, and a hook or a
 reviewer that ignores the ceiling is left running. The reviewer itself stops at the review ceiling (2 hours or 250000
-tokens, whichever comes first) and a partial review is never CLEAR. A review that passes two hours is reported to the
+tokens, whichever comes first; the token count is the reviewer's own session count, not a harness counter) and a partial
+review is never CLEAR. A review that passes two hours is reported to the
 lead once with its last output line and the log path. A dead worker is checked against the sha recorded before the
 reviewer ran: if the receipt exists the job is done, and only a dead worker without that receipt fails (once, with the
 log path). A pid whose start time cannot be read is unknown, not dead; a record from another host is skipped. Free
@@ -92,12 +95,14 @@ dori review <key> --attest --verdict CLEAR|BLOCK --reviewer <name> --evidence <r
 ```
 
 `--evidence` is required: name the report, task id, path or URL the verdict rested on. The receipt carries the verdict,
-base, tip, brief path, reviewer name, time, summary and the evidence links, plus the `git patch-id --stable` of
-`base..tip` when git can compute one. The gate takes the receipt at the exact tip first; with no receipt there, it
-compares the current patch-id with the ids on disk. A new commit with different content invalidates the receipt and the
-lead reviews again, while a rebase that leaves the patch unchanged keeps it valid (and `dori done --rebase` no longer
-forces a re-review for a clean rebase). `BLOCK` wins for one patch: a later CLEAR attest never replaces a BLOCK on
-disk, and moving only the SHA does not clear it; a lane clears a BLOCK by changing the patch.
+base, tip, brief path, reviewer name, time, summary and the evidence links, plus the `git patch-id --stable` of the
+reviewed diff and the `reviewedTip` it came from. `--attest` refuses unless a saved review diff
+(`lane-reviews/lane_<key>@<tip>.diff`) matches the current `base..tip`: the exact tip, or an older saved diff whose
+patch-id is the same. A commit after the review changes the patch-id and is refused; a rebase that leaves the diff
+unchanged (context included) keeps the receipt valid and records the older `reviewedTip`. A rebase that changes context
+or content needs a new review. The gate takes a BLOCK for the same patch first, then the exact tip, then the newest
+same-patch receipt: a later CLEAR attest never replaces a BLOCK on disk, even when the SHA moves back to an older
+CLEAR tip, and a lane clears a BLOCK by changing the patch.
 
 ### What duty does
 

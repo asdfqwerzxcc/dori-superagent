@@ -45,6 +45,15 @@ describe("dori migrate: roles and loops", () => {
     expect(w.hc.sent[0]!.text).toBe("dori loop");
   });
 
+  test("hourly-loop: the open-then-close order holds across 20 runs", async () => {
+    for (let i = 0; i < 20; i++) {
+      const { w, d, opts, order } = rolesWorld();
+      expect(await migrate(d, { role: "hourly-loop" }, opts())).toBe(0);
+      expect(order()).toEqual(["open dori.role=hourly-loop", "close w1:p5"]);
+      expect(w.hc.sent[0]!.text).toBe("dori loop");
+    }
+  });
+
   test("lead: handoff from its prompt file, roles.json switched, its inbox moved", async () => {
     const { w, d, lines, opts } = rolesWorld();
     d.store.saveInbox(href("w1:p1"), [{ at: 1, from: "k", text: "[REPORT k] hi" }]);

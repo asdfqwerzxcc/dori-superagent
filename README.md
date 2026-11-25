@@ -172,7 +172,7 @@ A lane that has not reported for 10 minutes, and whose pane is not working, gets
 
 ### Merge needs a CLEAR receipt at the exact head and green checks
 
-`dori merge` reads the PR's head SHA with `gh`, then requires a receipt for that SHA in `~/.dori/receipts/` with verdict `CLEAR`. Only `dori review` writes receipts: it runs a fresh non-interactive omo on `prompts/review.md` pinned to that SHA, and when the reviewer prints no `VERDICT:` line, no receipt is written.
+`dori merge` reads the PR's head SHA with `gh`, then requires a receipt for that SHA in `~/.dori/receipts/` with verdict `CLEAR`. Only `dori review` writes receipts: it runs a fresh non-interactive omo on `prompts/review.md` pinned to that SHA, and when the reviewer prints no `VERDICT:` line, no receipt is written. A lane receipt also records the `git patch-id` of the reviewed `base..tip`; `dori merge <key>` accepts it when the current patch-id matches, so a rebase that leaves the diff unchanged does not need a second review.
 
 Then `gh pr checks` must return at least one check, every check must be `pass` or `skipping`, and at least one must be `pass`. An empty check list is refused with "an empty check list is never green". A push after the review changes the head SHA, so the receipt no longer matches and `dori review` has to run again.
 

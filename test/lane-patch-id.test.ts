@@ -3,6 +3,7 @@ import type { Deps } from "../src/harness.ts";
 import { pickLaneReceipt } from "../src/lane-patch.ts";
 import { done, ready, startLane } from "../src/lanes.ts";
 import { attestLane } from "../src/review-lane-cli.ts";
+import { queueLaneReview, reviewJobFor } from "../src/review-queue.ts";
 import type { LaneReceipt } from "../src/store-types.ts";
 import { fakeGit, type Repo } from "./fake-git.ts";
 import { setup } from "./harness-setup.ts";
@@ -14,6 +15,7 @@ const other = "d".repeat(40);
 const patch = "1".repeat(40);
 const changed = "2".repeat(40);
 const diff = "diff --git a/src/x.ts b/src/x.ts\n+export const x = 1;\n";
+const changedDiff = "diff --git a/src/x.ts b/src/x.ts\n+export const x = 2;\n";
 
 const receipt = (over: Partial<LaneReceipt>): LaneReceipt => ({
   lane: "fix-login",
@@ -37,8 +39,13 @@ async function laneWorld() {
   return { ...s, repo };
 }
 
-const attest = (d: Deps) =>
-  attestLane(d, "fix-login", { verdict: "CLEAR", reviewer: "reviewer", evidence: ["file:///report"] });
+const laneAttest = (d: Deps, verdict: "CLEAR" | "BLOCK" = "CLEAR") =>
+  attestLane(d, "fix-login", { verdict, reviewer: "reviewer", evidence: ["file:///report"] });
+
+const attest = async (d: Deps, verdict: "CLEAR" | "BLOCK" = "CLEAR") => {
+  await queueLaneReview(d, "fix-login", undefined);
+  return laneAttest(d, verdict);
+};
 
 describe("patch-id receipt judgment", () => {
   test("an exact tip wins; another tip is covered only by the same patch-id", () => {
@@ -49,19 +56,21 @@ describe("patch-id receipt judgment", () => {
     expect(pickLaneReceipt([older], rebased, undefined)).toBeUndefined();
   });
 
-  test("a BLOCK for the same patch beats a CLEAR, whatever its time", () => {
+  test("a BLOCK for the same patch beats a CLEAR, even at the exact tip", () => {
     const clear = receipt({ tip, patchId: patch, at: 99 });
     const block = receipt({ tip: other, verdict: "BLOCK", patchId: patch, at: 1 });
     expect(pickLaneReceipt([clear, block], rebased, patch)?.verdict).toBe("BLOCK");
-    expect(pickLaneReceipt([clear, block], tip, patch)).toBe(clear);
+    expect(pickLaneReceipt([clear, block], tip, patch)?.verdict).toBe("BLOCK");
   });
 });
 
 describe("patch-id lane receipts", () => {
-  test("attestation records the patch-id, and a rebase-only move keeps the CLEAR receipt", async () => {
+  test("attestation records the reviewed diff and a rebase-only move keeps the CLEAR receipt", async () => {
     const { d, repo } = await laneWorld();
     await attest(d);
-    expect(d.store.laneReceipt("fix-login", tip)?.patchId).toBe(patch);
+    const written = d.store.laneReceipt("fix-login", tip);
+    expect(written?.patchId).toBe(patch);
+    expect(written?.reviewedTip).toBe(tip);
 
     repo.head = rebased;
     expect(await done(d, "fix-login")).toBeUndefined();
@@ -77,14 +86,58 @@ describe("patch-id lane receipts", () => {
     expect(d.store.lane("fix-login")!.status).toBe("ready");
   });
 
-  test("a BLOCK cannot be cleared by moving only the SHA", async () => {
+  test("a same-patch BLOCK cannot be cleared by moving only the SHA", async () => {
     const { d, repo } = await laneWorld();
-    await attestLane(d, "fix-login", { verdict: "BLOCK", reviewer: "reviewer", evidence: ["file:///report"] });
+    await attest(d, "BLOCK");
     repo.head = rebased;
     await expect(done(d, "fix-login")).rejects.toThrow("is BLOCK");
     const kept = await attest(d);
     expect(kept).toMatchObject({ verdict: "BLOCK", kept: true });
     expect(d.store.laneReceipt("fix-login", rebased)).toBeUndefined();
+  });
+
+  test("a same-patch BLOCK beats an exact-tip CLEAR after the SHA moves back", async () => {
+    const { d, repo } = await laneWorld();
+    await attest(d);
+    repo.head = rebased;
+    await attest(d, "BLOCK");
+    repo.head = tip;
+    await expect(done(d, "fix-login")).rejects.toThrow("is BLOCK");
+  });
+
+  test("attest refuses a lane that committed after the review", async () => {
+    const { d, repo } = await laneWorld();
+    await queueLaneReview(d, "fix-login", undefined);
+    repo.head = other;
+    delete repo.patchId;
+    repo.diff = changedDiff;
+    await expect(laneAttest(d)).rejects.toThrow("no saved review diff matches");
+  });
+
+  test("attest accepts a rebase that leaves the patch unchanged and records the reviewed tip", async () => {
+    const { d, repo } = await laneWorld();
+    await queueLaneReview(d, "fix-login", undefined);
+    repo.head = rebased;
+    const result = await laneAttest(d);
+    expect(result).toMatchObject({ verdict: "CLEAR", tip: rebased });
+    const written = d.store.laneReceipt("fix-login", rebased);
+    expect(written?.reviewedTip).toBe(tip);
+    expect(written?.patchId).toBe(patch);
+    expect(reviewJobFor(d.store.root, "fix-login", tip)).toBeUndefined();
+  });
+
+  test("attest refuses a rebase that changed the patch", async () => {
+    const { d, repo } = await laneWorld();
+    await queueLaneReview(d, "fix-login", undefined);
+    repo.head = rebased;
+    delete repo.patchId;
+    repo.diff = changedDiff;
+    await expect(laneAttest(d)).rejects.toThrow("no saved review diff matches");
+  });
+
+  test("attest refuses when no reviewed diff exists", async () => {
+    const { d } = await laneWorld();
+    await expect(laneAttest(d)).rejects.toThrow("no reviewed diff is saved");
   });
 
   test("done --rebase keeps the CLEAR receipt when the rebase leaves the patch unchanged", async () => {

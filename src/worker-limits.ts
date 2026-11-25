@@ -1,7 +1,8 @@
 // The ceilings every long run stops at. A worker that reaches one stops at a safe point and reports; duty never kills a
 // run for its age. The defaults are conservative: a run that needs more is split or re-briefed by the lead, not extended
 // in place. These constants are the single source for the numbers rendered into prompts/review.md, prompts/lane-footer.md
-// and prompts/lead.md; docs/workflow.md repeats them for readers and must be updated with this file.
+// and prompts/lead.md; the slow-review notice derives from the review ceiling. docs/workflow.md, docs/review.md and
+// docs/ops-protocol.md repeat the values for readers and must be updated with this file.
 
 export type WorkerCeiling = { readonly wallMinutes: number; readonly tokens: number };
 

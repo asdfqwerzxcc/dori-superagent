@@ -4,6 +4,7 @@ import { backlogAdd } from "../src/backlog.ts";
 import { done, ready, startLane } from "../src/lanes.ts";
 import { loopTick } from "../src/loop.ts";
 import { attestLane } from "../src/review-lane-cli.ts";
+import { queueLaneReview } from "../src/review-queue.ts";
 import { fakeGit, type Repo } from "./fake-git.ts";
 import { setup } from "./harness-setup.ts";
 import { captureIo } from "./inbox-setup.ts";
@@ -24,8 +25,10 @@ async function world(keys: readonly string[] = ["fix-login"]) {
   return { ...s, repo };
 }
 
-const attest = (d: Parameters<typeof attestLane>[0], key: string, verdict: "CLEAR" | "BLOCK" = "CLEAR") =>
-  attestLane(d, key, { verdict, reviewer: "omo-native-gate-reviewer", evidence: ["file:///report"] });
+const attest = async (d: Parameters<typeof attestLane>[0], key: string, verdict: "CLEAR" | "BLOCK" = "CLEAR") => {
+  await queueLaneReview(d, key, undefined);
+  return attestLane(d, key, { verdict, reviewer: "omo-native-gate-reviewer", evidence: ["file:///report"] });
+};
 
 describe("lane review gate", () => {
   test("done refuses a tip without a CLEAR receipt, then closes after the attestation", async () => {
@@ -80,6 +83,19 @@ describe("lane review gate", () => {
     });
     const run = await loopTick(d, { force: true });
     expect(run.started).toEqual([]);
+  });
+
+  test("done logs a patch-matched receipt at its reviewed tip", async () => {
+    const { d, repo, brief } = await world(["fix-login"]);
+    d.store.saveLane({ ...d.store.lane("fix-login")!, item: "fix-login" });
+    backlogAdd(d, "fix-login", brief, { cwd: d.store.root });
+    await attest(d, "fix-login");
+    repo.head = "c".repeat(40);
+    expect(await done(d, "fix-login")).toBeUndefined();
+    expect(d.store.item("fix-login")!.log.at(-1)).toMatchObject({
+      kind: "done",
+      text: `lane fix-login done at ${"c".repeat(12)} (CLEAR receipt lane_fix-login@${tip}, same patch)`,
+    });
   });
 
   test("status prints reviewed, BLOCK or no receipt beside each lane", async () => {

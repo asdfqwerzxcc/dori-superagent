@@ -15,7 +15,7 @@ const diff = "diff --git a/src/x.ts b/src/x.ts\n+export const x = 1;\n";
 
 async function world() {
   const s = setup();
-  const repo: Repo = { head: base, mergeBase: base, diff };
+  const repo: Repo = { head: base, mergeBase: base, diff, patchId: "0".repeat(40) };
   fakeGit(s.w, repo);
   await startLane(s.d, "fix-login", s.brief, { group: "w1" });
   await ready(s.d, "fix-login", "fixed", ["file:///fix-login"]);
@@ -40,6 +40,8 @@ describe("lane attestation", () => {
       verdict: "CLEAR",
       base,
       tip,
+      patchId: "0".repeat(40),
+      reviewedTip: tip,
       brief: d.store.lane("fix-login")!.brief,
       reviewer: "omo-native-gate-reviewer",
       at: d.now(),
@@ -66,6 +68,7 @@ describe("lane attestation", () => {
 
   test("--lane <key> --attest writes the same receipt", async () => {
     const { d } = await world();
+    await queue(d);
     const out = await captureIo(() => main(["review", "--lane", "fix-login", "--attest", ...fully], d));
     expect(out).toEqual({ code: 0, out: `ATTESTED fix-login tip=${tip} verdict=CLEAR` });
     expect(d.store.laneReceipt("fix-login", tip)?.verdict).toBe("CLEAR");
@@ -73,6 +76,7 @@ describe("lane attestation", () => {
 
   test("BLOCK is written, done refuses it, and a later CLEAR never replaces it", async () => {
     const { d } = await world();
+    await queue(d);
     const blocked = await attest(d, [
       "--verdict",
       "BLOCK",

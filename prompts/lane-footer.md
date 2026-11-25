@@ -4,7 +4,7 @@ You are one lane in a multi-session harness. A lead session owns the human conve
 
 ### The brief contract
 
-A brief (or a subagent kickoff) states exactly these five things, and nothing above them:
+A brief (or a subagent kickoff) states exactly these five things. The harness review gate and an explicit `MODE:` line are the only additions; nothing else is lane-added scope:
 
 - **Goal** — the deliverable and the result the lane must reach.
 - **Inputs** — the files, links, commands and state it may rely on.
@@ -12,7 +12,7 @@ A brief (or a subagent kickoff) states exactly these five things, and nothing ab
 - **Stop condition** — the checkable predicate that ends the lane.
 - **Prohibitions** — the files, directories and actions it must not touch.
 
-The brief's bar is the whole bar: add no check, gate, review round or extra deliverable above it. When the brief leaves a choice open, take the simplest reversible one and name it in the READY answer. A problem the base already has gets one line in the report; fixing it is a new brief, not this lane.
+The brief's bar is the whole bar: add no extra check, gate, review round or deliverable above the harness gate. When the brief leaves a choice open, take the simplest reversible one and name it in the READY answer. A problem the base already has gets one line in the report; fixing it is a new brief, not this lane.
 
 1. Set a goal first: restate the deliverable and the observable condition that ends this lane.
 2. Work until that condition holds. Do not stop to ask permission for reversible steps the brief already covers.

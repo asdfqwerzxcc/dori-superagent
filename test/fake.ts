@@ -56,7 +56,7 @@ export class World {
   closeFails = false;
   gh: (argv: readonly string[]) => { code: number; stdout: string; stderr?: string } = () => ({ code: 1, stdout: "" });
   /** answers for `git`; the default is "not a repository", as a lane started outside a checkout sees it. */
-  git: (argv: readonly string[]) => { code: number; stdout: string; stderr?: string } = () => ({
+  git: (argv: readonly string[], stdin?: string) => { code: number; stdout: string; stderr?: string } = () => ({
     code: 128,
     stdout: "",
     stderr: "not a git repository",
@@ -116,7 +116,7 @@ export class World {
       const r = this.gh(argv);
       return { code: r.code, stdout: r.stdout, stderr: r.stderr ?? "" };
     }
-    if (cmd === "git") return { stderr: "", ...this.git(argv) };
+    if (cmd === "git") return { stderr: "", ...this.git(argv, options?.stdin) };
     if (cmd === "hc") return this.hc.exec(cmd, argv);
     if (cmd !== "herdr") return { stderr: "", ...(await this.reviewer(argv, options)) };
     const ok = (result: unknown) => ({ code: 0, stdout: JSON.stringify({ result }), stderr: "" });
