@@ -8,7 +8,6 @@ $doriHome = if ($env:DORI_HOME) { $env:DORI_HOME } else { Join-Path $env:USERPRO
 $candidates = @()
 if ($Guard -ne "") { $candidates += $Guard }
 $candidates += (Join-Path $doriHome "src\src\supervisors\ensure-gateway.ts")
-$candidates += (Join-Path $doriHome "bin\ensure-gateway.ts")
 $program = $null
 foreach ($candidate in $candidates) {
     if (Test-Path -LiteralPath $candidate -PathType Leaf) { $program = $candidate; break }
