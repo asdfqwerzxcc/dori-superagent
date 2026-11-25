@@ -88,12 +88,14 @@ export async function runReviewCommand(d: Deps, a: Args, x: string | undefined):
     if (lane !== undefined) throw new Refusal("--background starts a PR review; give a PR, not --lane");
     const pr = need(x, "PR");
     if (!isPrId(pr)) throw new Refusal(`PR must look like owner/repo#123, got ${pr}`);
-    const started = await startBackgroundReview(d, pr, { model: one(a, "model") });
+    const started = await startBackgroundReview(d, pr, {
+      model: one(a, "model"),
+      restart: a.flags.has("restart"),
+    });
     const { job } = started;
     const where = job.session === undefined ? "" : ` session=${job.session}`;
-    console.log(
-      `${started.existing ? "REVIEW_RUNNING" : "REVIEW_STARTED"} ${job.pr} job=${job.job}${where} log=${job.log}`,
-    );
+    const state = started.existing ? "REVIEW_RUNNING" : started.restarted ? "REVIEW_RESTARTED" : "REVIEW_STARTED";
+    console.log(`${state} ${job.pr} job=${job.job}${where} log=${job.log}`);
     return 0;
   }
   if (lane !== undefined) {

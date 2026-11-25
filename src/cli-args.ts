@@ -52,10 +52,12 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
                                               stale PRs get a nudge then a close; stale issues get needs-info (never closed)
                                               no --repo = this checkout's github origin; writes need config/repos.json allow
   dori review <owner/repo#N> [--model M]      fresh omo reviewer at the exact head -> receipt; no time cap
-  dori review <owner/repo#N> --background    open the reviewer in its own session and return; progress rows under
-                                              state/reviews/jobs, duty reports; memory, never a clock, limits the count
+  dori review <owner/repo#N> --background [--restart]
+                                              open the reviewer in its own session and return; --restart replaces a
+                                              start that never wrote its running row; a start that never does fails
+                                              after 60s; memory, never a clock, limits the count
   dori review --job <id>                      the background reviewer's worker (started in its own session)
-  dori review --list                          background review jobs and the last output line of each
+  dori review --list                          active jobs; finished rows/logs are pruned (20 kept, 7 days)
   dori review <owner/repo#N> --attest --verdict CLEAR|BLOCK --reviewer R --evidence E
                                              record a review done elsewhere as the PR receipt (no child process)
   dori review <lane-key> --attest --verdict CLEAR|BLOCK --reviewer R --evidence E [--summary S]

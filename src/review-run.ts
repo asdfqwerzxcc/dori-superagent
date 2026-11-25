@@ -6,9 +6,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { isPrId } from "./gate.ts";
-import type { Deps } from "./harness.ts";
 import { memoryLow } from "./host.ts";
-import { tellLead } from "./inbox.ts";
 import { readJson, writeJson } from "./json-file.ts";
 import { HOSTNAME, pidAlive, processStartTime } from "./process-identity.ts";
 import type { HostLoad } from "./store-types.ts";
@@ -19,6 +17,10 @@ export const REVIEW_MEM_MB = 500;
 export const REVIEW_SLOW_MS = 2 * 60 * 60 * 1000;
 /** How often a running worker rewrites its progress row. */
 export const REVIEW_PROGRESS_MS = 30_000;
+/** A start that never writes its running row within this window is a failed launch, not a slow review. */
+export const REVIEW_LAUNCH_MS = 60_000;
+/** How many close attempts before a tab is marked closed regardless, so a dead runtime cannot retry forever. */
+export const REVIEW_CLOSE_ATTEMPTS = 3;
 
 export const JOB_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
 const STATES = new Set<RunState>(["starting", "running", "done", "failed"]);
@@ -49,6 +51,8 @@ export type ReviewRunJob = {
   readonly slowNotifiedAt?: number;
   readonly announcedAt?: number;
   readonly sessionClosedAt?: number;
+  readonly sessionCloseAttempts?: number;
+  readonly sessionCloseError?: string;
 };
 
 export const runsDir = (root: string): string => join(root, "state", "reviews", "jobs");
@@ -81,7 +85,9 @@ function validRunJob(job: ReviewRunJob): boolean {
     optionalNumber(job.finishedAt) &&
     optionalNumber(job.slowNotifiedAt) &&
     optionalNumber(job.announcedAt) &&
-    optionalNumber(job.sessionClosedAt)
+    optionalNumber(job.sessionClosedAt) &&
+    optionalNumber(job.sessionCloseAttempts) &&
+    optionalString(job.sessionCloseError)
   );
 }
 
@@ -166,11 +172,24 @@ export const progressOf = (job: ReviewRunJob): string => {
 };
 
 /** A worker is only the process this record names: same host, same start time, still alive. */
-export const workerAlive = (job: ReviewRunJob): boolean => {
-  if (job.workerPid === undefined || job.host !== HOSTNAME || !pidAlive(job.workerPid)) return false;
-  const startTime = processStartTime(job.workerPid);
-  return startTime !== null && (job.startTime === undefined || job.startTime === null || startTime === job.startTime);
-};
+export type WorkerState = "alive" | "unknown" | "dead" | "foreign";
+
+/**
+ * An unreadable start time is unknown, never death: only a dead pid or a non-null start-time mismatch fails a review.
+ * A record from another host is foreign and skipped, not failed. `readStartTime` is injectable for that case.
+ */
+export function workerState(
+  job: ReviewRunJob,
+  readStartTime: (pid: number) => number | null = processStartTime,
+): WorkerState {
+  if (job.workerPid === undefined) return "unknown";
+  if (job.host !== undefined && job.host !== HOSTNAME) return "foreign";
+  if (!pidAlive(job.workerPid)) return "dead";
+  const started = readStartTime(job.workerPid);
+  if (started === null) return "unknown";
+  if (job.startTime !== undefined && job.startTime !== null && started !== job.startTime) return "dead";
+  return "alive";
+}
 
 /** `o/r#7` -> `o-r-7-<suffix>`: a file name, never a path. */
 export function reviewRunId(pr: string): string {
@@ -179,29 +198,4 @@ export function reviewRunId(pr: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
   return `${slug}-${randomUUID().slice(0, 8)}`;
-}
-
-/** Sends the one terminal message a job deserves. Returns true when this call wrote it. */
-export async function announceRun(d: Deps, job: ReviewRunJob): Promise<boolean> {
-  if (job.state !== "done" && job.state !== "failed") return false;
-  const path = runPath(d.store.root, job.job);
-  const current = readRunJob(path);
-  if (current === undefined || current.announcedAt !== undefined) return false;
-  const elapsed = duration(d.now() - current.startedAt);
-  const text =
-    current.state === "done"
-      ? `[REVIEW ${current.pr}] ${current.verdict ?? "?"} receipt at ${current.sha?.slice(0, 12) ?? "?"} ` +
-        `(job ${current.job}, ${elapsed}); record the lane receipt with dori review <lane-key> --attest --verdict ` +
-        `CLEAR|BLOCK --reviewer <reviewer> --evidence <report>, then dori merge <lane-key>`
-      : `[REVIEW ${current.pr}] failed after ${elapsed} (job ${current.job}): ${current.error ?? "no reason given"}; ` +
-        `log ${current.log}`;
-  try {
-    const sent = await tellLead(d, text, "review");
-    if (sent === undefined) return false;
-    writeRunJob(d.store.root, { ...current, announcedAt: d.now() });
-    return true;
-  } catch {
-    // The lead pane may be restarting; duty retries the same notice on its next pass.
-    return false;
-  }
 }

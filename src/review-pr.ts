@@ -2,7 +2,7 @@
 // receipt. Kept out of the merge gate so the gate stays a rule module and this stays the process that feeds it.
 
 import { randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gh, headSha, parsePr } from "./gate.ts";
 import { prompt, type Deps } from "./harness.ts";
@@ -11,12 +11,35 @@ import type { ExecOptions } from "./runtime/exec.ts";
 
 /** Windows caps one CreateProcess command line near 32,767 chars; leave room for the executable and its flags. */
 const HOOK_ARGV_LIMIT = 30_000;
+/** The full reviewer output saved beside the receipt; findings at the head must survive a huge transcript. */
+const REVIEW_TEXT_CAP = 65_536;
+const SUMMARY_SIDE = 2_000;
 
 const argvLength = (argv: readonly string[]): number => argv.reduce((total, part) => total + part.length + 1, 0);
+const reviewTextPath = (root: string, pr: string, sha: string): string =>
+  join(root, "receipts", `${pr.replaceAll("/", "__").replace("#", "_")}@${sha}.review.txt`);
+
+/** Head and tail: a long transcript keeps the findings at the top and the final verdict at the bottom. */
+const summarizeReview = (text: string): string => {
+  const trimmed = text.trim();
+  return trimmed.length <= SUMMARY_SIDE * 2
+    ? trimmed
+    : `${trimmed.slice(0, SUMMARY_SIDE)}\n...\n${trimmed.slice(-SUMMARY_SIDE)}`;
+};
+
+const capReviewText = (text: string): string => {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= REVIEW_TEXT_CAP) return text;
+  const half = Math.floor(REVIEW_TEXT_CAP / 2);
+  return `${bytes.subarray(0, half).toString("utf8")}\n...\n${bytes.subarray(bytes.length - half).toString("utf8")}`;
+};
 
 /** One chunk of a reviewer's output as it arrives; the background worker records it as progress. */
 export type ReviewOutput = { readonly stream: "stdout" | "stderr"; readonly chunk: string };
-export type ReviewOptions = { readonly onOutput?: (out: ReviewOutput) => void };
+export type ReviewOptions = {
+  readonly onOutput?: (out: ReviewOutput) => void;
+  readonly onHead?: (sha: string) => void;
+};
 
 /** Runs a fresh, non-interactive reviewer session pinned to the PR head and records its verdict as a receipt. */
 export async function review(
@@ -29,6 +52,7 @@ export async function review(
   // hooks.reviewCommand replaces the built-in reviewer; it must print a VERDICT line like the built-in one.
   const hook = loadHooks(d.store.root).reviewCommand;
   const sha = await headSha(d, pr);
+  opts.onHead?.(sha);
   const view = JSON.parse(await gh(d, ["pr", "view", String(pr.number), "--repo", pr.repo, "--json", "title,body"]));
   const diff = await gh(d, ["pr", "diff", String(pr.number), "--repo", pr.repo]);
   const vars = {
@@ -98,13 +122,22 @@ export async function review(
   }
   if (answered.code !== 0) throw new Error(`reviewer exited ${answered.code}: ${answered.stderr.trim()}`);
   const verdict = last[1] as "CLEAR" | "BLOCK";
+  const full = answered.stdout;
+  const reviewPath = reviewTextPath(d.store.root, pr.id, sha);
+  try {
+    mkdirSync(join(d.store.root, "receipts"), { recursive: true });
+    writeFileSync(reviewPath, capReviewText(full), { mode: 0o600 });
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    process.stderr.write(`dori: could not save the full reviewer output to ${reviewPath} (${why})\n`);
+  }
   d.store.saveReceipt({
     pr: pr.id,
     sha,
     verdict,
     model: hook ? "hook" : retry ? `${fallback} (fallback)` : (model ?? "default"),
     at: d.now(),
-    summary: answered.stdout.trim().slice(-4000),
+    summary: summarizeReview(full),
   });
   d.usage.record({ name: "dori.review_completed", verdict });
   return { verdict, sha };

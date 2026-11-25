@@ -60,17 +60,26 @@ HIGH unless the lane marked it `handed-off` with the recipient. A CLEAR verdict 
 finding never clears.
 
 `state/reviews/jobs/<job>.json` holds the job (`starting`, `running`, `done`, `failed`), the worker pid and start time,
-the session, the last output line, the bytes captured, the heartbeat and the verdict or failure. The worker rewrites
-that row every 30 seconds and on every output burst; `state/reviews/<job>.log` keeps the full output. `dori review
---list` prints the active rows and `dori status` adds one `REVIEW ...` line per active job. A second `--background` for
-the same PR while its job is live prints `REVIEW_RUNNING ...` and starts nothing.
+the last output line, the bytes captured, the heartbeat and the verdict or failure; the tab is recorded separately in
+`<job>.session`, so the start cannot overwrite the worker's first row. The worker rewrites the row every 30 seconds and
+on every output burst; `state/reviews/<job>.log` keeps the full output and is created `0600`. `dori review --list`
+prints the active rows and `dori status` adds one `REVIEW ...` line per active job. A second `--background` for the same
+PR while its job is live prints `REVIEW_RUNNING ...` and starts nothing.
+
+A start is a bounded handshake, not a review deadline: a start that never writes its running row within 60 seconds is
+marked failed and its tab closed; `--background --restart` replaces only such a stuck start (a running review is
+refused). The once-only slow and done notices use exclusive `<job>.slow`/`<job>.announced` markers, and terminal job
+rows/logs are pruned (20 kept, 7 days; running rows are preserved). The full reviewer output is saved to
+`receipts/<pr>@<sha>.review.txt` with a 64KB cap, and the receipt summary keeps the first and last 2000 characters, so
+a HIGH at the top of a long transcript is not lost.
 
 There is no time limit and no tool budget on either path: a review that needs longer keeps running. A review that
 passes two hours is reported to the lead once with its last output line and the log path, and is left running. Duty
-never kills, shortens or fails a review for its age. A dead worker (pid gone, no receipt) is the only failure inferred
-from outside, and it is reported once with the log path. Free memory, not a clock, decides admission: one reviewer
-needs about 500 MB, and a start is refused while `memFreePct < 10` or `memFreeMb < 700`, or while the number of live
-reviews already equals `memFreeMb / 500`.
+never kills, shortens or fails a review for its age. A dead worker is checked against the sha recorded before the
+reviewer ran: if the receipt exists the job is done, and only a dead worker without that receipt fails (once, with the
+log path). A pid whose start time cannot be read is unknown, not dead; a record from another host is skipped. Free
+memory, not a clock, decides admission: one reviewer needs about 500 MB, and a start is refused while `memFreePct < 10`
+or `memFreeMb < 700`, or while the number of live reviews already equals `memFreeMb / 500`.
 
 The lead records the answer as the lane receipt:
 

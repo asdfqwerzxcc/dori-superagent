@@ -55,7 +55,11 @@ describe("queued lane review", () => {
 
     const before = w.calls.length;
     expect(await dutyTick(d)).toEqual([
-      { lane: "fix-login", action: "review-queued", detail: "queued, waiting 1m for the lead's receipt" },
+      {
+        lane: "fix-login",
+        action: "review-queued",
+        detail: "queued, tip bbbbbbbbbbbb, waiting 1m for the lead's receipt",
+      },
     ]);
     expect(w.calls.length).toBe(before);
     expect(w.calls.filter((c) => c.cmd === "omo")).toEqual([]);
@@ -71,12 +75,29 @@ describe("queued lane review", () => {
     expect(await dutyTick(d)).toContainEqual({
       lane: "fix-login",
       action: "review-queued",
-      detail: "queued, waiting 1500m for the lead's receipt",
+      detail: "queued, tip bbbbbbbbbbbb, waiting 1500m for the lead's receipt",
     });
     expect(w.calls.length).toBe(before);
     expect(queued(d)).toMatchObject({ state: "queued" });
     expect(existsSync(join(queueDir(d), `fix-login@${tip}.json`))).toBe(true);
     expect(d.store.laneReceipt("fix-login", tip)).toBeUndefined();
+  });
+
+  test("a new tip supersedes the lane's old-tip request and the drain names the tip", async () => {
+    const { w, d, repo } = await world();
+    await queue(d);
+    const next = "c".repeat(40);
+    repo.head = next;
+    expect((await queue(d)).out).toBe(`QUEUED fix-login ${next} fix-login@${next}`);
+    expect(reviewJobFor(d.store.root, "fix-login", tip)).toBeUndefined();
+    expect(reviewJobFor(d.store.root, "fix-login", next)).toMatchObject({ tip: next, state: "queued" });
+    expect(readdirSync(queueDir(d))).toEqual([`fix-login@${next}.json`]);
+    expect(await dutyTick(d)).toContainEqual({
+      lane: "fix-login",
+      action: "review-queued",
+      detail: `queued, tip ${next.slice(0, 12)}, waiting 0m for the lead's receipt`,
+    });
+    expect(w.calls.filter((c) => c.cmd === "omo")).toEqual([]);
   });
 
   test("the drain drops an unreadable record without touching a process", async () => {

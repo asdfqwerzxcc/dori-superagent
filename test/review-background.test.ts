@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { dutyTick } from "../src/duty.ts";
@@ -8,6 +8,7 @@ import type { Deps } from "../src/harness.ts";
 import { HOUR } from "../src/loop.ts";
 import { HOSTNAME, pidAlive, processStartTime } from "../src/process-identity.ts";
 import { readRunJob, reviewCapacity } from "../src/review-run.ts";
+import { readSessionRef, sessionPath } from "../src/review-meta.ts";
 import { startBackgroundReview } from "../src/review-start.ts";
 import { runReviewJob } from "../src/review-worker.ts";
 import type { World } from "./fake.ts";
@@ -16,6 +17,7 @@ import { captureIo } from "./inbox-setup.ts";
 import { setup as loopSetup } from "./loop-setup.ts";
 
 const head = "a".repeat(40);
+const posixModes = process.platform !== "win32";
 const jobsDir = (d: Deps): string => join(d.store.root, "state", "reviews", "jobs");
 const jobAt = (d: Deps, id: string) => readRunJob(join(jobsDir(d), `${id}.json`));
 
@@ -37,7 +39,8 @@ describe("background gate review", () => {
     const id = /job=(\S+)/.exec(first.out)?.[1];
     if (id === undefined) throw new Error("no job id in output");
     expect(jobAt(d, id)).toMatchObject({ pr: "o/r#7", state: "starting" });
-    expect(jobAt(d, id)!.session).toStartWith("herdr:");
+    expect(first.out).toContain("session=herdr:");
+    expect(readSessionRef(d.store.root, id)).toStartWith("herdr:");
     const started = [...w.panes.values()].flatMap((pane) => pane.ran);
     expect(started.some((command) => command.includes("--job") && command.includes(id))).toBe(true);
     expect(w.calls.filter((call) => call.cmd === "omo")).toEqual([]);
@@ -67,6 +70,7 @@ describe("background gate review", () => {
     expect(done.lastLine).toBe("VERDICT: CLEAR");
     expect(done.bytes).toBeGreaterThan(0);
     expect(readFileSync(done.log, "utf8")).toContain("VERDICT: CLEAR");
+    if (posixModes) expect(statSync(done.log).mode & 0o777).toBe(0o600);
     expect(d.store.receipt("o/r#7", head)!.verdict).toBe("CLEAR");
     const notices = lead.received.filter((message) => message.startsWith("[REVIEW o/r#7] CLEAR"));
     expect(notices).toHaveLength(1);
@@ -82,10 +86,8 @@ describe("background gate review", () => {
   test("a start that never opened a session is replaced, not treated as a live review", async () => {
     const { w, d } = setup();
     gh(w);
-    const first = await startBackgroundReview(d, "o/r#7", { job: "stuck-job" });
-    const path = join(jobsDir(d), "stuck-job.json");
-    const { session: _session, ...noSession } = first.job;
-    await Bun.write(path, JSON.stringify(noSession));
+    await startBackgroundReview(d, "o/r#7", { job: "stuck-job" });
+    rmSync(sessionPath(d.store.root, "stuck-job"), { force: true });
     const second = await startBackgroundReview(d, "o/r#7");
     expect(second.existing).toBe(false);
     expect(second.job.job).not.toBe("stuck-job");
@@ -116,19 +118,21 @@ describe("background gate review", () => {
       sawFirst = resolve;
     });
     w.reviewer = async (_argv, options) => {
-      options?.onStdout?.("tool: grep review\n");
+      options?.onStdout?.("도구: grep review\n");
       sawFirst();
       await gate;
       options?.onStdout?.("VERDICT: CLEAR\n");
-      return { code: 0, stdout: "tool: grep review\nVERDICT: CLEAR" };
+      return { code: 0, stdout: "도구: grep review\nVERDICT: CLEAR" };
     };
     const started = await startBackgroundReview(d, "o/r#7");
     const running = runReviewJob(d, started.job.job);
     await firstOutput;
     const mid = jobAt(d, started.job.job);
-    expect(mid).toMatchObject({ state: "running", lastLine: "tool: grep review" });
+    expect(mid).toMatchObject({ state: "running", lastLine: "도구: grep review" });
+    expect(mid!.sha).toBe(head);
     expect(mid!.workerPid).toBe(process.pid);
     expect(mid!.heartbeatAt).toBeDefined();
+    expect(mid!.bytes).toBeGreaterThanOrEqual(Buffer.byteLength("도구: grep review\n", "utf8"));
     release();
     expect((await running).state).toBe("done");
   });

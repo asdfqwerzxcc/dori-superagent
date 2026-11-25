@@ -55,6 +55,9 @@ export async function queueLaneReview(
     );
   writeFileSync(d.store.laneDiffPath(lane.key, tip), diff.stdout);
   const root = d.store.root;
+  // A lane has one review target at a time: a request for an older tip can never receive this tip's receipt.
+  for (const { path: oldPath, job: old } of reviewFiles(root))
+    if (old.lane === lane.key && old.tip !== tip) rmSync(oldPath, { force: true });
   const path = jobPath(root, lane.key, tip);
   const existing = readJob(path);
   const replacing = opts.restart === true;
@@ -122,7 +125,7 @@ export async function drainReviewQueue(d: Deps, opts: DrainOptions = {}): Promis
     events.push({
       lane: job.lane,
       action: "review-queued",
-      detail: `${job.state}, waiting ${ageOf(age)} for the lead's receipt`,
+      detail: `${job.state}, tip ${job.tip.slice(0, 12)}, waiting ${ageOf(age)} for the lead's receipt`,
     });
   }
   return events;

@@ -1,14 +1,14 @@
 // The worker half of a background review: the command a review session runs. It writes the same receipt the
 // foreground `dori review <PR>` writes, keeps a progress row while the reviewer runs, and has no deadline of its own.
 
-import { appendFileSync } from "node:fs";
+import { appendFileSync, chmodSync } from "node:fs";
 import type { Deps } from "./harness.ts";
 import { loadReviewSettings } from "./hooks.ts";
 import { HOSTNAME, processStartTime } from "./process-identity.ts";
 import { Refusal } from "./refusal.ts";
 import { review, type ReviewOutput } from "./review-pr.ts";
+import { announceRun, readSessionRef } from "./review-meta.ts";
 import {
-  announceRun,
   firstLine,
   JOB_RE,
   lastNonEmptyLine,
@@ -37,6 +37,7 @@ export async function runReviewJob(d: Deps, id: string, opts: RunReviewOptions =
   if (initial === undefined) throw new Refusal(`no review job ${id} under ${runsDir(d.store.root)}`);
   if (initial.state === "done" || initial.state === "failed") return initial;
 
+  const session = readSessionRef(d.store.root, id);
   let current: ReviewRunJob = {
     ...initial,
     state: "running",
@@ -44,9 +45,16 @@ export async function runReviewJob(d: Deps, id: string, opts: RunReviewOptions =
     host: HOSTNAME,
     startTime: processStartTime(process.pid),
     heartbeatAt: d.now(),
+    ...(session === undefined ? {} : { session }),
   };
   writeRunJob(d.store.root, current);
   const logPath = reviewLogPath(d.store.root, id);
+  try {
+    appendFileSync(logPath, "", { mode: 0o600 });
+    if (process.platform !== "win32") chmodSync(logPath, 0o600);
+  } catch {
+    // A log that cannot be created must not stop the receipt; the progress row still carries the last line.
+  }
   let bytes = initial.bytes ?? 0;
   let lastLine = initial.lastLine;
   let lastOutputAt = initial.lastOutputAt;
@@ -63,7 +71,7 @@ export async function runReviewJob(d: Deps, id: string, opts: RunReviewOptions =
     writeRunJob(d.store.root, current);
   };
   const onOutput = (out: ReviewOutput): void => {
-    bytes += out.chunk.length;
+    bytes += Buffer.byteLength(out.chunk, "utf8");
     lastOutputAt = d.now();
     const line = lastNonEmptyLine(out.chunk);
     if (line !== undefined) lastLine = line;
@@ -84,7 +92,10 @@ export async function runReviewJob(d: Deps, id: string, opts: RunReviewOptions =
   );
   timer.unref?.();
   try {
-    const result = await review(d, initial.pr, initial.model ?? loadReviewSettings(d.store.root).model, { onOutput });
+    const result = await review(d, initial.pr, initial.model ?? loadReviewSettings(d.store.root).model, {
+      onOutput,
+      onHead: (sha) => persist({ sha }),
+    });
     persist({
       state: "done",
       verdict: result.verdict,
