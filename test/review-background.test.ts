@@ -111,19 +111,21 @@ describe("background gate review", () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
+    let sawFirst: () => void = () => {};
+    const firstOutput = new Promise<void>((resolve) => {
+      sawFirst = resolve;
+    });
     w.reviewer = async (_argv, options) => {
       options?.onStdout?.("tool: grep review\n");
+      sawFirst();
       await gate;
       options?.onStdout?.("VERDICT: CLEAR\n");
       return { code: 0, stdout: "tool: grep review\nVERDICT: CLEAR" };
     };
     const started = await startBackgroundReview(d, "o/r#7");
-    const running = runReviewJob(d, started.job.job, { progressMs: 5 });
-    let mid = jobAt(d, started.job.job);
-    for (let i = 0; i < 100 && mid?.lastLine !== "tool: grep review"; i++) {
-      await Bun.sleep(5);
-      mid = jobAt(d, started.job.job);
-    }
+    const running = runReviewJob(d, started.job.job);
+    await firstOutput;
+    const mid = jobAt(d, started.job.job);
     expect(mid).toMatchObject({ state: "running", lastLine: "tool: grep review" });
     expect(mid!.workerPid).toBe(process.pid);
     expect(mid!.heartbeatAt).toBeDefined();
