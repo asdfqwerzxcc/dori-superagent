@@ -25,25 +25,43 @@ export type DedupeEnsureUpOptions = {
   readonly supervisor?: () => SupervisorRecord | undefined;
 };
 
-type Candidate = RecordedChild & { readonly beat?: number };
+type Candidate = RecordedChild & {
+  readonly beat?: number;
+  readonly source?: "unit" | "loop" | "plugin" | "contender" | "lock";
+};
 
 /** Every pid a record, a contender or the live lock names, with the start time and the beat that proves it. */
 function ensureUpCandidates(
   home: string,
   same: (child: RecordedChild) => boolean,
   unit: UnitRecord | undefined,
+  plugin: { readonly pid: number; readonly startedAt: number; readonly at: number } | undefined,
+  started: ((pid: number) => number | null) | undefined,
 ): Candidate[] {
   const loop = ensureUpRecord(home);
-  const plugin = readPluginRecord(home, "ensure-up");
   const lock = readPluginLock(home, "ensure-up");
   const valid = (pid: unknown): pid is number => Number.isInteger(pid) && (pid as number) > 0;
   return [
-    ...(unit !== undefined && valid(unit.pid) ? [{ pid: unit.pid, at: unit.at, beat: unit.at }] : []),
-    ...(loop !== undefined && valid(loop.pid) ? [{ pid: loop.pid, at: loop.startedAt, beat: loop.at }] : []),
-    ...(plugin !== undefined && valid(plugin.pid) ? [{ pid: plugin.pid, at: plugin.startedAt, beat: plugin.at }] : []),
-    ...readContenders(home, "ensure-up", { same }).map((c) => ({ pid: c.pid, at: c.at, beat: c.beat ?? c.at })),
-    ...(lock !== undefined && valid(lock.pid) && lock.startedAt !== null
-      ? [{ pid: lock.pid, at: lock.startedAt, beat: lock.at }]
+    ...(unit !== undefined && valid(unit.pid)
+      ? [{ pid: unit.pid, at: unit.startedAt ?? unit.at, beat: unit.at, source: "unit" as const }]
+      : []),
+    ...(loop !== undefined && valid(loop.pid)
+      ? [{ pid: loop.pid, at: loop.startedAt, beat: loop.at, source: "loop" as const }]
+      : []),
+    ...(plugin !== undefined && valid(plugin.pid)
+      ? [{ pid: plugin.pid, at: plugin.startedAt, beat: plugin.at, source: "plugin" as const }]
+      : []),
+    ...readContenders(home, "ensure-up", {
+      same,
+      ...(started === undefined ? {} : { started }),
+    }).map((c) => ({
+      pid: c.pid,
+      at: c.at,
+      beat: c.beat ?? c.at,
+      source: "contender" as const,
+    })),
+    ...(lock !== undefined && valid(lock.pid)
+      ? [{ pid: lock.pid, at: lock.startedAt ?? 0, beat: lock.at, source: "lock" as const }]
       : []),
   ];
 }
@@ -59,14 +77,14 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
   const startedOf = deps.started ?? processStartTimeMs;
   const supervisor = (deps.supervisor ?? (() => supervisorRecord(home, "supervisor")))();
   const unitRecord = supervisor?.units.find((u) => u.name === "ensure-up");
-  const unitPid = unitRecord?.pid;
+  const pluginRecord = readPluginRecord(home, "ensure-up");
   const same =
     deps.same ??
     ((c: RecordedChild): boolean => {
       if (c.pid === process.pid) return false;
       const started = startedOf(c.pid);
       if (started === null) return false;
-      return Math.abs(started - c.at) <= (c.pid === unitPid ? 10_000 : START_SLACK_MS);
+      return Math.abs(started - c.at) <= START_SLACK_MS;
     });
   const keep = deps.keep ?? isPluginEnabled(home, "ensure-up");
   const graceMs = deps.graceMs ?? 2_000;
@@ -78,31 +96,36 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
     if (lock.startedAt === null) return lock.pid;
     return same({ pid: lock.pid, at: lock.startedAt }) ? lock.pid : undefined;
   };
-  const toleranceOf = (pid: number): number => (pid === unitPid ? 10_000 : START_SLACK_MS);
-  const confirmed = (c: Candidate): boolean => {
-    const started = startedOf(c.pid);
-    return started !== null && Math.abs(started - c.at) <= toleranceOf(c.pid);
-  };
   const startHolder = holderOf();
   const seen = new Set<number>();
   const live: Candidate[] = [];
-  const unsure: number[] = [];
-  for (const c of ensureUpCandidates(home, same, unitRecord)) {
-    if (c.pid === process.pid || seen.has(c.pid) || !alive(c.pid)) continue;
-    seen.add(c.pid);
-    if (same(c)) live.push(c);
-    else unsure.push(c.pid);
+  const unsure = new Set<number>();
+  for (const c of ensureUpCandidates(home, same, unitRecord, pluginRecord, deps.started)) {
+    if (c.pid === process.pid || !alive(c.pid)) continue;
+    if (same(c)) {
+      if (seen.has(c.pid)) continue;
+      seen.add(c.pid);
+      live.push(c);
+    } else if (!seen.has(c.pid)) {
+      unsure.add(c.pid);
+    }
   }
   const liveHolder = startHolder === undefined ? undefined : live.find((c) => c.pid === startHolder)?.pid;
-  const unit = live.find((c) => c.pid === unitPid);
+  // The unit is protective only when its record is live and start-time matched; otherwise the supervisor's
+  // current plugin record is the real replacement, and a raw stale pid must not shield a reused loop.
+  const unit = live.find((c) => c.source === "unit") ?? live.find((c) => c.source === "plugin");
   const freshest = live
-    .filter((c) => c.pid !== unitPid)
+    .filter((c) => c.pid !== unit?.pid)
     .reduce<Candidate | undefined>((best, c) => ((c.beat ?? 0) > (best?.beat ?? 0) ? c : best), undefined);
   const keptAtStart = keep ? (liveHolder ?? unit?.pid ?? freshest?.pid) : undefined;
-  const spareUnit = keep ? unitPid : undefined;
+  const spareUnit = keep ? unit?.pid : undefined;
+  const confirmed = (c: Candidate): boolean => {
+    const started = startedOf(c.pid);
+    return started !== null && Math.abs(started - c.at) <= START_SLACK_MS;
+  };
   const killed: number[] = [];
   const failed: number[] = [];
-  const unverified: number[] = [...unsure];
+  const unverified: number[] = [...unsure].filter((pid) => !live.some((c) => c.pid === pid));
   const confirmGone = async (pid: number): Promise<boolean> => {
     const deadline = now() + graceMs;
     while (alive(pid) && now() < deadline) await sleep(50);

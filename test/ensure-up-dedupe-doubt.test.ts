@@ -85,6 +85,26 @@ describe("ensure-up doubt and beats", () => {
     expect(result.killed).toEqual([]);
   });
 
+  test("a disabled plugin reports a null-start lock holder as unverified", async () => {
+    const home = homeWithState();
+    mkdirSync(join(home, "state", "plugins", "ensure-up.lock"), { recursive: true });
+    writeFileSync(
+      join(home, "state", "plugins", "ensure-up.lock", "owner.json"),
+      JSON.stringify({ version: 1, pid: HOLDER, at: NOW, startedAt: null }),
+    );
+    const h = harness([HOLDER]);
+    const result = await dedupeEnsureUp(home, {
+      alive: (pid) => h.alive.has(pid),
+      kill: (pid) => {
+        h.alive.delete(pid);
+        return true;
+      },
+      started: () => null,
+      keep: false,
+    });
+    expect(result).toEqual({ killed: [], unverified: [HOLDER] });
+  });
+
   test("a keeper that dies before the final verdict is not returned", async () => {
     const home = homeWithState();
     writeLock(home, HOLDER, NOW);

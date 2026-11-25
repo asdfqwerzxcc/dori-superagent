@@ -1,16 +1,6 @@
-import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import { pidAlive, processStartTimeMs } from "../process-liveness.ts";
-import {
-  joinContenders,
-  leaveContenders,
-  PLUGIN_TICK_MS,
-  pluginCtx,
-  START_SLACK_MS,
-  type Plugin,
-  type PluginCtx,
-} from "./plugin.ts";
+import { join } from "node:path";
+import { joinContenders, leaveContenders, PLUGIN_TICK_MS, pluginCtx, type Plugin, type PluginCtx } from "./plugin.ts";
 import { pluginByName } from "./registry.ts";
 import { isPluginEnabled, writePluginTick } from "./state.ts";
 
@@ -36,120 +26,10 @@ export async function runTicks(plugin: Plugin, ctx: PluginCtx, opts: TickOptions
   }
 }
 
-export type LockRecordDeps = {
-  readonly alive?: (pid: number) => boolean;
-  readonly started?: (pid: number) => number | null;
-};
+import { acquirePluginLock, releaseLockIfOwner, type LockRecordDeps } from "./lock.ts";
 
-const ownerPath = (lock: string): string => join(lock, "owner.json");
-
-const readJson = (path: string): Record<string, unknown> | undefined => {
-  try {
-    const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
-    return typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : undefined;
-  } catch {
-    return undefined;
-  }
-};
-
-/** The lock is a directory now; an older file at the same path is still read for migration. */
-const readLockRecord = (lock: string): Record<string, unknown> | undefined =>
-  readJson(ownerPath(lock)) ?? readJson(lock);
-
-/**
- * A version 1 lock is held only by the process that wrote it: its start time is compared with the live pid. A
- * non-null mismatch is a reused pid (stale); an unreadable start time or a null recorded one is doubt, so it stays held.
- * An unversioned old-format lock is unverifiable and is taken over once on upgrade.
- */
-export function lockHeldByRecord(raw: unknown, deps: LockRecordDeps = {}): boolean {
-  if (typeof raw !== "object" || raw === null) return false;
-  const record = raw as { version?: unknown; pid?: unknown; startedAt?: unknown };
-  const version = Number(record.version);
-  const pid = Number(record.pid);
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  if (!(deps.alive ?? pidAlive)(pid)) return false;
-  if (version !== 1) return true; // an old-format live holder is doubt; wait for it to exit
-  const rawStart = record.startedAt;
-  if (rawStart === null || rawStart === undefined) return true;
-  const startedAt = Number(rawStart);
-  if (!Number.isInteger(startedAt) || startedAt <= 0) return true;
-  const started = (deps.started ?? processStartTimeMs)(pid);
-  if (started === null) return true;
-  return Math.abs(started - startedAt) <= START_SLACK_MS;
-}
-
-const selfHeld = (lock: string, deps: LockRecordDeps = {}): boolean => {
-  const record = readJson(ownerPath(lock));
-  if (record === undefined) return false;
-  if (Number(record["version"]) !== 1 || Number(record["pid"]) !== process.pid) return false;
-  const rawStart = record["startedAt"];
-  if (rawStart === null || rawStart === undefined) return true;
-  const startedAt = Number(rawStart);
-  if (!Number.isInteger(startedAt) || startedAt <= 0) return true;
-  const own = (deps.started ?? processStartTimeMs)(process.pid);
-  return own === null || Math.abs(own - startedAt) <= START_SLACK_MS;
-};
-
-const dirAgeMs = (lock: string): number | null => {
-  try {
-    return Date.now() - statSync(lock).mtimeMs;
-  } catch {
-    return null;
-  }
-};
-
-export function acquirePluginLock(lock: string, deps: LockRecordDeps = {}): boolean {
-  mkdirSync(dirname(lock), { recursive: true });
-  const claim = (): boolean => {
-    try {
-      mkdirSync(lock);
-    } catch {
-      return false;
-    }
-    try {
-      writeFileSync(
-        ownerPath(lock),
-        JSON.stringify({
-          version: 1,
-          pid: process.pid,
-          at: Date.now(),
-          startedAt: (deps.started ?? processStartTimeMs)(process.pid) ?? null,
-        }),
-      );
-    } catch {}
-    return selfHeld(lock, deps);
-  };
-  if (claim()) return true;
-  const record = readLockRecord(lock);
-  if (record !== undefined) {
-    if (lockHeldByRecord(record, deps)) return false;
-  } else {
-    // An ownerless directory is a claim in progress; only an old one is abandoned.
-    const age = dirAgeMs(lock);
-    if (age !== null && age < 30_000) return false;
-  }
-  // An atomic rename picks one taker: the loser's rename fails and it retries later.
-  const stale = `${lock}.stale.${process.pid}.${Date.now()}`;
-  try {
-    renameSync(lock, stale);
-  } catch {
-    return false;
-  }
-  try {
-    rmSync(stale, { recursive: true, force: true });
-  } catch {}
-  return claim();
-}
-
-/** Removes the lock only while it still names this process; a takeover's lock is left alone. */
-export function releaseLockIfOwner(lock: string): void {
-  const record = readJson(ownerPath(lock)) ?? readJson(lock);
-  if (record === undefined || Number(record["pid"]) !== process.pid) return;
-  try {
-    rmSync(ownerPath(lock), { force: true });
-    rmSync(lock, { recursive: true, force: true });
-  } catch {}
-}
+export { acquirePluginLock, lockHeldByRecord, releaseLockIfOwner } from "./lock.ts";
+export type { LockRecordDeps } from "./lock.ts";
 
 const LOCK_RETRY_MS = 5_000;
 

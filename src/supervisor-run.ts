@@ -66,7 +66,7 @@ export function recordedAlive(child: RecordedChild, deps: RecordedAliveDeps = {}
 
 /** A live record whose start time matches within 2s; an unreadable start is doubt (alive), a mismatch is reused. */
 export function strictRecordedAlive(child: RecordedChild, deps: RecordedAliveDeps = {}): boolean {
-  if (child.pid === process.pid || !pidAlive(child.pid)) return false;
+  if (child.pid === process.pid || !(deps.alive ?? pidAlive)(child.pid)) return false;
   const started = (deps.started ?? processStartTimeMs)(child.pid);
   return started === null || Math.abs(started - child.at) <= 2_000;
 }

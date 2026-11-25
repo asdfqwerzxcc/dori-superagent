@@ -11,7 +11,14 @@ import { pidAlive } from "./process-liveness.ts";
 export type SupervisorName = "supervisor" | "watchdog";
 export const SUPERVISORS: readonly SupervisorName[] = ["supervisor", "watchdog"];
 
-export type UnitRecord = { readonly name: string; readonly pid: number; readonly at: number; readonly pane?: string };
+export type UnitRecord = {
+  readonly name: string;
+  readonly pid: number;
+  readonly at: number;
+  /** The pid's OS start time, so a kill can use the same 2 s identity check as a loop. */
+  readonly startedAt?: number;
+  readonly pane?: string;
+};
 export type SupervisorRecord = {
   readonly name: SupervisorName;
   readonly pid: number;

@@ -92,8 +92,20 @@ export function readPluginLock(home: string, name: string): PluginLock | undefin
       return undefined;
     }
   };
-  const raw = read(join(lock, "owner.json")) ?? read(lock);
-  if (raw === undefined) return undefined;
+  const raw = read(join(lock, "owner.json")) ?? read(join(lock, "owner.json")) ?? read(lock);
+  if (raw === undefined) {
+    // The owner is written to a temp file and renamed into place; a reader that sees only the temp file
+    // still knows the pid. A live pid there is doubt, never an absent lock.
+    try {
+      for (const name of readdirSync(lock)) {
+        const m = /^\.owner\.(\d+)\./.exec(name);
+        if (m === null) continue;
+        const pid = Number(m[1]);
+        if (Number.isInteger(pid) && pid > 0 && pidAlive(pid)) return { pid, at: 0, startedAt: null };
+      }
+    } catch {}
+    return undefined;
+  }
   const pid = Number(raw["pid"]);
   const at = Number(raw["at"]);
   const rawStart = raw["startedAt"];
@@ -114,9 +126,12 @@ export function contenderAlive(c: Contender, deps: ContenderAliveDeps = {}): boo
   return started !== null && Math.abs(started - c.at) <= START_SLACK_MS;
 }
 
-export type ReadContendersOptions = { readonly same?: (c: Contender) => boolean };
+export type ReadContendersOptions = {
+  readonly same?: (c: Contender) => boolean;
+  readonly started?: (pid: number) => number | null;
+};
 
-/** Live, start-time-matched contenders; a dead or reused pid's file is removed, never trusted. */
+/** Live, start-time-matched contenders; a known non-null mismatch is removed, an unreadable start is doubt and kept. */
 export function readContenders(home: string, name: string, opts: ReadContendersOptions = {}): Contender[] {
   const same = opts.same ?? contenderAlive;
   const dir = contendersDir(home, name);
@@ -148,6 +163,8 @@ export function readContenders(home: string, name: string, opts: ReadContendersO
       live.push({ ...contender, ...(beat === undefined ? {} : { beat }) });
       continue;
     }
+    // A transiently unreadable start is doubt: keep the marker for the next refresh, never delete it.
+    if ((opts.started ?? processStartTimeMs)(contender.pid) === null) continue;
     try {
       rmSync(path, { force: true });
     } catch {}

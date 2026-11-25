@@ -136,6 +136,28 @@ describe("dori restart", () => {
     expect(result.missing).toContain(`ensure-up dedupe unverified=${process.ppid}`);
   });
 
+  test("ensure-up health is re-read after the final dedupe even without a kill", async () => {
+    const home = homeWithOnlyEnsureUpEnabled();
+    let checks = 0;
+    const result = await restartSupervisors(home, {
+      timeoutMs: 1_000,
+      io: {
+        kill: async () => [],
+        dedupe: async () => ({ kept: process.pid, killed: [] }),
+        ensure: async () => [],
+        health: () => healthWhereUnitsAreThisProcess([...CORE, "ensure-up"]),
+        waitFresh: async () => true,
+        waitEnsureUp: async () => ({ pid: 11, alive: ++checks === 1 }),
+        waitUnit: async () => true,
+        sleep: async () => {},
+        now: () => 1_000,
+      },
+    });
+    expect(checks).toBeGreaterThanOrEqual(2);
+    expect(result.ensureUp.alive).toBe(false);
+    expect(result.ok).toBe(false);
+  });
+
   test("a killed duplicate whose replacement never beats fails the verdict", async () => {
     const home = homeWithOnlyEnsureUpEnabled();
     const result = await restartSupervisors(home, {
