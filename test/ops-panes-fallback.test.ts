@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { SupervisorHealth } from "../src/supervisors.ts";
 import { formatUnitPlacement } from "../src/unit-placement.ts";
+import { PaneCloseFailed } from "../src/supervisors/panes.ts";
 import { runUnitInPane } from "../src/supervisors/units.ts";
 import { DUTY } from "./ops-panes-fixture.ts";
 import { placement, RUNNING, STOPPED } from "./ops-panes-scripted.ts";
@@ -8,6 +9,32 @@ import { placement, RUNNING, STOPPED } from "./ops-panes-scripted.ts";
 const STOP = new Error("stop the test loop");
 
 describe("a placement that never matches falls back to headless", () => {
+  test("a throwing log never turns a close-held error into a headless fallback", async () => {
+    let headless = false;
+    await runUnitInPane({
+      name: "duty",
+      place: async () => {
+        throw new PaneCloseFailed("pending line");
+      },
+      close: async () => {},
+      headless: async () => {
+        headless = true;
+        throw STOP;
+      },
+      onStart: () => {},
+      onExit: () => {},
+      onUnplace: () => {},
+      alive: () => false,
+      log: () => {
+        throw new Error("log broken");
+      },
+      sleep: async () => {
+        throw STOP;
+      },
+    }).catch(() => undefined);
+    expect(headless).toBe(false);
+  });
+
   test("a fallback reason with a control character is sanitized in the log", async () => {
     const logs: string[] = [];
     await runUnitInPane({

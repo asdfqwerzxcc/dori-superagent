@@ -40,6 +40,11 @@ export type RunUnitOptions = {
  * placement failure falls back to the headless loop with one warning; a disabled plugin's pane is closed and waits.
  */
 export async function runUnitInPane(o: RunUnitOptions): Promise<never> {
+  const say = (line: string): void => {
+    try {
+      o.log(line);
+    } catch {}
+  };
   const poll = o.pollMs ?? 1_000;
   const restart = o.restartMs ?? 5_000;
   let unknownLogged = false;
@@ -56,7 +61,7 @@ export async function runUnitInPane(o: RunUnitOptions): Promise<never> {
       // An unreadable process list is not a dead unit: retry placement instead of starting a headless second copy.
       if (e instanceof PaneUnknown) {
         if (!unknownLogged) {
-          o.log(`SUPERVISED ${printable(o.name)}_pane_unknown reason=${printable(oneLine(e))}`);
+          say(`SUPERVISED ${printable(o.name)}_pane_unknown reason=${printable(oneLine(e))}`);
           unknownLogged = true;
         }
         await o.sleep(poll);
@@ -66,13 +71,13 @@ export async function runUnitInPane(o: RunUnitOptions): Promise<never> {
       // headless beside it. Placement will adopt the line if it starts, else close the pane and replace it.
       if (e instanceof PaneCloseFailed) {
         if (!closeHeldLogged) {
-          o.log(`SUPERVISED ${printable(o.name)}_pane_close_held reason=${printable(oneLine(e))}`);
+          say(`SUPERVISED ${printable(o.name)}_pane_close_held reason=${printable(oneLine(e))}`);
           closeHeldLogged = true;
         }
         await o.sleep(poll);
         continue;
       }
-      o.log(`SUPERVISED ${printable(o.name)}_pane_fallback reason=${printable(oneLine(e))}`);
+      say(`SUPERVISED ${printable(o.name)}_pane_fallback reason=${printable(oneLine(e))}`);
       // No unit runs in a pane any more: clear only the pane, so a headless child failing to start leaves the unit
       // recorded (dead) instead of unrecorded.
       o.onUnplace?.();
@@ -91,15 +96,15 @@ export async function runUnitInPane(o: RunUnitOptions): Promise<never> {
     }
     o.onExit();
     if (stopped) {
-      o.log(`SUPERVISED ${o.name}_stop pane=${placed.pane.id}`);
+      say(`SUPERVISED ${o.name}_stop pane=${placed.pane.id}`);
       try {
         await o.close(placed.pane);
       } catch (e) {
-        o.log(`SUPERVISED ${printable(o.name)}_pane_close_failed reason=${printable(oneLine(e))}`);
+        say(`SUPERVISED ${printable(o.name)}_pane_close_failed reason=${printable(oneLine(e))}`);
       }
       continue;
     }
-    o.log(`SUPERVISED ${o.name}_exit code=? pane=${placed.pane.id}`);
+    say(`SUPERVISED ${o.name}_exit code=? pane=${placed.pane.id}`);
     await o.sleep(restart);
   }
 }

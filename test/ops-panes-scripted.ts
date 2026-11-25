@@ -20,6 +20,8 @@ export type ScriptedOptions = {
   readonly unknownWaitMs?: number;
   readonly openDelayMs?: number;
   readonly panesDelayMs?: number;
+  readonly closeAttempts?: number;
+  readonly log?: (line: string) => void;
   readonly advance?: (ms: number) => void;
 };
 
@@ -76,7 +78,7 @@ export function placement(script: Script, opts: ScriptedOptions) {
   const adapter = new ScriptedPanes({ ...opts, advance }, script, () => clock);
   const units = new PaneUnits({
     adapter,
-    log: (line) => logs.push(line),
+    log: opts.log ?? ((line) => logs.push(line)),
     sleep: async (ms) => {
       sleeps.push(ms);
       clock += ms;
@@ -90,6 +92,7 @@ export function placement(script: Script, opts: ScriptedOptions) {
     pidTimeoutMs: opts.budgetMs ?? 30_000,
     ...(opts.pending === undefined ? {} : { pending: opts.pending }),
     ...(opts.unknownWaitMs === undefined ? {} : { unknownWaitMs: opts.unknownWaitMs }),
+    ...(opts.closeAttempts === undefined ? {} : { closeAttempts: opts.closeAttempts }),
   });
   return { adapter, advance, logs, sleeps, units };
 }

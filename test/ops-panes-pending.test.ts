@@ -53,7 +53,6 @@ describe("the pending-pane store", () => {
     expect(() => store.write(["w1:p1"])).not.toThrow();
     expect(warns.some((l) => /panes_pending_write_failed/.test(l))).toBe(true);
     expect(store.read()).toBeUndefined();
-    expect(warns.some((l) => /panes_pending_unreadable/.test(l))).toBe(true);
   });
 
   test("a BOM in the file is sanitized in the warning", () => {
@@ -85,5 +84,13 @@ describe("the pending-pane store", () => {
     store.write(["w1:p2"]);
     expect(warns.some((l) => /panes_pending_write_failed/.test(l))).toBe(true);
     expect(store.read()).toBeUndefined();
+  });
+
+  test("a degraded marker makes a stale valid file read as undefined", () => {
+    const dir = home();
+    mkdirSync(join(dir, "state"), { recursive: true });
+    writeFileSync(join(dir, "state", "panes-pending.json"), JSON.stringify(["w1:p1"]));
+    writeFileSync(join(dir, "state", "panes-pending.json.degraded"), "2026-11-25T00:00:00Z\n");
+    expect(panePendingStore(dir).read()).toBeUndefined();
   });
 });

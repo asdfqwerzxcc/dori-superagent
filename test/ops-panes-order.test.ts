@@ -1,0 +1,89 @@
+import { describe, expect, test } from "bun:test";
+import { PaneCloseFailed } from "../src/supervisors/panes.ts";
+import { DUTY, pref } from "./ops-panes-fixture.ts";
+import { placement, RUNNING, STOPPED } from "./ops-panes-scripted.ts";
+
+describe("a throwing logger never replaces a safety signal", () => {
+  test("a close failure stays PaneCloseFailed while log and pending writes throw", async () => {
+    const pending = {
+      read: () => ["p1"],
+      write: () => {
+        throw new Error("disk full");
+      },
+    };
+    const { units } = placement(() => STOPPED, {
+      windowMs: 0,
+      existing: [pref("p1")],
+      pending,
+      failClose: () => true,
+      log: () => {
+        throw new Error("log broken");
+      },
+    });
+    const failure: unknown = await units.place(DUTY).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(failure).toBeInstanceOf(PaneCloseFailed);
+  });
+});
+
+describe("doubt beside an adopted unit", () => {
+  test("hc closes the doubtful leftover", async () => {
+    const pending = { read: () => ["p1"], write: () => {} };
+    const { adapter, units } = placement(
+      (pane) => (pane === "p1" ? RUNNING : pane === "p2" ? { kind: "unknown", why: "no argv", pid: 954 } : STOPPED),
+      { windowMs: 0, kind: "hc", existing: [pref("p1"), pref("p2")], pending },
+    );
+    expect(await units.place(DUTY)).toEqual({ pid: 400, pane: pref("p1") });
+    expect(adapter.closed).toEqual(["p2"]);
+  });
+
+  test("herdr only logs the doubtful leftover", async () => {
+    const { adapter, logs, units } = placement(
+      (pane) => (pane === "p1" ? RUNNING : pane === "p2" ? { kind: "unknown", why: "no argv", pid: 955 } : STOPPED),
+      { windowMs: 0, existing: [pref("p1"), pref("p2")] },
+    );
+    expect(await units.place(DUTY)).toEqual({ pid: 400, pane: pref("p1") });
+    expect(adapter.closed).toEqual([]);
+    expect(logs.some((line) => line.includes("duty_pane_doubt_left panes=1"))).toBe(true);
+  });
+});
+
+describe("the first line keeps its whole window", () => {
+  test("a unit that reports after the remaining budget is still adopted", async () => {
+    const { units } = placement((_pane, poll) => (poll >= 4 ? RUNNING : STOPPED), {
+      windowMs: 200,
+      budgetMs: 100,
+    });
+    expect(await units.place(DUTY)).toEqual({ pid: 400, pane: pref("p1") });
+  });
+});
+
+describe("the doubt line is logged once", () => {
+  test("a close that fails once logs the close only after it succeeds", async () => {
+    let closes = 0;
+    const { logs, units } = placement(
+      (pane) => (pane === "p1" ? { kind: "unknown", why: "no argv", pid: 956 } : RUNNING),
+      {
+        windowMs: 0,
+        kind: "hc",
+        unknownWaitMs: 0,
+        existing: [pref("p1")],
+        closeAttempts: 1,
+        failClose: () => {
+          closes += 1;
+          return closes === 1;
+        },
+      },
+    );
+    const first: unknown = await units.place(DUTY).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(first).toBeInstanceOf(PaneCloseFailed);
+    expect(logs.filter((line) => line.includes("_pane_doubt_closed"))).toHaveLength(0);
+    expect(await units.place(DUTY)).toEqual({ pid: 400, pane: pref("p2") });
+    expect(logs.filter((line) => line.includes("_pane_doubt_closed"))).toHaveLength(1);
+  });
+});

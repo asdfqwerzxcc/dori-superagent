@@ -1,5 +1,5 @@
 import { printable } from "../unit-placement.ts";
-import { clearDoubtPanes, settleLine } from "./pane-settle.ts";
+import { clearDoubtPanes, PaneLedger, settleLine } from "./pane-settle.ts";
 import type { RuntimeKind, SessionRef } from "../runtime/types.ts";
 import {
   oneLine,
@@ -25,14 +25,16 @@ const UNKNOWN_WAIT_MS = 10_000;
  * hc pane is closed after a bounded wait rather than suppressing its unit forever.
  */
 export class PaneUnits {
-  private readonly typed: Set<string>;
-  private readonly pendingUnreadable: boolean;
   private readonly unknownSince = new Map<string, number>();
+  private readonly ledger: PaneLedger;
 
   constructor(private readonly o: PaneUnitsOptions) {
-    const loaded = o.pending?.read();
-    this.typed = new Set(loaded ?? []);
-    this.pendingUnreadable = o.pending !== undefined && loaded === undefined;
+    this.ledger = new PaneLedger({
+      pending: o.pending,
+      close: (ref) => o.adapter.close(ref),
+      log: o.log,
+      closeAttempts: Math.max(1, o.closeAttempts ?? 2),
+    });
   }
 
   get kind(): RuntimeKind {
@@ -62,23 +64,20 @@ export class PaneUnits {
     }
     // Every stopped pane a previous placement typed into, and every hinted pane this one will not adopt, may still
     // hold a pending line: close them all before any pane is chosen, so no later line starts as an untracked copy.
-    const protectedPane = (id: string): boolean => this.typed.has(id) || this.pendingUnreadable;
+    const protectedPane = (id: string): boolean => this.ledger.protected(id);
     const closed = new Set<string>();
     const leftovers = named === undefined ? hints.slice(1) : hints;
     for (const ref of [...stopped.filter((r) => protectedPane(r.id)), ...leftovers.map((h) => h.pane)]) {
-      if (!(await this.closeRetry(unit.name, ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
+      if (!(await this.ledger.closeRetry(unit.name, ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
       closed.add(ref.id);
     }
-    if (named !== undefined) {
-      this.mark(named.pane.id, false);
+    if (named !== undefined || hints[0] !== undefined) {
+      await this.resolveDoubt(unit, doubtful);
+      const placed = named ?? hints[0];
+      if (placed === undefined) throw new Error("unreachable");
+      this.ledger.mark(placed.pane.id, false);
       this.unknownSince.delete(unit.name);
-      return named;
-    }
-    const adopt = hints[0];
-    if (adopt !== undefined) {
-      this.mark(adopt.pane.id, false);
-      this.unknownSince.delete(unit.name);
-      return adopt;
+      return placed;
     }
     if (unknown !== undefined) {
       if (!(await this.clearDoubt(unit, doubtful, now()))) {
@@ -96,7 +95,7 @@ export class PaneUnits {
     }
     if (reuse !== undefined) {
       tries = 1;
-      const outcome = await this.startIn(unit, reuse, deadline);
+      const outcome = await this.startIn(unit, reuse, deadline, true);
       if (outcome.placed !== undefined) return outcome.placed;
       if (outcome.typed) lines = 1;
       else lastStart = outcome.failure;
@@ -115,10 +114,10 @@ export class PaneUnits {
       const fresh = await this.o.adapter.open(unit.name);
       if (now() >= deadline) {
         // Nothing was typed here: a pane that will not close is an empty leftover, not a pending unit.
-        await this.closeRetry(unit.name, fresh);
+        await this.ledger.closeRetry(unit.name, fresh);
         break;
       }
-      const outcome = await this.startIn(unit, fresh, deadline);
+      const outcome = await this.startIn(unit, fresh, deadline, tries === 1);
       if (outcome.placed !== undefined) return outcome.placed;
       if (outcome.typed) lines += 1;
       else lastStart = outcome.failure;
@@ -136,12 +135,12 @@ export class PaneUnits {
   /** Closes a unit's pane; the caller turns a throw into a warning. */
   async close(ref: SessionRef): Promise<void> {
     await this.o.adapter.close(ref);
-    this.mark(ref.id, false);
+    this.ledger.mark(ref.id, false);
   }
 
   /** The foreground pid of a pane this supervisor typed into, which the runtime cannot name; the caller adopts it. */
   private hinted(probe: PaneProbe, ref: SessionRef): number | undefined {
-    if (this.kind !== "hc" || probe.kind !== "unknown" || probe.pid === undefined || !this.typed.has(ref.id))
+    if (this.kind !== "hc" || probe.kind !== "unknown" || probe.pid === undefined || !this.ledger.has(ref.id))
       return undefined;
     return probe.pid;
   }
@@ -153,7 +152,7 @@ export class PaneUnits {
         waitMs: this.o.unknownWaitMs ?? UNKNOWN_WAIT_MS,
         now,
         log: this.o.log,
-        close: (ref) => this.closeRetry(unit.name, ref),
+        close: (ref) => this.ledger.closeRetry(unit.name, ref),
       },
       unit.name,
       panes,
@@ -178,7 +177,7 @@ export class PaneUnits {
   }
 
   /** A throw while reading the pane after typing is doubt, not a dead unit: the typed line may still run. */
-  private settle(ref: SessionRef, unit: PaneUnit, deadline: number): Promise<PaneProbe> {
+  private settle(ref: SessionRef, unit: PaneUnit, deadline: number, first: boolean): Promise<PaneProbe> {
     return settleLine(
       {
         probe: (r, marker, program) => this.o.adapter.pid(r, marker, program),
@@ -191,6 +190,7 @@ export class PaneUnits {
       unit.marker,
       unit.program,
       deadline,
+      first,
     );
   }
 
@@ -199,52 +199,43 @@ export class PaneUnits {
     unit: PaneUnit,
     ref: SessionRef,
     deadline: number,
+    first: boolean,
   ): Promise<{ readonly placed?: PlacedUnit; readonly typed: boolean; readonly failure?: unknown }> {
     try {
-      this.mark(ref.id, true);
+      this.ledger.mark(ref.id, true);
       await this.o.adapter.start(ref, unit.command);
     } catch (e) {
-      this.o.log(`SUPERVISED ${printable(unit.name)}_pane_start_failed reason=${printable(oneLine(e))}`);
-      if (!(await this.closeRetry(unit.name, ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
+      this.ledger.log(`SUPERVISED ${printable(unit.name)}_pane_start_failed reason=${printable(oneLine(e))}`);
+      if (!(await this.ledger.closeRetry(unit.name, ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
       return { typed: false, failure: e };
     }
-    const probe = await this.settle(ref, unit, deadline);
+    const probe = await this.settle(ref, unit, deadline, first);
     if (probe.kind === "running") {
-      this.mark(ref.id, false);
+      this.ledger.mark(ref.id, false);
       return { placed: { pid: probe.pid, pane: ref }, typed: true };
     }
     const pid = this.hinted(probe, ref);
     if (pid !== undefined) {
-      this.mark(ref.id, false);
+      this.ledger.mark(ref.id, false);
       this.unknownSince.delete(unit.name);
       return { placed: { pid, pane: ref }, typed: true };
     }
     if (probe.kind === "unknown") throw new PaneUnknown(`cannot tell whether ${unit.name} started: ${probe.why}`);
-    this.o.log(
+    this.ledger.log(
       `SUPERVISED ${printable(unit.name)}_pane_start_failed reason=no ${printable(unit.name)} process appeared in ${printable(ref.id)} after 1 attempt`,
     );
-    if (!(await this.closeRetry(unit.name, ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
+    if (!(await this.ledger.closeRetry(unit.name, ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
     return { typed: true };
   }
-  private mark(id: string, typed: boolean): void {
-    if (typed) this.typed.add(id);
-    else this.typed.delete(id);
-    this.o.pending?.write([...this.typed]);
-  }
-
-  private async closeRetry(name: string, ref: SessionRef): Promise<boolean> {
-    const attempts = Math.max(1, this.o.closeAttempts ?? 2);
-    let last: unknown;
-    for (let attempt = 0; attempt < attempts; attempt++) {
-      try {
-        await this.o.adapter.close(ref);
-        this.mark(ref.id, false);
-        return true;
-      } catch (e) {
-        last = e;
-      }
+  private async resolveDoubt(unit: PaneUnit, panes: readonly SessionRef[]): Promise<void> {
+    if (panes.length === 0) return;
+    if (this.kind !== "hc") {
+      this.ledger.log(`SUPERVISED ${printable(unit.name)}_pane_doubt_left panes=${panes.length}`);
+      return;
     }
-    this.o.log(`SUPERVISED ${printable(name)}_pane_close_failed reason=${printable(oneLine(last))}`);
-    return false;
+    for (const ref of panes) {
+      if (!(await this.ledger.closeRetry(unit.name, ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
+    }
+    this.unknownSince.delete(unit.name);
   }
 }

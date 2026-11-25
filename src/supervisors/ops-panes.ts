@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Exec } from "../runtime/exec.ts";
 import { ConfigError, RuntimeChoiceError, readRuntimeChoice } from "../runtime/select.ts";
@@ -43,11 +43,15 @@ export type OpenUnitPanesOptions = {
 export function panePendingStore(home: string, warn?: (line: string) => void): PendingPanes {
   const dir = stateDir(home);
   const path = join(dir, "panes-pending.json");
+  const marker = `${path}.degraded`;
   const failed = (what: string, e: unknown): void => {
-    warn?.(`SUPERVISED panes_pending_${what} reason=${printable(oneLine(e))}`);
+    try {
+      warn?.(`SUPERVISED panes_pending_${what} reason=${printable(oneLine(e))}`);
+    } catch {}
   };
   return {
     read: () => {
+      if (existsSync(marker)) return undefined;
       let text: string;
       try {
         text = readFileSync(path, "utf8");
@@ -71,6 +75,9 @@ export function panePendingStore(home: string, warn?: (line: string) => void): P
         mkdirSync(dir, { recursive: true });
         writeFileSync(tmp, `${JSON.stringify(ids)}\n`);
         renameSync(tmp, path);
+        try {
+          rmSync(marker, { force: true });
+        } catch {}
       } catch (e) {
         failed("write_failed", e);
         // A stale set would let a restart retype into a pane whose pending line is not represented: make the file read
@@ -79,6 +86,13 @@ export function panePendingStore(home: string, warn?: (line: string) => void): P
           writeFileSync(path, "{}\n");
         } catch (again) {
           failed("write_failed_unreadable", again);
+          // Both writes failed: a stale valid file would be trusted after a restart, so leave a marker that reads as
+          // unreadable too. If even this write fails, the stale set is the documented residual risk.
+          try {
+            writeFileSync(marker, `${new Date().toISOString()}\n`);
+          } catch (markerError) {
+            failed("degraded_marker_failed", markerError);
+          }
         }
       }
     },
