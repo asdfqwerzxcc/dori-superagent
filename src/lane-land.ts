@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { short } from "./bundles.ts";
 import { checkGate } from "./gate.ts";
 import type { Deps } from "./harness.ts";
+import { laneReceiptFor } from "./lane-patch.ts";
 import { asSha, laneHead, laneRepo } from "./lane-repo.ts";
 import { branchOf } from "./lane-worktree.ts";
 import { type OwnRemote, remoteRepo, upstreamRefusal } from "./own-remote.ts";
@@ -62,10 +63,10 @@ async function ownRemote(d: Deps, lane: Lane): Promise<OwnRemote> {
   );
 }
 
-/** The lane receipt at the current head; a receipt at another commit names that sha as stale, not missing. */
-function clearReceipt(d: Deps, lane: Lane, head: string): LaneReceipt {
+/** The lane receipt covering the current head; a receipt at another commit with a different patch names that sha as stale. */
+async function clearReceipt(d: Deps, lane: Lane, head: string): Promise<LaneReceipt> {
   const key = lane.key;
-  const receipt = d.store.laneReceipt(key, head);
+  const receipt = await laneReceiptFor(d, lane, head);
   if (receipt === undefined) {
     const older = d.store.receipts.laneReceipts(key)[0];
     if (older !== undefined)
@@ -96,7 +97,8 @@ function prTitle(lane: Lane): string {
 }
 
 function prBody(lane: Lane, head: string, receipt: LaneReceipt): string {
-  const lines = [`Lane \`${branchOf(lane.key)}\` reviewed CLEAR at \`${head}\` by ${receipt.reviewer}.`, ""];
+  const at = receipt.tip === head ? `\`${head}\`` : `\`${head}\` (patch-id match with \`${short(receipt.tip)}\`)`;
+  const lines = [`Lane \`${branchOf(lane.key)}\` reviewed CLEAR at ${at} by ${receipt.reviewer}.`, ""];
   if (lane.baseSha !== undefined) lines.push(`Base: \`${lane.baseSha}\``, "");
   if (lane.final !== undefined) {
     lines.push(lane.final.text.trim(), "");
@@ -180,7 +182,7 @@ export async function mergeLane(d: Deps, key: string, opts: LaneMergeOptions = {
   const head = asSha(await laneHead(d, lane));
   if (head === undefined) throw new Refusal(`lane ${key}: cannot read HEAD in ${path}; fix the checkout, then retry`);
   if (head === lane.baseSha) throw new Refusal(`lane ${key} has no commits to land: HEAD is its base ${short(head)}`);
-  const receipt = clearReceipt(d, lane, head);
+  const receipt = await clearReceipt(d, lane, head);
   const remote = await ownRemote(d, lane);
   const repo = remote.repo;
   const branch = branchOf(key);

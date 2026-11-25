@@ -5,13 +5,16 @@ import { status } from "../src/cli-up.ts";
 import type { Deps } from "../src/harness.ts";
 import { laneRepo } from "../src/lane-repo.ts";
 import { attestLane } from "../src/review-lane-cli.ts";
+import { queueLaneReview } from "../src/review-queue.ts";
 import { done, ready, startLane } from "../src/lanes.ts";
 import { diff, gitCalls, laneWorld, tip, wtPath } from "./lane-worktree-setup.ts";
 import { captureIo } from "./inbox-setup.ts";
 
 describe("lane worktrees", () => {
-  const attest = (d: Deps, key: string, verdict: "CLEAR" | "BLOCK" = "CLEAR") =>
-    attestLane(d, key, { verdict, reviewer: "omo-native-gate-reviewer", evidence: ["file:///report"] });
+  const attest = async (d: Deps, key: string, verdict: "CLEAR" | "BLOCK" = "CLEAR") => {
+    await queueLaneReview(d, key, undefined);
+    return attestLane(d, key, { verdict, reviewer: "omo-native-gate-reviewer", evidence: ["file:///report"] });
+  };
 
   test("start records the worktree, the queued diff reads it, and done lands then removes it", async () => {
     const { w, d, brief, repo } = laneWorld();
@@ -159,13 +162,15 @@ describe("lane worktrees", () => {
     const { w, d, brief, repo } = laneWorld({ worktreeHead: tip });
     await startLane(d, "rebound", brief, { group: "w1" });
     await ready(d, "rebound", "done", ["file:///x"]);
+    repo.patchId = "e".repeat(40);
     await attest(d, "rebound");
 
     const moved = "c".repeat(40);
     repo.head = moved;
     repo.ancestor = false;
-    // The rebase rewrites the lane's commit, so the tip the old receipt covered no longer exists.
+    // The rebase resolved a conflict: the patch content changed, so the old receipt no longer describes this tip.
     repo.worktreeHead = "d".repeat(40);
+    repo.patchId = "f".repeat(40);
     const failure: unknown = await done(d, "rebound", { rebase: true }).then(
       () => undefined,
       (e: unknown) => e,

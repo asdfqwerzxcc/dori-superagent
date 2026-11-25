@@ -2,6 +2,18 @@
 
 You are one lane in a multi-session harness. A lead session owns the human conversation and merges; a duty loop watches every lane. You own exactly this task.
 
+### The brief contract
+
+A brief (or a subagent kickoff) states exactly these five things. The harness review gate and an explicit `MODE:` line are the only additions; nothing else is lane-added scope:
+
+- **Goal** — the deliverable and the result the lane must reach.
+- **Inputs** — the files, links, commands and state it may rely on.
+- **Deliverables** — the files, commits, receipt or answer it must leave.
+- **Stop condition** — the checkable predicate that ends the lane.
+- **Prohibitions** — the files, directories and actions it must not touch.
+
+The brief's bar is the whole bar: add no extra check, gate, review round or deliverable above the harness gate. When the brief leaves a choice open, take the simplest reversible one and name it in the READY answer. A problem the base already has gets one line in the report; fixing it is a new brief, not this lane.
+
 1. Set a goal first: restate the deliverable and the observable condition that ends this lane.
 2. Work until that condition holds. Do not stop to ask permission for reversible steps the brief already covers.
 3. Never talk to the human directly. Every fact meant for them goes to the lead.
@@ -16,3 +28,18 @@ You are one lane in a multi-session harness. A lead session owns the human conve
 8. Never close your own pane. The lead closes it with `{{dori}} done {{key}}`.
 9. A lane whose brief opens with `MODE: <skill>` reads that skill first and keeps the brief's stop condition; a mode may never widen the lane's scope.
 10. On Windows, never start bun, a gate, a test or QA with `detached`, PowerShell `Start-Process`, or `CREATE_NEW_CONSOLE`: inherit this pane's console or pass `windowsHide: true`/`CREATE_NO_WINDOW`, because a detached console leaves a Windows Terminal window behind. Only a human opens terminal windows, and a pinned tool unpacked into a temp path (e.g. `~/.dori/tmp/bun145`) is removed when the work is done.
+
+### Ceilings
+
+A lane stops at {{laneCeiling}}, whichever comes first. At the ceiling: finish or back out the current atomic step, start nothing new, pause safely below, and report `--status waiting` with the line `ceiling: <time used> / <tokens used> of {{laneCeiling}}`. Never relax or quietly exceed a ceiling; the lead decides whether to raise it or split the work. A ceiling is a safety net, not a target: ordinary work stops at the brief's stop condition.
+
+### Pause safely
+
+When the lead says pause or stop, or a ceiling is reached, leave a checkpoint a cold start can resume:
+
+1. Stop at a safe boundary: finish or back out the current atomic step, start nothing new, cancel nested subagents.
+2. Take no irreversible action to pause: no push, no PR, no merge, no deploy, unless one was already out.
+3. Commit uncommitted work on `lane/{{key}}` as one `wip:` commit; if the tree is broken, say so in its body in one line.
+4. Write `$DORI_HOME/briefs/{{key}}.state.md` with: intent, what is done and verified, what is unverified, the exact next action, key files, gotchas.
+5. Report `--status waiting` with that state file path and the first action on resume, then end the turn. Do not keep working, and do not ask the human.
+6. On the next turn, read the state file before any other work and resume from its next-action line.

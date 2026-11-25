@@ -3,6 +3,7 @@
 import { closeItemForLane } from "./backlog.ts";
 import type { Deps } from "./harness.ts";
 import { laneGate } from "./lane-gate.ts";
+import { laneReceiptFor } from "./lane-patch.ts";
 import { laneHead } from "./lane-repo.ts";
 import {
   assertCleanWorktree,
@@ -22,7 +23,7 @@ const gitWhy = (r: ExecResult): string => (r.stderr || r.stdout).trim() || `git 
 export type DoneOptions = {
   /** Remove the worktree and branch without landing, and mark the lane `dropped` with this reason. */
   drop?: string;
-  /** Rebase the lane onto the current `main` and re-record its base before gating; a fresh receipt is then required. */
+  /** Rebase the lane onto the current `main` and re-record its base before gating; the receipt covers it only if the patch-id matches. */
   rebase?: boolean;
 };
 
@@ -69,6 +70,7 @@ export async function done(d: Deps, key: string, opts: DoneOptions = {}): Promis
   // The gate proved this tip carries the CLEAR receipt (or that the lane committed nothing); read it before landing
   // removes the worktree, so the item's log can name the commit and receipt that closed it.
   const tip = lane.baseSha === undefined ? undefined : ((await laneHead(d, lane)) ?? lane.tipSha);
+  const receipt = tip === undefined ? undefined : await laneReceiptFor(d, lane, tip);
   const landing = lane.worktree === undefined ? undefined : await landWorktree(d, lane);
   const note = gate.note;
   const closed = note === undefined ? "closed by lead" : `closed by lead (${note})`;
@@ -79,13 +81,11 @@ export async function done(d: Deps, key: string, opts: DoneOptions = {}): Promis
   latest.log.push({ at: d.now(), kind: "done", text: landing === undefined ? closed : `${closed}; ${landing}` });
   d.store.saveLane(latest);
   if (tip !== undefined) {
-    const receipt = d.store.laneReceipt(key, tip);
-    closeItemForLane(
-      d,
-      latest,
-      "done",
-      `lane ${key} done at ${tip.slice(0, 12)}${receipt === undefined ? "" : ` (${receipt.verdict} receipt lane_${key}@${tip})`}`,
-    );
+    const covered =
+      receipt === undefined
+        ? ""
+        : ` (${receipt.verdict} receipt lane_${key}@${receipt.tip}${receipt.tip === tip ? "" : ", same patch"})`;
+    closeItemForLane(d, latest, "done", `lane ${key} done at ${tip.slice(0, 12)}${covered}`);
   } else closeItemForLane(d, latest, "done", `lane ${key} done`);
   return note;
 }
@@ -104,7 +104,7 @@ async function landedProof(d: Deps, lane: Lane): Promise<{ readonly repo: string
   const branchTip = ref.code === 0 ? ref.stdout.trim() : undefined;
   const sha = branchTip === undefined || branchTip === "" ? lane.tipSha : branchTip;
   if (sha === undefined) return undefined;
-  if ((branchTip === undefined || branchTip === "") && d.store.laneReceipt(lane.key, sha)?.verdict !== "CLEAR")
+  if ((branchTip === undefined || branchTip === "") && (await laneReceiptFor(d, lane, sha))?.verdict !== "CLEAR")
     return undefined;
   const ancestor = await d.exec("git", ["-C", repo, "merge-base", "--is-ancestor", sha, "HEAD"]);
   return ancestor.code === 0 ? { repo, sha } : undefined;

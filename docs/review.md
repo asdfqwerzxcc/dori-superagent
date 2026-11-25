@@ -4,8 +4,14 @@ Dori reviews lane work locally first. `dori review --lane <key>` records the lan
 `QUEUED`. The review itself runs in its own session: `dori review <owner/repo#N> --background` opens that session,
 returns at once, and the worker records a PR receipt; its verdict is recorded as the lane receipt with `dori review
 <key> --attest ...`. The foreground `dori review <owner/repo#N>` still runs one reviewer in the caller's process for a
-manual check. Neither path has a time limit or a tool budget. The lane receipt's schema and the gate rules are
-unchanged. Once the lane receipt is CLEAR, `dori merge <key>` is the landing path.
+manual check. Both paths stop at the review ceiling (2 hours or 250000 tokens, whichever comes first; the constants live
+in `src/worker-limits.ts`): at the ceiling the reviewer stops at a safe point, lists what stayed unverified, and prints
+`VERDICT: BLOCK` when that could hide a HIGH or MEDIUM finding. The lane receipt schema is additive: `patchId`,
+`contentId` and `reviewedTip` are optional, and older receipts need no migration (a receipt written before `contentId`
+still covers its exact tip). `--attest` itself requires a saved lane diff whose patch ids match the current `base..tip`
+in both forms: `git patch-id --stable` and `--verbatim`, so a lane that commits after its review — including a commit
+that changes only whitespace — cannot be attested. Once the lane receipt is CLEAR, `dori merge <key>` is the landing
+path.
 
 Why: reviews must not run as children of the lead pane. A gate-review child keeps the lead `working`, holds its inbox
 and puts review work in the human's session (Lee, 2026-11-24). A separate reviewer session keeps the lead free for
@@ -34,8 +40,10 @@ from a directory that is not a repository uses the harness checkout `$DORI_HOME/
 
 1. takes the merge-base of the recorded base and the current tip in the lane's worktree, so a moved branch still reviews
    only the lane's work;
-2. refreshes the tip and saves the full diff to `lane-reviews/lane_<key>@<tip>.diff`; there is no chunking: the reviewer
-   session receives the whole PR diff and the saved lane diff is evidence for the attestation;
+2. refreshes the tip and saves the full diff to `lane-reviews/lane_<key>@<tip>.diff`; there is no chunking. A PR whose
+   head branch is `lane/<key>` and whose head has that saved diff is reviewed from `prompts/review-lane.md` with the
+   saved diff and the lane's brief, so the verdict rests on exactly the artifact `--attest` binds. Any other PR (not a
+   lane branch, or no saved diff at its head) is reviewed from `prompts/review.md` with the server-rendered PR diff;
 3. writes one request record and prints `QUEUED <key> <tip> <job>`; it returns at once and spawns nothing. `--model M`
    is recorded on the request for the lead's reference; the queue never runs it.
 
@@ -50,9 +58,14 @@ lead replaces it with `--restart`; nothing expires it for its age.
 
 The review runs in its own session, never as a `task`/subagent child of the lead pane. `dori review <owner/repo#N>
 --background` opens a tab in the lead's workspace, starts the worker there, prints `REVIEW_STARTED ...` and returns.
-The worker fetches the PR head and diff, renders `prompts/review.md`, starts one fresh non-interactive reviewer
-(`omo -p`, or the configured `reviewCommand` hook), and records its answer as a PR receipt. Give it the lane brief as
-context; the PR head must equal the lane tip. The reviewer contract is the same one the gate has always used: check the
+The worker fetches the PR head; a lane PR (head branch `lane/<key>` with a saved diff at that head) is rendered from
+`prompts/review-lane.md` with the saved lane diff and the lane's brief, and every other PR from `prompts/review.md` with
+the `gh pr diff`. A lane PR never calls `gh pr diff`, so a gh diff outage cannot block it, and its prompt's base is the
+base the saved diff was generated from (its request/receipt, else the lane's merge-base), not the lane's start commit. A
+brief larger than 12k characters is cut in the middle but the lane contract footer `dori start` appends is kept whole.
+It starts one fresh non-interactive reviewer (`omo -p`, or the configured `reviewCommand` hook), and records its answer
+as a PR receipt. The PR head must equal the lane tip. The reviewer contract is the same one the gate
+has always used: check the
 change against the lane's goal for correctness, regressions, missing tests, security issues and scope creep; list
 findings by severity (HIGH/MEDIUM/LOW); print exactly one final `VERDICT: CLEAR` (no HIGH or MEDIUM) or `VERDICT: BLOCK`
 (at least one HIGH or MEDIUM); do not modify files. A numbered requirement (`rN`) with no change or evidence behind it is
@@ -74,9 +87,11 @@ rows/logs are pruned (20 kept, 7 days; running rows are preserved). The full rev
 `receipts/<pr>@<sha>.review.txt` with a 64KB cap, and the receipt summary keeps the first and last 2000 characters, so
 a HIGH at the top of a long transcript is not lost.
 
-There is no time limit and no tool budget on either path: a review that needs longer keeps running. A review that
-passes two hours is reported to the lead once with its last output line and the log path, and is left running. Duty
-never kills, shortens or fails a review for its age. A dead worker is checked against the sha recorded before the
+There is no review deadline in the harness: duty never kills, shortens or fails a review for its age, and a hook or a
+reviewer that ignores the ceiling is left running. The reviewer itself stops at the review ceiling (2 hours or 250000
+tokens, whichever comes first; the token count is the reviewer's own session count, not a harness counter) and a partial
+review is never CLEAR. A review that passes two hours is reported to the
+lead once with its last output line and the log path. A dead worker is checked against the sha recorded before the
 reviewer ran: if the receipt exists the job is done, and only a dead worker without that receipt fails (once, with the
 log path). A pid whose start time cannot be read is unknown, not dead; a record from another host is skipped. Free
 memory, not a clock, decides admission: one reviewer needs about 500 MB, and a start is refused while `memFreePct < 10`
@@ -89,9 +104,30 @@ dori review <key> --attest --verdict CLEAR|BLOCK --reviewer <name> --evidence <r
 ```
 
 `--evidence` is required: name the report, task id, path or URL the verdict rested on. The receipt carries the verdict,
-base, tip, brief path, reviewer name, time, summary and the evidence links. It names the exact tip, so it can never
-describe a different diff: a new commit invalidates it and the lead reviews again. `BLOCK` wins at one tip: a later
-CLEAR attest never replaces a BLOCK already on disk; a lane clears a BLOCK only by moving the tip.
+base, tip, brief path, reviewer name, time, summary and the evidence links, plus both identities of the reviewed diff —
+`patchId` (`git patch-id --stable`) and `contentId` (`--verbatim`, whitespace included) — and the `reviewedTip` (with
+`reviewedBase`, the base that saved diff came from, when the receipt lands at a rebased tip). `--attest` refuses unless
+a saved review diff (`lane-reviews/lane_<key>@<tip>.diff`) matches the current `base..tip` in both ids: the exact tip,
+or an older saved diff whose ids are the same. A commit after the review changes the ids and is refused; an edit that
+changes only whitespace moves `contentId` and is refused too, even though `--stable` would ignore it. A rebase that
+leaves the diff unchanged (context included) keeps the receipt valid and records the older `reviewedTip`; a rebase that
+changes context or content needs a new review. When the base a saved diff was generated from is recorded (its request,
+the receipt at that tip, or a receipt's `reviewedBase`), `--attest` regenerates the diff from git and refuses a file
+that is not the diff git produces. A saved diff whose base is not recorded anywhere and whose range git cannot
+reproduce is refused as unverified, never accepted by id alone. The saved diff is local evidence, not authenticated:
+the reviewer's `--evidence` link is the audit trail. The gate takes a BLOCK for the same patch first, then the exact
+tip, then the newest same-patch receipt. A legacy **CLEAR** without `contentId` covers only its exact tip, but a legacy
+**BLOCK** without one cannot name the whitespace variant it saw, so it blocks every whitespace variant of that
+`patchId` until a review lands a different patch (or the lane is dropped); it is never hidden by a later CLEAR.
+
+A git failure while reading or hashing the lane's range is not “no diff”: the gate throws the error and keeps the lane
+open (`dori status` shows `review=unreadable`). The same applies to a git that does not support `patch-id --verbatim`:
+it is named in the refusal and the lane is not approved until git is upgraded or the work is re-reviewed on a runner
+that supports it.
+
+A lane whose `base..tip` is empty or net-zero has no patch to review: `dori review --lane` and `--attest` refuse it with
+that reason. Without an exact receipt (which still gates its tip), close such a lane with `dori done --drop <key>
+--reason <text>`.
 
 ### What duty does
 
@@ -154,8 +190,8 @@ records `dropped` with the reason, and never touches `main`.
 ## `dori status`
 
 Each lane row ends with `review=reviewed`, `review=queued`, `review=<verdict>` (for example `review=BLOCK`) or
-`review=no receipt`, read from the receipt pinned to the lane's current tip and the request record at that tip.
-`reviewed` means a CLEAR receipt exists; `queued` means the lead has a request to answer; any other verdict means that
+`review=no receipt`, read from the receipt pinned to the lane's current tip (or one whose patch-id matches the current
+`base..tip`) and the request record at that tip. `reviewed` means a CLEAR receipt covers the tip; `queued` means the lead has a request to answer; any other verdict means that
 receipt refused the tip; `no receipt` means neither.
 
 ## Limits

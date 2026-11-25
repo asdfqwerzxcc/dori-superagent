@@ -137,7 +137,8 @@ async function removeWorktree(d: Deps, lane: Lane, branchFlag: "-d" | "-D"): Pro
 
 /**
  * Moves a lane's branch onto the current `main` and re-records the base, so the receipt range stays exactly the lane's
- * own commits. The receipt at the old tip no longer applies: `done` still demands a CLEAR receipt at the new tip.
+ * own commits. A receipt at the old tip still covers the new one when its patch-id matches; otherwise `done` demands a
+ * new review.
  */
 export async function rebaseLaneWorktree(d: Deps, lane: Lane): Promise<string | undefined> {
   const repo = lane.repo;

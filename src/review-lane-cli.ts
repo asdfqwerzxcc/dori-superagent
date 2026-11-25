@@ -6,6 +6,8 @@ import { need, one, type Args } from "./cli-args.ts";
 import { attest, isPrId } from "./gate.ts";
 import type { Deps } from "./harness.ts";
 import { loadReviewSettings } from "./hooks.ts";
+import { lanePatch, pickLaneReceipt } from "./lane-patch.ts";
+import { reviewBinding } from "./lane-review-binding.ts";
 import { laneReviewTarget } from "./lane-review-target.ts";
 import { Refusal } from "./refusal.ts";
 import { reviewRunLines } from "./review-drain.ts";
@@ -119,15 +121,57 @@ export type LaneAttestOptions = {
 export type LaneAttest = { readonly verdict: "CLEAR" | "BLOCK"; readonly tip: string; readonly kept: boolean };
 
 /**
- * Records a reviewer session's verdict as the lane receipt at the lane's current tip. The schema is the same one the
- * gate has always read (`lane`, `verdict`, `base`, `tip`, `brief`, `reviewer`, `at`, `summary`), plus the evidence the
- * verdict rested on. BLOCK still wins at one tip: a CLEAR attest never replaces a BLOCK already on disk.
+ * Records a reviewer session's verdict as the lane receipt at the lane's current tip. The verdict must rest on a saved
+ * review diff (`lane-reviews/lane_<key>@<tip>.diff`) whose patch ids equal the current `base..tip` in both the stable
+ * and whitespace-sensitive forms; a lane that changed after the review, even only in whitespace, is refused instead of
+ * attested. The receipt carries both ids and the reviewed tip, so the same verdict survives a rebase that leaves the
+ * diff unchanged. BLOCK wins for one patch, even over an exact-tip CLEAR: a CLEAR attest never replaces a BLOCK already
+ * on disk.
  */
 export async function attestLane(d: Deps, key: string, opts: LaneAttestOptions): Promise<LaneAttest> {
   if (opts.evidence.length === 0)
     throw new Refusal("--attest needs at least one --evidence link (task id, path or url)");
-  const { lane, tip, base } = await laneReviewTarget(d, key);
-  const existing = d.store.laneReceipt(key, tip);
+  const { lane, repo, tip, base } = await laneReviewTarget(d, key);
+  const patch = await lanePatch(d, repo, base, tip);
+  if (patch.kind === "failed")
+    throw new Refusal(
+      `lane ${key}: cannot inspect ${base.slice(0, 12)}..${tip.slice(0, 12)} in ${patch.repo} (${patch.why}); the ` +
+        `lane is not attested. Check the checkout, run dori review --lane ${key} again, then attest`,
+    );
+  if (patch.kind === "unsupported-verbatim")
+    throw new Refusal(
+      `lane ${key}: this git does not support git patch-id --verbatim (${patch.why}); upgrade git so a whitespace-only ` +
+        `change cannot reuse a receipt; the lane is not attested`,
+    );
+  if (patch.kind === "empty")
+    throw new Refusal(
+      `lane ${key} at ${tip.slice(0, 12)}: base..tip is empty or net-zero, so there is nothing to review and no ` +
+        `patch-id to bind; the lane is not attested. Close it with dori done --drop ${key} --reason <text> or add a ` +
+        `change and review again`,
+    );
+  const ids = patch.ids;
+  const binding = await reviewBinding(d, lane, repo, tip, base, ids);
+  if (!binding.ok) {
+    const saved = binding.tips.length === 0 ? "none" : binding.tips.map((t) => t.slice(0, 12)).join(", ");
+    const why =
+      binding.reason === "no-review"
+        ? `no reviewed diff is saved for lane ${key}`
+        : binding.reason === "whitespace-only"
+          ? `the saved review diff differs from the current base..tip only in whitespace`
+          : binding.reason === "tampered-diff"
+            ? `the saved review diff at ${tip.slice(0, 12)} is not the diff git produces for its range`
+            : binding.reason === "unverified-diff"
+              ? `the saved review diff cannot be verified against git: no request or receipt records its base, or ` +
+                `git cannot reproduce that range`
+              : binding.reason === "unsupported-verbatim"
+                ? `this git does not support git patch-id --verbatim`
+                : `no saved review diff matches the current base..tip (saved: ${saved})`;
+    throw new Refusal(
+      `lane ${key} at ${tip.slice(0, 12)}: ${why}; the lane changed after the review or was never reviewed. ` +
+        `Run dori review --lane ${key} to review the current diff, then attest`,
+    );
+  }
+  const existing = pickLaneReceipt(d.store.receipts.laneReceipts(key), tip, ids.patchId, ids.contentId);
   const kept = existing?.verdict === "BLOCK" && opts.verdict === "CLEAR";
   const verdict = kept ? "BLOCK" : opts.verdict;
   if (!kept) {
@@ -136,6 +180,10 @@ export async function attestLane(d: Deps, key: string, opts: LaneAttestOptions):
       verdict,
       base,
       tip,
+      patchId: ids.patchId,
+      contentId: ids.contentId,
+      reviewedTip: binding.reviewedTip,
+      ...(binding.reviewedTip === tip ? {} : { reviewedBase: binding.reviewedBase }),
       brief: lane.brief,
       reviewer: opts.reviewer,
       at: d.now(),
@@ -148,18 +196,21 @@ export async function attestLane(d: Deps, key: string, opts: LaneAttestOptions):
     current.tipSha = tip;
     d.store.saveLane(current);
   }
-  const path = jobPath(d.store.root, lane.key, tip);
-  const job = readJob(path);
-  if (job !== undefined) {
+  const finish = (jobTip: string): void => {
+    const path = jobPath(d.store.root, lane.key, jobTip);
+    const job = readJob(path);
+    if (job === undefined) return;
     if (legacyKillEnabled(process.env, opts.legacyKill)) {
-      const killed = killRecordedRun(d.store.root, lane.key, tip);
+      const killed = killRecordedRun(d.store.root, lane.key, jobTip);
       if (killed.state === "failed")
         process.stderr.write(
           `dori: lane ${lane.key}: the legacy reviewer could not be killed (${killed.why}); the receipt was written\n`,
         );
     }
     finishJob(path, job.requestedAt);
-  }
+  };
+  finish(binding.reviewedTip);
+  if (binding.reviewedTip !== tip) finish(tip);
   d.usage.record({ name: "dori.review_completed", verdict });
   return { verdict, tip, kept };
 }

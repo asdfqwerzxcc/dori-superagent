@@ -12,7 +12,15 @@ start commit and its current tip, measured in the lane's own checkout. `dori sta
 queued. `dori review --lane <key>` diffs `merge-base(baseSha, tip)..tip`, saves the diff under `lane-reviews/` and
 records a request; the lead reviews it as a subagent and writes the receipt with `dori review <key> --attest`. A main
 branch that moved after the start adds nothing to the reviewed range. The receipt is written per lane key and per tip
-commit, so a new commit invalidates it: review again, or drop the lane.
+commit, and carries both `git patch-id --stable` and `--verbatim` (the whitespace-sensitive id) of `base..tip`. A new
+commit with different content invalidates it — including one that changes only whitespace, which moves the verbatim id
+while `--stable` stays the same: review again, or drop the lane. A rebase that leaves the diff unchanged (context
+included) keeps it valid, because the gate compares the current ids with the ids on disk when no receipt exists at the
+new tip. `--attest` also regenerates the saved diff from git when its base is recorded, so an edited
+`lane-reviews/*.diff` is refused; a saved diff with no recorded base and no reproducible range is refused as
+unverified. A legacy `contentId`-less CLEAR covers only its exact tip, while a legacy BLOCK with the same `patchId`
+blocks every whitespace variant until a different patch is reviewed. A git failure while inspecting the range is
+reported, never read as “no diff” (the gate stays closed; `dori status` shows `review=unreadable`).
 
 ## What `dori start` sets up
 
@@ -31,9 +39,9 @@ commit, so a new commit invalidates it: review again, or drop the lane.
 a merge commit, and deletes the remote branch. `dori done <key>` is the close/cleanup path, and it refuses unless every
 step holds:
 
-1. The lane is `ready` (a final answer was recorded) and its current tip has a CLEAR receipt. A lane that committed
-   nothing (`base` equals `tip`) closes without a receipt; a lane recorded before this gate has no `baseSha` and closes
-   with an explicit note.
+1. The lane is `ready` (a final answer was recorded) and its current tip is covered by a CLEAR receipt (the exact tip,
+   or the same patch-id). A lane that committed nothing (`base` equals `tip`) closes without a receipt; a lane recorded
+   before this gate has no `baseSha` and closes with an explicit note.
 2. The worktree is clean: `git status --porcelain` must be empty, and a dirty tree is refused before any git mutation,
    naming the files exactly as git does.
 3. The lane's pane must not be `working`, `blocked` or `error`; it is closed first, because Windows refuses to remove
@@ -73,8 +81,8 @@ orphan, so a running lane cannot be pruned out from under its pane.
 | `dori start <key> --brief FILE [--cwd DIR]` | records the base, creates and locks `worktrees/<key>` on `lane/<key>`, and opens the pane there |
 | `dori review --lane <key> [--model M]` | diffs `merge-base(baseSha, tip)..tip` in the lane's tree, saves the diff, and records a request (`QUEUED`); a reviewer session (`dori review <owner/repo#N> --background`) reads it, and its verdict is attested into the lane receipt |
 | `dori merge <key>` | lane gate: pushes `lane/<key>`, opens/updates the PR, gates on checks, merges with a merge commit, deletes the remote branch |
-| `dori done <key>` | requires a CLEAR receipt at the current tip and a clean tree; verifies `main` contains the lane branch from the PR merge (or fast-forwards from the recorded base), then removes the tree and local branch. A lane whose tree is already gone closes as landed only when `lane/<key>` itself (or its recorded tip with a CLEAR receipt, after the branch was deleted by the landed close) is on `main`; otherwise `--drop` is the explicit exit |
-| `dori done <key> --rebase` | moves the lane onto the current `main` first and re-records its base; the old receipt no longer applies, so review again before `dori merge <key>` lands it |
+| `dori done <key>` | requires a CLEAR receipt covering the current tip (exact or same patch-id) and a clean tree; verifies `main` contains the lane branch from the PR merge (or fast-forwards from the recorded base), then removes the tree and local branch. A lane whose tree is already gone closes as landed only when `lane/<key>` itself (or its recorded tip with a CLEAR receipt, after the branch was deleted by the landed close) is on `main`; otherwise `--drop` is the explicit exit |
+| `dori done <key> --rebase` | moves the lane onto the current `main` first and re-records its base; the old receipt still applies when its patch-id matches the rebound tip, otherwise review again before `dori merge <key>` lands it |
 | `dori done --drop <key> --reason TEXT` | closes the lane without landing: removes the tree and `lane/<key>`, records `dropped` with the reason |
 | `dori worktrees list` | prints `WORKTREES root=...`, one `TREE <key>` line per tree with status, path, repo, dirty count, locks and orphan reason, then `WORKTREES <n> orphan` |
 | `dori worktrees prune` | removes clean orphan trees and their `lane/<key>` branches, printing `REMOVED`/`DELETED`, `DIRTY`, `LOCKED` or `SKIPPED` per tree, then `WORKTREES <n> pruned` |
@@ -85,8 +93,9 @@ orphan, so a running lane cannot be pruned out from under its pane.
 - The worktree is isolation for commits, not for processes: the lane's pane is a normal process that can still reach
   the main checkout by absolute path.
 - The base is recorded when the lane starts, and the only supported way to move it is `dori done <key> --rebase`: it
-  rebases the lane onto the current `main` inside the lane's own tree and re-records `baseSha`; the receipt at the old
-  tip then no longer matches, so review again before `dori merge <key>` lands the new tip. Without `--rebase`, `done`
-  refuses a `main` that moved without the lane (`main moved: rebase required`) and keeps the branch and tree.
+  rebases the lane onto the current `main` inside the lane's own tree and re-records `baseSha`; a rebase that leaves
+  the diff unchanged (context included) keeps the patch-id, so the old receipt still covers the new tip. A rebase that
+  changed the diff needs a new review before `dori merge <key>` lands it. Without `--rebase`, `done` refuses a `main`
+  that moved without the lane (`main moved: rebase required`) and keeps the branch and tree.
 - `dori worktrees prune` removes an orphan tree even when its lane record says `lost`; the branch goes with it. Inspect
   a lost lane before pruning it.

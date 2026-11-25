@@ -10,11 +10,12 @@ import { memoryLow } from "./host.ts";
 import { readJson, writeJson } from "./json-file.ts";
 import { HOSTNAME, pidAlive, processStartTime } from "./process-identity.ts";
 import type { HostLoad } from "./store-types.ts";
+import { REVIEW_CEILING } from "./worker-limits.ts";
 
 /** Rough private memory one reviewer holds; it sizes how many reviews may run at once, and nothing else. */
 export const REVIEW_MEM_MB = 500;
-/** A review that has run this long is reported to the lead once. It is never stopped, shortened or failed for age. */
-export const REVIEW_SLOW_MS = 2 * 60 * 60 * 1000;
+/** The review ceiling in wall-clock: duty tells the lead once when it is reached, and never stops the run for age. */
+export const REVIEW_SLOW_MS = REVIEW_CEILING.wallMinutes * 60 * 1000;
 /** How often a running worker rewrites its progress row. */
 export const REVIEW_PROGRESS_MS = 30_000;
 /** A start that never writes its running row within this window is a failed launch, not a slow review. */

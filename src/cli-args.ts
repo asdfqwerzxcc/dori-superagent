@@ -61,7 +61,8 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori review <owner/repo#N> --attest --verdict CLEAR|BLOCK --reviewer R --evidence E
                                              record a review done elsewhere as the PR receipt (no child process)
   dori review <lane-key> --attest --verdict CLEAR|BLOCK --reviewer R --evidence E [--summary S]
-                                             record the lead reviewer's verdict as the lane receipt
+                                             record the lead reviewer's verdict as the lane receipt; needs a saved
+                                             review diff whose patch-id matches the current base..tip
   dori review --lane <key> [--model M] [--restart] [--legacy-kill]
                                               record the request and print QUEUED <key> <tip> <job>; duty never
                                               spawns a reviewer; a request has no deadline and is never expired.
@@ -74,13 +75,15 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori merge <owner/repo#N> --bundle <id>     explicit bundle gate: every recorded member CLEAR at its sha + green
                                               checks when configured -> squash merge
   dori bundle open <id> --title T [--issue N] [--repo owner/name]
-  dori bundle add <id> <lane-key>...          only when the lane receipt is CLEAR at the current lane/<key> head
+  dori bundle add <id> <lane-key>...          only when a CLEAR lane receipt covers the current lane/<key> head
+                                              (exact tip or same patch-id)
   dori bundle list [<id>] [--json]            bundles under state/bundles/<id>.json
   dori bundle land <id> [--dry-run]           bundle/<id> from main (members merged --no-ff) + fork PR (explicit mode)
   dori bundle close <id> [--text T]           after the PR merges: verify only issue N is Closes, comment Refs
   dori bundle show <id> [--json]
   dori done <key> [--rebase]                  lead closes a READY lane; needs a CLEAR lane receipt unless it committed nothing
-                                              --rebase moves the lane onto current main first, re-records its base and demands a fresh receipt
+                                              --rebase moves the lane onto current main first and re-records its base; the
+                                              receipt still covers the new tip when the patch-id matches, else review again
   dori done --drop <key> --reason TEXT        remove a lane's worktree and branch without landing it on main
   dori worktrees list                        every lane worktree with its status and orphan reason
   dori worktrees prune                       remove orphan worktrees and their lane/* branches (never dirty, never --force)

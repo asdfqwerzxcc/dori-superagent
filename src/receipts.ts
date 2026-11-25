@@ -79,6 +79,21 @@ export class Receipts {
     return this.path("receipts", `lane_${key}`, tip, "json");
   }
 
+  /** Tips whose review diff is saved for `key`: the diff a reviewer was handed, and the basis of an attestation. */
+  laneDiffTips(key: string): string[] {
+    const name = `lane_${key}`;
+    if (!NAME_RE.test(name)) throw new Error(`invalid lane ${key}`);
+    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const file = new RegExp(`^lane_${escaped}@([0-9a-f]{7,64})\\.diff$`);
+    try {
+      return readdirSync(join(this.root, "lane-reviews"))
+        .map((f) => file.exec(f)?.[1])
+        .filter((sha): sha is string => sha !== undefined);
+    } catch {
+      return [];
+    }
+  }
+
   /** Where `dori review --lane` keeps the diff it hands the reviewer, one file per lane and tip. */
   laneDiffPath(key: string, tip: string): string {
     return this.path("lane-reviews", `lane_${key}`, tip, "diff");

@@ -53,6 +53,10 @@ export async function queueLaneReview(
     throw new Refusal(
       `git diff ${base.slice(0, 12)}..${tip.slice(0, 12)} failed: ${(diff.stderr || diff.stdout).trim()}`,
     );
+  if (diff.stdout.trim() === "")
+    throw new Refusal(
+      `lane ${key}: ${base.slice(0, 12)}..${tip.slice(0, 12)} has no net changes; there is nothing to review`,
+    );
   writeFileSync(d.store.laneDiffPath(lane.key, tip), diff.stdout);
   const root = d.store.root;
   // A lane has one review target at a time: a request for an older tip can never receive this tip's receipt.

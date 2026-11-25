@@ -17,7 +17,7 @@ Lee: "이게 나의 정형적인 워크플로우가 될 거야. 어떠한 프로
 
 1. **요구 → 백로그**: 메시징/PM 도리가 요구를 백로그 항목 + 브리프로 만든다.
 2. **레인**: `dori start <key> --brief <f>` → 워크트리에서 작업 → **로컬 커밋** → `dori ready`(증거 링크).
-3. **리뷰 게이트(레인)**: `dori review --lane <key>`가 요청과 diff를 기록하고, 리뷰를 `dori review <owner/repo#N> --background`의 자체 세션에서 돌린 뒤 `dori review <key> --attest`로 그 head에 묶인 **CLEAR 레인 영수증**을 쓴다. `--background`는 즉시 반환하고 duty는 요청·작업 상태와 진행을 보고하며 리뷰어를 띄우지 않는다. 리뷰에는 시간 상한이 없고, 2시간을 넘기면 중단하지 않고 리드에게 1회 알린다. 없음/BLOCK/stale sha면 다음 단계로 못 간다.
+3. **리뷰 게이트(레인)**: `dori review --lane <key>`가 요청과 diff를 기록하고, 리뷰를 `dori review <owner/repo#N> --background`의 자체 세션에서 돌린 뒤 `dori review <key> --attest`로 그 head에 묶인 **CLEAR 레인 영수증**을 쓴다. `--background`는 즉시 반환하고 duty는 요청·작업 상태와 진행을 보고하며 리뷰어를 띄우지 않는다. 리뷰 천장은 2시간 또는 250000 토큰 중 먼저 닿는 쪽이다(`src/worker-limits.ts`). 천장에 닿으면 리뷰어가 안전 지점에서 멈춰 미검증 항목을 남기고, 하나라도 HIGH/MEDIUM을 숨길 수 있으면 BLOCK을 출력한다. duty는 2시간을 넘긴 리뷰를 중단하지 않고 리드에게 1회 알린다. 영수증은 리뷰된 diff의 tip SHA와 `git patch-id`를 함께 기록하므로, rebase로 SHA만 바뀌고 diff가 같으면(컨텍스트 포함) 새 리뷰 없이 유효하다. `--attest`는 저장된 리뷰 diff의 patch-id가 현재 `base..tip`과 같을 때만 통과한다. 없음/BLOCK/다른 패치면 다음 단계로 못 간다.
 4. **레인 착지(기본)**: `dori merge <key>`가 ⑴ 영수증을 다시 확인하고 ⑵ `lane/<key>`를 레인 레포의 자기 리모트(`fork`가 있으면 `fork`, 없으면 `origin`)에 push하고 ⑶ PR을 생성/갱신하고 ⑷ PR 체크가 있으면 전부 green일 때만(없으면 `checks=none`) **merge commit**으로 머지한 뒤 ⑸ 원격 브랜치 삭제를 시도하고, 삭제가 실패하면 머지는 유지한 채 WARN으로 알린다. 체크가 pending/failed면 PR과 브랜치는 남기고 거부하므로, green이 된 뒤 `dori merge <key>`를 다시 실행한다. PR 대상은 `lane.repo`에서 유도하며, design 레포(`asdfqwerzxcc/dori-design-system`, `origin`만 있음)도 같은 기본 경로를 쓴다.
 5. **묶음 착지(선택, 명시적 모드)**: 여러 레인을 한 PR로 묶어야 할 때만 `dori bundle open`/`add`/`land` → `dori merge <owner/repo#N> --bundle <id>`. 기본 경로가 아니다.
 6. **CI**: 워크플로가 있는 레포는 PR에서 `bun install` → `typecheck` → `test`(무료 티어, 런당 ~15초). 레인/번들 게이트는 체크가 있으면 전부 green이어야 머지하고, 워크플로가 없으면 `checks=none`으로 통과한다.
@@ -31,6 +31,23 @@ Lee: "이게 나의 정형적인 워크플로우가 될 거야. 어떠한 프로
 - **우회 플래그 금지**: 영수증 없음, BLOCK, stale sha, PR 체크 pending/failed/없음은 머지 거부다. 우회 플래그를 만들지 않는다.
 - dori 쪽 변경은 **테스트로 고정**: 워크플로우 규칙(프롬프트·CLI·게이트)을 바꾸면 그 규칙을 검사하는 테스트나 실행 증거를 같이 남긴다.
 - 프로젝트에 전파할 때: `skills/dori-mode`, `.github/workflows/ci.yml`, `prompts/lane-footer.md`, `docs/ops-protocol.md` 네 개를 복사하고 리모트 이름만 바꾼다.
+
+### 브리프 계약 (5항)
+
+모든 레인/서브에이전트 브리프는 다섯 항목을 담는다: **목표**, **입력**, **산출물**, **정지 조건**, **금지(파일 범위)**. 정의와 레인에 주입되는 문구의 단일 소스는 `prompts/lane-footer.md`의 "The brief contract"다. 브리프의 기준이 전부다 — 레인이 브리프 위에 게이트·리뷰 라운드·추가 산출물을 얹지 않는다(하네스 리뷰 게이트와 명시적 `MODE:`는 예외). 기존에 있던 문제는 보고에 한 줄로 남기고 이 레인에서 고치지 않는다.
+
+### 천장 (기본값, 보수적)
+
+| 실행 | 시간 | 토큰 | 천장에서 |
+| --- | --- | --- | --- |
+| 리뷰(PR·레인) | 2시간 | 250000 | 안전 지점에서 멈춤, 미검증 항목 명시, 불완전하면 `VERDICT: BLOCK` |
+| 레인 | 3시간 | 400000 | pause-safely: 현재 원자 단계 종료, `wip:` 커밋, `$DORI_HOME/briefs/<key>.state.md`, `--status waiting` |
+
+값의 단일 소스는 `src/worker-limits.ts`이고, `prompts/review.md`·`prompts/review-lane.md`·`prompts/lane-footer.md`·`prompts/duty.md`·`prompts/lead.md`에 렌더된다. 시간은 벽시계이고, 토큰은 워커가 자기 세션에서 읽는 값이다(하네스는 별도 토큰 카운터를 두지 않는다). 하네스는 나이로 실행을 죽이지 않는다: 워커가 스스로 멈추고 보고하며, 리드가 천장을 올릴지 작업을 쪼갤지 결정한다. 천장은 목표가 아니라 안전망이다.
+
+### 안전 정지 (pause-safely)
+
+리드가 재시작/중단을 알리거나 천장에 닿으면: 새 작업을 시작하지 않고 현재 원자 단계를 끝내거나 되돌린 뒤, `lane/<key>`에 `wip:` 커밋 하나로 남기고 `$DORI_HOME/briefs/<key>.state.md`에 의도·진행·검증된 것·미검증·다음 행동·키 파일·gotcha를 쓴다. 리드에게 상태 파일 경로와 재개 첫 행동을 `--status waiting`으로 보고하고 턴을 끝낸다. 다음 턴은 상태 파일을 먼저 읽고 재개한다. 되돌릴 수 없는 행동(push/PR/merge/deploy)은 정지를 위해 새로 하지 않는다.
 
 ## 3.5 두 착지 모드 (2026-11-23)
 

@@ -8,7 +8,7 @@
 
 ```
 dori bundle open <id> --title T [--issue N] [--repo owner/name]
-dori bundle add  <id> <lane-key>...     # 레인 영수증이 CLEAR이고 그 sha가 lane/<key> head일 때만
+dori bundle add  <id> <lane-key>...     # 레인 영수증이 CLEAR이고 현재 lane/<key> head를 덮을 때만 (exact tip 또는 같은 patch-id)
 dori bundle list [<id>] [--json]
 dori bundle show <id> [--json]
 dori bundle land <id> [--dry-run]       # bundle/<id> 생성 + 멤버 --no-ff 머지 + 자기 리모트 push + PR 생성/갱신
@@ -20,7 +20,7 @@ dori merge <owner/repo#N> --bundle <id> # 명시적 번들 게이트로 머지
 
 ## 규칙
 
-1. **`add` 게이트**: 레인 영수증이 **CLEAR**이고, 그 영수증의 sha가 **현재 `lane/<key>` head와 일치**할 때만 추가된다. 없음/BLOCK/stale sha는 `Refusal`로 거부되고 번들은 바뀌지 않는다.
+1. **`add` 게이트**: 레인 영수증이 **CLEAR**이고, 그 영수증이 **현재 `lane/<key>` head를 덮을 때**(exact tip 또는 같은 `patchId`+`contentId`, 공백까지 같은 diff)만 추가된다. 없음/BLOCK/stale sha(다른 patch)는 `Refusal`로 거부되고 번들은 바뀌지 않는다.
 2. **`land`**: `main`에서 `bundle/<id>`를 만들고 멤버 브랜치를 적힌 순서대로 `--no-ff` 머지한다. 충돌하면 **그 자리에서 멈추고 부분 브랜치를 남긴다**(조용히 넘어가지 않는다). 성공하면 자기 리모트(`fork`가 있으면 `fork`, 없으면 `origin`)로 푸시하고 `.github/PULL_REQUEST_TEMPLATE.md` + 멤버 목록으로 PR을 만들거나 갱신한다.
 3. **`merge --bundle <id>`**: 게이트는 둘 중 하나를 만족해야 한다.
    - ⑴ PR head에 **CLEAR 영수증**이 있다(번들 단위 리뷰), 또는
@@ -31,7 +31,7 @@ dori merge <owner/repo#N> --bundle <id> # 명시적 번들 게이트로 머지
 ## 레인 게이트(기본)와의 관계
 
 - **기본(레인 게이트)**: 레인마다 `dori review --lane <key>`(요청) → `dori review <owner/repo#N> --background`(자체 세션 리뷰) → `dori review <key> --attest`(영수증) → `dori merge <key>`. 이 문서의 번들 명령은 쓰지 않는다. PR은 `lane.repo`의 자기 리모트(`fork`가 있으면 `fork`, 없으면 `origin`)에 만들고 merge commit으로 머지한다.
-- **번들 게이트(명시적)**: 여러 레인을 한 PR/한 승인으로 묶을 때만 `dori bundle` → `dori merge --bundle <id>`. `add`는 CLEAR+sha를, `merge --bundle`은 구성원 영수증과 체크를 판정한다. 단, PR head에 CLEAR 영수증이 있으면 `bundleGate`를 건너뛴다(규칙 3 ⑴).
+- **번들 게이트(명시적)**: 여러 레인을 한 PR/한 승인으로 묶을 때만 `dori bundle` → `dori merge --bundle <id>`. `add`는 CLEAR+head 커버리지(exact tip 또는 같은 patch-id)를, `merge --bundle`은 구성원 영수증과 체크를 판정한다. 단, PR head에 CLEAR 영수증이 있으면 `bundleGate`를 건너뛴다(규칙 3 ⑴).
 - **리모트 규칙**: `bundle land`도 `fork`가 있으면 `fork`, 없으면 `origin`으로 푸시하며, 그 리모트가 번들 레포와 같아야 하고 업스트림이면 거부한다.
 
 자세한 배경은 `docs/workflow.md` §3.5.
