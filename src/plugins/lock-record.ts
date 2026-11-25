@@ -83,14 +83,20 @@ export const sameOwner = (a: Record<string, unknown> | undefined, b: LockOwnerRe
  */
 export function lockHeldByRecord(raw: unknown, deps: LockRecordDeps = {}): boolean {
   if (typeof raw !== "object" || raw === null) return false;
-  const record = raw as { version?: unknown; pid?: unknown; at?: unknown; startedAt?: unknown };
+  const record = raw as { version?: unknown; pid?: unknown; at?: unknown; startedAt?: unknown; temp?: unknown };
   const pid = Number(record.pid);
   if (!Number.isInteger(pid) || pid <= 0) return false;
   if (!(deps.alive ?? pidAlive)(pid)) return false;
+  // A live temp claimant is a claim in progress, not an old-format holder with a missing tick.
+  if (record.temp === true) return true;
   if (Number(record.version) !== 1) {
+    const now = (deps.now ?? Date.now)();
     const beat = deps.beatFor?.(pid);
-    if (beat === undefined || beat === null) return true;
-    return (deps.now ?? Date.now)() - beat <= LEGACY_BEAT_GRACE_MS;
+    if (beat !== undefined && beat !== null) return now - beat <= LEGACY_BEAT_GRACE_MS;
+    if (beat === undefined) return true;
+    // The tick is missing or names another pid: the claim time bounds the doubt, so a missing tick cannot hold forever.
+    const at = Number(record.at);
+    return Number.isInteger(at) && at > 0 && now - at <= LEGACY_BEAT_GRACE_MS;
   }
   const rawStart = record.startedAt;
   const startedAt = rawStart === null || rawStart === undefined ? null : Number(rawStart);
@@ -114,7 +120,7 @@ export function readLockRecord(lock: string): Record<string, unknown> | undefine
         const m = /^\.owner\.(\d+)\./.exec(name);
         if (m === null) continue;
         const pid = Number(m[1]);
-        if (Number.isInteger(pid) && pid > 0 && pidAlive(pid)) return { version: 0, pid, at: 0 };
+        if (Number.isInteger(pid) && pid > 0 && pidAlive(pid)) return { version: 0, pid, at: 0, temp: true };
       }
     }
   } catch {}

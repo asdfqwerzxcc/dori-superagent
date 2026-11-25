@@ -51,6 +51,15 @@ describe("the plugin lock record", () => {
     }
   });
 
+  test("a missing tick is doubt only while the claim is fresh, so it cannot block forever", () => {
+    const old = { pid: 7004, at: NOW - 120_000 };
+    expect(lockHeldByRecord(old, { alive: () => true, beatFor: () => null, now: () => NOW })).toBe(false);
+    expect(
+      lockHeldByRecord({ ...old, at: NOW - 1_000 }, { alive: () => true, beatFor: () => null, now: () => NOW }),
+    ).toBe(true);
+    expect(lockHeldByRecord(old, { alive: () => true, now: () => NOW })).toBe(true);
+  });
+
   test("an old-format lock is unversioned: a live holder is doubt, a dead one is stale", () => {
     const old = { pid: 7004, at: NOW };
     expect(lockHeldByRecord(old, { alive: () => true })).toBe(true);

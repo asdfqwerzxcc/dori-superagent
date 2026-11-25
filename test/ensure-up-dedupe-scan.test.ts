@@ -41,7 +41,10 @@ describe("a scanned idle duplicate", () => {
       alive: (pid) => alive.has(pid),
       kill: (pid) => alive.delete(pid),
       started: (pid) => startTimes.get(pid) ?? null,
-      scan: () => [OTHER, CONTENDER],
+      scan: () => [
+        { pid: OTHER, startedAt: NOW },
+        { pid: CONTENDER, startedAt: null },
+      ],
       graceMs: 0,
       now: () => NOW,
     });

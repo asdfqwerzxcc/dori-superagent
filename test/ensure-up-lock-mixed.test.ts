@@ -167,6 +167,22 @@ describe("the new lock directory and the old file format", () => {
     expect(acquirePluginLock(path, { alive: () => false, now: () => NOW })).toBe(false);
   });
 
+  test("an old-format file with a missing tick recovers once its claim is old", () => {
+    const home = homeWithState();
+    const path = lockPath(home);
+    writeFileSync(path, JSON.stringify({ pid: process.ppid, at: NOW - 120_000 }));
+    expect(acquirePluginLock(path, { now: () => NOW })).toBe(true);
+    expect((JSON.parse(readFileSync(path, "utf8")) as { pid: number }).pid).toBe(process.pid);
+  });
+
+  test("a missing tick with a fresh claim stays doubt", () => {
+    const home = homeWithState();
+    const path = lockPath(home);
+    writeFileSync(path, JSON.stringify({ pid: process.ppid, at: NOW }));
+    expect(acquirePluginLock(path, { now: () => NOW })).toBe(false);
+    expect(existsSync(dirOf(path))).toBe(false);
+  });
+
   test("an old-format file whose pid was reused recovers once its tick is stale", () => {
     const home = homeWithState();
     const path = lockPath(home);

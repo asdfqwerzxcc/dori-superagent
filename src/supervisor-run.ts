@@ -81,7 +81,7 @@ export type KillTreeOptions = {
  * and its OS start time matches the recorded moment, so a pid Windows reused for another process is left alone.
  */
 export async function killSupervisorTree(home: string, deps: KillTreeOptions = {}): Promise<number[]> {
-  const alive = deps.alive ?? recordedAlive;
+  const alive = deps.alive ?? strictRecordedAlive;
   const kill = deps.kill ?? terminateProcess;
   const candidates = new Map<number, number>();
   const record = supervisorRecord(home, "supervisor");
@@ -105,7 +105,7 @@ export function claimSupervisor(home: string, state: string): string | undefined
     if (fresh) return `already_running pids=${previous.pid}`;
     terminateProcess(previous.pid);
   }
-  for (const child of recordedChildren(home)) if (recordedAlive(child)) terminateProcess(child.pid);
+  for (const child of recordedChildren(home)) if (strictRecordedAlive(child)) terminateProcess(child.pid);
   return undefined;
 }
 

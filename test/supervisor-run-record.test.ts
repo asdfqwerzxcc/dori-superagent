@@ -59,6 +59,28 @@ describe("record-based restarts", () => {
     expect(killed).toEqual([4343]);
   });
 
+  test("the default tree kill uses the strict 2 s start identity", async () => {
+    const home = homeWithState();
+    const real = processStartTimeMs(process.ppid);
+    if (real === null) throw new Error("the parent has no readable OS start");
+    writeSupervisorRecord(home, {
+      name: "supervisor",
+      pid: process.ppid,
+      startedAt: real - 5_000,
+      units: [],
+      at: NOW,
+    });
+    const killed: number[] = [];
+    const result = await killSupervisorTree(home, {
+      kill: (pid) => {
+        killed.push(pid);
+        return true;
+      },
+    });
+    expect(result).toEqual([]);
+    expect(killed).toEqual([]);
+  });
+
   test("recordedChildren lists each child once", () => {
     const home = recordedTree();
     expect(

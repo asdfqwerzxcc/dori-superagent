@@ -1,14 +1,7 @@
 import { isPluginEnabled, readPluginRecord } from "./plugins/state.ts";
-import {
-  leaveContenders,
-  pluginLockHeld,
-  pluginRunEntry,
-  readContenders,
-  readPluginLock,
-  START_SLACK_MS,
-} from "./plugins/plugin.ts";
+import { leaveContenders, pluginLockHeld, readContenders, readPluginLock, START_SLACK_MS } from "./plugins/plugin.ts";
 import { pidAlive, processStartTimeMs, terminateProcess } from "./process-liveness.ts";
-import { scanEnsureUpProcesses } from "./ensure-up-scan.ts";
+import { scanEnsureUpProcesses, type ScannedEnsureUp } from "./ensure-up-scan.ts";
 import type { RecordedChild } from "./supervisor-run.ts";
 import { ensureUpRecord, supervisorRecord, type SupervisorRecord, type UnitRecord } from "./supervisors.ts";
 
@@ -32,7 +25,7 @@ export type DedupeEnsureUpOptions = {
   /** One supervisor snapshot for this pass; tests use it to model a unit replaced between reads. */
   readonly supervisor?: () => SupervisorRecord | undefined;
   /** A process scan for a pid no record names; the default bounds `ps` by this entry and DORI_HOME. */
-  readonly scan?: () => readonly number[] | Promise<readonly number[]>;
+  readonly scan?: () => readonly ScannedEnsureUp[] | Promise<readonly ScannedEnsureUp[]>;
 };
 
 type Candidate = RecordedChild & {
@@ -88,11 +81,15 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
   const supervisor = (deps.supervisor ?? (() => supervisorRecord(home, "supervisor")))();
   const unitRecord = supervisor?.units.find((u) => u.name === "ensure-up");
   const pluginRecord = readPluginRecord(home, "ensure-up");
-  const scan =
-    deps.scan ?? (async () => (await scanEnsureUpProcesses({ home, entry: pluginRunEntry() })).map((p) => p.pid));
+  const scan = deps.scan ?? (() => scanEnsureUpProcesses({ home }));
   const scanned = (await scan())
-    .filter((pid) => pid !== process.pid && pid !== process.ppid && alive(pid))
-    .map((pid) => ({ pid, at: startedOf(pid) ?? 0, beat: 0, source: "scan" as const }));
+    .filter((s) => s.pid !== process.pid && s.pid !== process.ppid && alive(s.pid))
+    .map((s) => ({
+      pid: s.pid,
+      at: s.startedAt ?? startedOf(s.pid) ?? 0,
+      beat: 0,
+      source: "scan" as const,
+    }));
   const same =
     deps.same ??
     ((c: RecordedChild): boolean => {
