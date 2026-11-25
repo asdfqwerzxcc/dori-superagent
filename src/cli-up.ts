@@ -4,6 +4,8 @@ import { shq } from "./delivery.ts";
 import { promptsDir, type Deps } from "./harness.ts";
 import { reviewLabel } from "./lane-gate.ts";
 import { paneWorktreeMismatch } from "./lane-worktree.ts";
+import { leadRestartBusy } from "./lead-restart-busy.ts";
+import { leadStarting, markLeadStarting, clearLeadStarting } from "./lead-starting.ts";
 import { loopArgs, readLoopCaps } from "./loop-caps.ts";
 import { refText } from "./refs.ts";
 import { reviewRunLines } from "./review-drain.ts";
@@ -33,12 +35,14 @@ const supervise = (d: Deps, startMissing: boolean): Promise<SupervisedState> =>
     ? d.supervise(d.store.root, { startMissing })
     : superviseHome(d.store.root, { startMissing });
 
-/** A registered lead is replaced only when its pane is gone; a probe that fails is doubt, and doubt must not add a second lead. */
+/** A registered lead is replaced when its pane is gone OR is only a shell: a bare shell holds no conversation. A probe
+ * that fails is doubt, and doubt must not add a second lead. */
 type LeadLiveness = "alive" | "unverified" | "gone";
 
 const leadLiveness = async (d: Deps, ref: SessionRef): Promise<LeadLiveness> => {
   try {
-    return (await d.runtimes.for(ref).probe(ref)).status === "gone" ? "gone" : "alive";
+    const { status } = await d.runtimes.for(ref).probe(ref);
+    return status === "gone" || status === "shell" ? "gone" : "alive";
   } catch {
     return "unverified";
   }
@@ -63,28 +67,48 @@ const ensureLine = (state: SupervisedState): string =>
  */
 export async function up(d: Deps, cwd: string, retireOld = false): Promise<void> {
   const previous = d.store.roles().lead;
+  if (leadRestartBusy(d.store.root)) {
+    // The kill -> shell -> relaunch window is legitimate: a second lead here would split the conversation.
+    await supervise(d, !supervisorAlive(d.store.root));
+    console.log("UP lead restart in progress; not opening a second lead");
+    return;
+  }
   const units = unitMode(d.store.root);
   // A live lead owns the human conversation: opening a second workspace and duty would split it and orphan this one.
   if (!retireOld && previous !== undefined) {
     const liveness = await leadLiveness(d, previous);
     if (liveness !== "gone") {
+      if (liveness === "alive") clearLeadStarting(d.store.root);
       // A dead supervisor is the one thing this path must start; an alive one is left exactly as it is.
       await supervise(d, !supervisorAlive(d.store.root));
       console.log(`UP lead ${liveness}; ensuring units only (lead=${refText(previous)}) units=${units}`);
       return;
     }
   }
+  const start = leadStarting(d.store.root);
+  if (!retireOld && start.starting) {
+    await supervise(d, !supervisorAlive(d.store.root));
+    console.log(`UP lead starting (attempts=${start.attempts}); not opening another lead`);
+    return;
+  }
   const caps = readLoopCaps(d.store.root);
   const rt = d.runtimes.default;
   const env = { DORI_HOME: d.store.root };
   const agent = (name: string) => `${d.agentCmd} --append-system-prompt ${shq(renderPrompt(d, name))}`;
+  markLeadStarting(d.store.root);
   // herdr ignores the group of a workspace-root session and reports the new workspace as the lead ref's group.
-  const lead = await openSession(
-    rt,
-    { name: "dori", role: "lead", container: "workspace-root", cwd, env: LEAD_ENV, group: groupId(d.store.root) },
-    agent("lead.md"),
-  );
-  d.store.setRole("lead", lead);
+  let lead: SessionRef;
+  try {
+    lead = await openSession(
+      rt,
+      { name: "dori", role: "lead", container: "workspace-root", cwd, env: LEAD_ENV, group: groupId(d.store.root) },
+      agent("lead.md"),
+    );
+    d.store.setRole("lead", lead);
+  } catch (e) {
+    clearLeadStarting(d.store.root);
+    throw e;
+  }
   const group = lead.group;
   const inGroup = group === undefined ? {} : { group };
   const duty = await openSession(

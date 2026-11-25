@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { LeadSwapOptions } from "../src/lead-swap.ts";
+import type { LeadSwapPlan } from "../src/lead-swap-detach.ts";
 import type { Probe } from "../src/runtime/types.ts";
 import type { Proc } from "../src/lead-process-list.ts";
 import { href } from "./fake.ts";
@@ -78,6 +79,10 @@ export type Fixture = {
   readonly kill?: (pid: number) => Promise<void>;
   readonly typeShell: (text: string) => Promise<boolean>;
   readonly version: () => Promise<string | undefined>;
+  readonly selfPid?: number;
+  readonly selfInPane?: boolean;
+  readonly worker?: boolean;
+  readonly delegate?: (plan: LeadSwapPlan) => Promise<{ readonly pid: number; readonly go: () => void }>;
 };
 
 export const options = (f: Fixture): { opts: LeadSwapOptions; lines: string[] } => {
@@ -98,6 +103,10 @@ export const options = (f: Fixture): { opts: LeadSwapOptions; lines: string[] } 
       launchMs: 5000,
       pollMs: 1,
       platform: "win32",
+      ...(f.selfPid === undefined ? {} : { selfPid: f.selfPid }),
+      ...(f.selfInPane === undefined ? {} : { selfInPane: f.selfInPane }),
+      ...(f.worker === undefined ? {} : { worker: f.worker }),
+      ...(f.delegate === undefined ? {} : { delegate: f.delegate }),
       list: f.list,
       probe: f.probe,
       kill: f.kill ?? (async () => {}),

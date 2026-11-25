@@ -1,11 +1,16 @@
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { type Args, one, parse } from "./cli-args.ts";
 import { defaultDeps, type Deps } from "./harness.ts";
+import { clearLeadRestartBusy, leadRestartTtl, markLeadRestartBusy } from "./lead-restart-busy.ts";
+import { clearLeadStarting } from "./lead-starting.ts";
 import { listAllProcesses } from "./lead-process-list.ts";
+import { launchOutOfTree, type LeadSwapPlan, swapWorkerArgv, swapWorkerEnv } from "./lead-swap-detach.ts";
 import { readRuntimeBuild } from "./lead-swap-target.ts";
-import { runLeadSwap } from "./lead-swap.ts";
+import { runLeadSwap, type LeadSwapResult } from "./lead-swap.ts";
+import { pidAlive } from "./process-liveness.ts";
+import { refFromText, refText } from "./refs.ts";
 import { Refusal } from "./refusal.ts";
 
 function appendLog(path: string, line: string): void {
@@ -18,63 +23,188 @@ function appendLog(path: string, line: string): void {
   }
 }
 
+/** The worker's ready marker: written before its first probe, so the delegating process never reports a failed launch. */
+function writeMarker(path: string | undefined): void {
+  if (path === undefined) return;
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, String(process.pid));
+  } catch {
+    // The launcher's 5 s gate turns a missing marker into a failure; nothing was killed.
+  }
+}
+
+/** The worker holds before its first probe until the parent has logged the handoff and written the go file. */
+async function waitForGo(
+  path: string | undefined,
+  timeoutMs: number,
+): Promise<{ result: "go" | "timeout"; warning?: string }> {
+  if (path === undefined) return { result: "go" };
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) return { result: "timeout" };
+    await Bun.sleep(100);
+  }
+  try {
+    rmSync(path, { force: true });
+    return { result: "go" };
+  } catch {
+    return { result: "go", warning: "LEADSWAP WARN go file not removed" };
+  }
+}
+
 export async function leadRestart(d: Deps, a: Args, sessionArg?: string): Promise<number> {
-  const lead = d.store.roles().lead;
-  if (lead === undefined) throw new Refusal("no lead role in roles.json; run dori up or dori role lead <ref>");
-  const runtime = d.runtimes.for(lead);
   const home = d.store.root;
-  const sessionsRoot = join(homedir(), ".omo", "agent", "sessions");
-  const runtimeRoot = join(homedir(), ".omo", "agent", "runtime");
-  const promptDefault = join(home, "prompts", "lead.md");
   const logPath = join(home, "state", "lead-restart.log");
   const log = (line: string) => {
-    console.log(line);
     appendLog(logPath, line);
+    try {
+      console.log(line);
+    } catch {
+      // The worker runs without a console; the file above is the record.
+    }
   };
-  const platform = process.platform;
+  const goTimeoutArg = one(a, "go-timeout-ms");
+  const goTimeoutMs = goTimeoutArg === undefined ? 30_000 : Number(goTimeoutArg);
+  if (!Number.isFinite(goTimeoutMs) || goTimeoutMs < 0)
+    throw new Refusal("--go-timeout-ms must be a non-negative number");
+  const parentPidArg = one(a, "parent-pid");
+  const parentPid = parentPidArg === undefined ? undefined : Number(parentPidArg);
+  if (parentPidArg !== undefined && (!Number.isInteger(parentPid) || (parentPid ?? 0) <= 0))
+    throw new Refusal("--parent-pid must be a positive integer");
+  const parentBusyToken = one(a, "busy-token");
+  const paneArg = one(a, "pane");
+  const paneRef = paneArg === undefined ? undefined : refFromText(paneArg);
+  const drainMsArg = one(a, "drain-ms");
   const drainSeconds = one(a, "drain-timeout");
   const drainMs =
-    drainSeconds === undefined ? Number(process.env["DORI_DRAIN_TIMEOUT_MS"] ?? 180_000) : Number(drainSeconds) * 1000;
-  if (!Number.isFinite(drainMs) || drainMs < 0) throw new Refusal("--drain-timeout must be a number of seconds");
-  const session = sessionArg ?? one(a, "session");
-  const result = await runLeadSwap({
-    pane: lead,
-    agentCmd: d.agentCmd,
-    ...(session === undefined ? {} : { session }),
-    ...(existsSync(promptDefault) ? { promptPath: promptDefault } : {}),
-    sessionsRoot,
-    dryRun: a.flags.has("dry-run"),
-    force: a.flags.has("force"),
-    drainMs,
-    deathMs: 30_000,
-    launchMs: 120_000,
-    pollMs: 500,
-    platform,
-    list: () => listAllProcesses(d.exec),
-    probe: () => runtime.probe(lead),
-    kill: async (pid) => {
-      if (platform === "win32") await d.exec("taskkill", ["/PID", String(pid), "/T", "/F"]);
-      else {
-        try {
-          process.kill(pid, "SIGTERM");
-        } catch {
-          // Already gone: the death wait is what decides.
-        }
+    drainMsArg !== undefined
+      ? Number(drainMsArg)
+      : drainSeconds === undefined
+        ? Number(process.env["DORI_DRAIN_TIMEOUT_MS"] ?? 180_000)
+        : Number(drainSeconds) * 1000;
+  if (!Number.isFinite(drainMs) || drainMs < 0)
+    throw new Refusal("--drain-ms or --drain-timeout must be a non-negative number");
+  writeMarker(one(a, "marker"));
+  const goGate = await waitForGo(one(a, "go"), goTimeoutMs);
+  if (goGate.result === "timeout") {
+    appendLog(
+      logPath,
+      `LEADSWAP worker aborted: go timeout parent=${parentPid ?? "?"} alive=${parentPid !== undefined && Number.isInteger(parentPid) && pidAlive(parentPid)}`,
+    );
+    clearLeadRestartBusy(home, parentBusyToken);
+    return 2;
+  }
+  const worker = a.flags.has("swap-worker");
+  const dryRun = a.flags.has("dry-run");
+  try {
+    const lead = paneRef ?? d.store.roles().lead;
+    if (lead === undefined)
+      throw new Refusal(
+        paneArg === undefined
+          ? "no lead role in roles.json; run dori up or dori role lead <ref>"
+          : `--pane is not a session ref: ${paneArg}`,
+      );
+    const runtime = d.runtimes.for(lead);
+    const selfInLeadPane = (() => {
+      try {
+        const self = runtime.self();
+        return self !== undefined && self.runtime === lead.runtime && self.id === lead.id;
+      } catch {
+        return false;
       }
-    },
-    typeShell: (text) => runtime.typeIntoShell(lead, text),
-    version: async () => {
-      const r = await d.exec(d.agentCmd, ["--version"]);
-      if (r.code !== 0) return undefined;
-      const line = (r.stdout || r.stderr).trim().split("\n")[0] ?? "";
-      return line !== "" && /\d/.test(line) ? line : undefined;
-    },
-    runtimeBuild: () => readRuntimeBuild(runtimeRoot),
-    sleep: (ms) => Bun.sleep(ms),
-    now: () => Date.now(),
-    log,
-  });
-  return result.code;
+    })();
+    const sessionsRoot = join(homedir(), ".omo", "agent", "sessions");
+    const runtimeRoot = join(homedir(), ".omo", "agent", "runtime");
+    const promptDefault = join(home, "prompts", "lead.md");
+    const promptArg = one(a, "prompt");
+    const promptPath = promptArg ?? (existsSync(promptDefault) ? promptDefault : undefined);
+    const platform = process.platform;
+    const session = sessionArg ?? one(a, "session");
+    const busyToken = dryRun ? undefined : markLeadRestartBusy(home, refText(lead), leadRestartTtl(drainMs));
+    // A Windows swap started inside the lead's own tree is handed to WMI: a killed Bun/Node ancestor takes the whole
+    // job down, so the worker must not share the tree it is about to kill.
+    const delegate =
+      worker || platform !== "win32"
+        ? undefined
+        : async (plan: LeadSwapPlan) => {
+            const suffix = `${process.pid}-${Date.now()}`;
+            const marker = join(home, "state", `lead-swap-${suffix}.ready`);
+            const go = join(home, "state", `lead-swap-${suffix}.go`);
+            const argv = swapWorkerArgv(
+              process.execPath,
+              join(import.meta.dir, "cli.ts"),
+              plan,
+              marker,
+              go,
+              process.pid,
+              busyToken,
+            );
+            const env = swapWorkerEnv(process.env, { DORI_HOME: home, DORI_AGENT_CMD: d.agentCmd });
+            return launchOutOfTree(d.exec, {
+              argv,
+              env,
+              cwd: process.cwd(),
+              marker,
+              go,
+              launcherDir: join(home, "state"),
+            });
+          };
+    let result: LeadSwapResult | undefined;
+    try {
+      result = await runLeadSwap({
+        pane: lead,
+        agentCmd: d.agentCmd,
+        ...(session === undefined ? {} : { session }),
+        ...(promptPath === undefined ? {} : { promptPath }),
+        sessionsRoot,
+        dryRun,
+        force: a.flags.has("force"),
+        drainMs,
+        deathMs: 30_000,
+        launchMs: 120_000,
+        pollMs: 500,
+        platform,
+        ...(selfInLeadPane ? { selfInPane: true } : {}),
+        ...(worker ? { worker: true } : {}),
+        ...(delegate === undefined ? {} : { delegate }),
+        list: () => listAllProcesses(d.exec),
+        probe: () => runtime.probe(lead),
+        kill: async (pid) => {
+          if (platform === "win32") await d.exec("taskkill", ["/PID", String(pid), "/T", "/F"]);
+          else {
+            try {
+              process.kill(pid, "SIGTERM");
+            } catch {
+              // Already gone: the death wait is what decides.
+            }
+          }
+        },
+        typeShell: (text) => runtime.typeIntoShell(lead, text),
+        version: async () => {
+          const r = await d.exec(d.agentCmd, ["--version"]);
+          if (r.code !== 0) return undefined;
+          const line = (r.stdout || r.stderr).trim().split("\n")[0] ?? "";
+          return line !== "" && /\d/.test(line) ? line : undefined;
+        },
+        runtimeBuild: () => readRuntimeBuild(runtimeRoot),
+        sleep: (ms) => Bun.sleep(ms),
+        now: () => Date.now(),
+        log,
+      });
+    } finally {
+      if (goGate.warning !== undefined) appendLog(logPath, goGate.warning);
+      if (worker) {
+        clearLeadRestartBusy(home, busyToken);
+        clearLeadRestartBusy(home, parentBusyToken);
+      } else if (result?.outcome !== "delegated") clearLeadRestartBusy(home, busyToken);
+    }
+    if (result.outcome === "restarted") clearLeadStarting(home);
+    return result.code;
+  } catch (e) {
+    if (worker && parentBusyToken !== undefined) clearLeadRestartBusy(home, parentBusyToken);
+    throw e;
+  }
 }
 
 /** The entry the installed `bin/lead-restart.ts` delegate calls (it runs outside the repository). */

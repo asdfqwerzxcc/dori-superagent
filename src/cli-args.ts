@@ -91,6 +91,10 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori lead-restart [--dry-run] [--force] [--session FILE] [--drain-timeout SECONDS]
                                               find the lead by the pane's process tree, kill it, and relaunch the same session
                                               once the pane is a shell; --dry-run prints PID, session and engine only
+                                              from inside the lead on Windows, exit 0 means handed to an out-of-tree worker
+                                              internal worker flags: --swap-worker, --pane REF, --prompt FILE, --drain-ms N,
+                                              --marker FILE, --go FILE, --go-timeout-ms N, --parent-pid N, --busy-token TOKEN
+                                              (not for operators)
   dori plugin list | enable <name> | disable <name>
                                               the registry and state/plugins.json; the supervisor re-reads it every 5 s
   dori remote add <name> --ssh <user@host> [--repo PATH] [--os linux|windows]
@@ -179,6 +183,8 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "legacy-kill",
   "background",
   "list",
+  // Internal lead-restart worker flag: boolean, with --marker/--go/--go-timeout-ms as its value flags.
+  "swap-worker",
 ]);
 
 export function parse(argv: readonly string[]): Args {

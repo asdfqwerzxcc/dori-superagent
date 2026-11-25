@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { main } from "../src/cli.ts";
 import { runLeadSwap } from "../src/lead-swap.ts";
+import type { LeadSwapPlan } from "../src/lead-swap-detach.ts";
 import { buildLeadCommand } from "../src/lead-swap-target.ts";
 import { World, href } from "./fake.ts";
 import { captureStdout, engineLine, options, promptText, rowsFor, scratch } from "./lead-restart-setup.ts";
@@ -47,11 +48,128 @@ describe("dori lead-restart", () => {
     expect(r.out).toContain(`LEADSWAP command ${buildLeadCommand("omo", session, prompt, process.platform)}`);
     expect(r.out).not.toContain("duty.md");
     expect(w.calls.filter((c) => c.cmd === "taskkill")).toEqual([]);
+    expect(existsSync(join(d.store.root, "state", "lead-restart.busy"))).toBe(false);
     expect(
       w.calls.filter(
         (c) => c.cmd === "herdr" && c.argv[0] === "pane" && (c.argv[1] === "send-text" || c.argv[1] === "send-keys"),
       ),
     ).toEqual([]);
+  });
+
+  test("a swap running inside the lead tree delegates to an out-of-tree worker and kills nothing", async () => {
+    const s = scratch();
+    const rows = [
+      ...rowsFor(s.prompt),
+      { pid: 4000, command: `bun ${s.home}/bin/lead-restart.ts --session ${s.session}`, parent: 336 },
+      { pid: 700, command: "cmd.exe /c worker-parent", parent: 100 },
+      {
+        pid: 6000,
+        command: `bun cli.ts lead-restart --swap-worker --prompt ${s.prompt} --session ${s.session}`,
+        parent: 700,
+      },
+    ];
+    let killed = 0;
+    let delegated: LeadSwapPlan | undefined;
+    let goSawLog = false;
+    const { opts, lines } = options({
+      ...s,
+      list: async () => rows,
+      probe: async () => ({ status: "idle", shellInFront: false, rootPid: 100 }),
+      kill: async () => {
+        killed += 1;
+      },
+      delegate: async (plan) => {
+        delegated = plan;
+        return {
+          pid: 9876,
+          go: () => {
+            goSawLog = lines.some((line) => line.startsWith("LEADSWAP delegated launcher=9876"));
+          },
+        };
+      },
+      selfPid: 4000,
+      typeShell: async () => false,
+      version: async () => engineLine,
+    });
+    const r = await runLeadSwap(opts);
+    const out = lines.join("\n");
+    expect(r.code).toBe(0);
+    expect(r.outcome).toBe("delegated");
+    expect(killed).toBe(0);
+    expect(delegated?.session).toBe(s.session);
+    expect(delegated?.prompt).toBe(s.prompt);
+    expect(delegated?.target).toEqual([26976]);
+    expect(delegated?.matched).toEqual([26976, 25176, 2012, 336]);
+    expect(delegated?.matched).not.toContain(6000);
+    expect(delegated?.target).not.toContain(6000);
+    expect(delegated?.drainMs).toBe(0);
+    expect(delegated?.force).toBe(true);
+    expect(goSawLog).toBe(true);
+    expect(lines[0]).toStartWith("LEADSWAP start pane=w1:p1 session=");
+    expect(out).toContain("LEADSWAP delegated launcher=9876");
+    expect(out).not.toContain("LEADSWAP delegated pid=9876");
+    expect(out).not.toContain("LEADSWAP killed");
+  });
+
+  test("a swap launched from the lead's own pane delegates even when its parent chain was reparented", async () => {
+    const s = scratch();
+    const rows = [...rowsFor(s.prompt), { pid: 5000, command: "bun dori lead-restart", parent: 1 }];
+    let delegated = 0;
+    const { opts, lines } = options({
+      ...s,
+      list: async () => rows,
+      probe: async () => ({ status: "idle", shellInFront: false, rootPid: 100 }),
+      delegate: async () => {
+        delegated += 1;
+        return { pid: 1234, go: () => {} };
+      },
+      selfPid: 5000,
+      selfInPane: true,
+      typeShell: async () => false,
+      version: async () => engineLine,
+    });
+    const r = await runLeadSwap(opts);
+    expect(r.outcome).toBe("delegated");
+    expect(delegated).toBe(1);
+    expect(lines.join("\n")).toContain("LEADSWAP delegated launcher=1234");
+  });
+
+  test("a swap running outside the lead tree does not delegate", async () => {
+    const s = scratch();
+    const rows = [...rowsFor(s.prompt), { pid: 5000, command: "bun dori lead-restart", parent: 1 }];
+    let delegated = 0;
+    const { opts } = options({
+      ...s,
+      list: async () => rows,
+      probe: async () => ({ status: "working", shellInFront: false, rootPid: 100 }),
+      delegate: async () => {
+        delegated += 1;
+        return { pid: 1, go: () => {} };
+      },
+      selfPid: 5000,
+      typeShell: async () => true,
+      version: async () => engineLine,
+    });
+    const r = await runLeadSwap(opts);
+    expect(delegated).toBe(0);
+    expect(r.outcome).toBe("failed");
+  });
+
+  test("the start line is first even when the pane cannot be read", async () => {
+    const s = scratch();
+    const { opts, lines } = options({
+      ...s,
+      list: async () => rowsFor(s.prompt),
+      probe: async () => {
+        throw new Error("probe refused");
+      },
+      typeShell: async () => false,
+      version: async () => engineLine,
+    });
+    const r = await runLeadSwap(opts);
+    expect(r.code).toBe(1);
+    expect(lines[0]).toStartWith("LEADSWAP start pane=w1:p1 session=");
+    expect(lines[1]).toContain("LEADSWAP FAILED cannot read pane");
   });
 
   test("a pane that still has a live agent is never typed into", async () => {

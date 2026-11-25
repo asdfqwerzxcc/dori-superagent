@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { up } from "../src/cli-up.ts";
+import { clearLeadRestartBusy, markLeadRestartBusy } from "../src/lead-restart-busy.ts";
 import { groupId } from "../src/runtime/group.ts";
 import { World, href } from "./fake.ts";
 import { captureIo } from "./inbox-setup.ts";
@@ -76,6 +77,43 @@ describe("dori up", () => {
       `UP runtime=herdr lead=w1:p2 duty=w1:p3 loop=w1:p4 hourly=w1:p5 home=${root} units=panes\nENSURE-UP off (ensure-up.off)`,
     );
     expect(w.superviseCalls).toEqual([{ startMissing: false }]);
+  });
+
+  test("a registered lead that is only a shell is replaced by a new lead", async () => {
+    const w = new World();
+    w.addPane("w1:p1", "shell");
+    const d = w.deps();
+    d.store.setRole("lead", href("w1:p1"));
+    const { out } = await captureIo(async () => {
+      await up(d, "/w");
+      return 0;
+    });
+    expect(d.store.roles().lead).toEqual(href("w1:p2"));
+    expect(out).toContain("UP runtime=herdr lead=w1:p2");
+    // The bare shell is left alone: a new workspace is what replaces it, not a second lead in that pane.
+    expect(w.panes.has("w1:p1")).toBe(true);
+  });
+
+  test("a restart in progress does not open a second lead", async () => {
+    const w = new World();
+    w.addPane("w1:p1", "shell");
+    const d = w.deps();
+    d.store.setRole("lead", href("w1:p1"));
+    const busy = markLeadRestartBusy(d.store.root, "w1:p1");
+    const { out } = await captureIo(async () => {
+      await up(d, "/w");
+      return 0;
+    });
+    expect(d.store.roles().lead).toEqual(href("w1:p1"));
+    expect(out).toBe("UP lead restart in progress; not opening a second lead");
+    expect(w.calls.filter((c) => c.cmd === "herdr" && (c.argv[1] === "create" || c.argv[1] === "split"))).toEqual([]);
+    clearLeadRestartBusy(d.store.root, busy);
+    const { out: after } = await captureIo(async () => {
+      await up(d, "/w");
+      return 0;
+    });
+    expect(d.store.roles().lead).toEqual(href("w1:p2"));
+    expect(after).toContain("UP runtime=herdr lead=w1:p2");
   });
 
   test("a live registered lead with the supervisor down starts it: no new workspace or duty", async () => {
