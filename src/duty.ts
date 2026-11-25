@@ -7,6 +7,7 @@ import { Refusal } from "./refusal.ts";
 import { refText, sameSession } from "./refs.ts";
 import type { SessionRef } from "./runtime/types.ts";
 import { drainReviewQueue } from "./review-queue.ts";
+import { drainReviewRuns } from "./review-drain.ts";
 import type { Lane } from "./store-types.ts";
 
 export const NUDGE_MINUTES = [10, 20, 40] as const;
@@ -15,7 +16,7 @@ export const NUDGE_MINUTES = [10, 20, 40] as const;
 const INBOX_WAIT_WARN_MS = 5 * 60_000;
 const warnedLeadWaits = new Set<string>();
 
-export type DutyEvent = { lane?: string; pane?: string; action: string; detail?: string };
+export type DutyEvent = { lane?: string; pane?: string; pr?: string; action: string; detail?: string };
 
 /** An open lane the duty loop watches; a lane being migrated is left alone (no nudge, no lost, no activity stamp). */
 const watched = (lane: Lane): boolean =>
@@ -127,9 +128,10 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
     }
   }
   const count = (pred: (a: string) => boolean) => events.filter((e) => pred(e.action)).length;
-  // Review requests last: the drain only reports and expires them, so it can never hold a nudge or a LOST notice.
+  // Review queues last: their drains only read records and report, so they never hold a nudge or a LOST notice.
   try {
     events.push(...(await drainReviewQueue(d)));
+    events.push(...(await drainReviewRuns(d)));
   } catch (e) {
     // A queue that cannot be read must not end the loop for the panes and lanes handled above.
     events.push({ action: "review-queue-failed", detail: failureDetail(e) });

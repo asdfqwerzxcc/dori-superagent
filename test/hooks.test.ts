@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { up } from "../src/cli-up.ts";
 import { dutyTick } from "../src/duty.ts";
-import { review } from "../src/gate.ts";
+import { review } from "../src/review-pr.ts";
 import { prompt, type Deps } from "../src/harness.ts";
 import { ConfigError, hooksSettled, loadHooks, runHook, substitute } from "../src/hooks.ts";
 import { ready, report, startLane } from "../src/lanes.ts";

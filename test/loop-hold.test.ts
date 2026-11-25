@@ -59,12 +59,11 @@ describe("loop holds", () => {
     expect(notices(lead.received)).toHaveLength(0);
   });
 
-  test("a memory hold kills an old leftover review runner process", async () => {
+  test("a memory hold leaves an old review runner marker and its process alone", async () => {
     const { w, d, add } = setup();
     add("next");
     w.host = { load1: 0, cores: 8, memFreePct: 8, memFreeMb: 600 };
     const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], {
-      detached: true,
       stdio: "ignore",
       windowsHide: true,
     });
@@ -78,16 +77,11 @@ describe("loop holds", () => {
       const path = runPath(d.store.root, "reviewed", sha);
       mkdirSync(queueDir(d.store.root), { recursive: true });
       writeFileSync(path, JSON.stringify({ requestedAt: w.clock - 2 * HOUR, pid, host: HOSTNAME, startTime }));
-      const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
       const run = await loopTick(d, { force: true });
-      await Promise.race([
-        exited,
-        new Promise<void>((_, reject) => setTimeout(() => reject(new Error("review runner still alive")), 5000)),
-      ]);
-      expect(existsSync(path)).toBe(false);
-      expect(run.reclaimed?.join("\n")).toContain("killed review runner reviewed@");
-      expect(d.store.lastRun()?.reclaimed?.join("\n")).toContain("killed review runner reviewed@");
-      expect(pidAlive(pid)).toBe(false);
+      expect(existsSync(path)).toBe(true);
+      expect(pidAlive(pid)).toBe(true);
+      expect(run.reclaimed?.join("\n") ?? "").not.toContain("killed review runner");
+      expect(run.reclaimed?.join("\n") ?? "").toContain("memory reclaim: closed 0 landed lane(s), failed 0");
     } finally {
       if (pidAlive(pid)) child.kill("SIGKILL");
     }

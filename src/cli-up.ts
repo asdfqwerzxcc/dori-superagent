@@ -6,6 +6,7 @@ import { reviewLabel } from "./lane-gate.ts";
 import { paneWorktreeMismatch } from "./lane-worktree.ts";
 import { loopArgs, readLoopCaps } from "./loop-caps.ts";
 import { refText } from "./refs.ts";
+import { reviewRunLines } from "./review-drain.ts";
 import { groupId } from "./runtime/group.ts";
 import { openSession, type SessionRef } from "./runtime/types.ts";
 import { RuntimeChoiceError } from "./runtime/select.ts";
@@ -178,6 +179,7 @@ export async function status(d: Deps): Promise<void> {
     const mismatch = await paneWorktreeMismatch(d, l);
     if (mismatch !== undefined) console.log(`MISMATCH ${l.key}: ${mismatch}`);
   }
+  for (const line of reviewRunLines(d)) console.log(line);
   try {
     const { orphans } = await scanWorktrees(d, { dirty: false });
     if (orphans > 0) console.log(`WORKTREES ${orphans} orphan`);

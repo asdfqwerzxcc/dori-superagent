@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { mergeGate, review } from "../src/gate.ts";
+import { mergeGate } from "../src/gate.ts";
+import { review } from "../src/review-pr.ts";
 import type { World } from "./fake.ts";
 import { setup } from "./harness-setup.ts";
 

@@ -55,7 +55,7 @@ describe("queued lane review", () => {
 
     const before = w.calls.length;
     expect(await dutyTick(d)).toEqual([
-      { lane: "fix-login", action: "review-queued", detail: "waiting 1m for the lead's receipt" },
+      { lane: "fix-login", action: "review-queued", detail: "queued, waiting 1m for the lead's receipt" },
     ]);
     expect(w.calls.length).toBe(before);
     expect(w.calls.filter((c) => c.cmd === "omo")).toEqual([]);
@@ -63,21 +63,19 @@ describe("queued lane review", () => {
     expect(d.store.laneReceipt("fix-login", tip)).toBeUndefined();
   });
 
-  test("the drain expires a request older than the TTL and adds no process", async () => {
+  test("the drain never expires a request: age is reported, the record stays and no process starts", async () => {
     const { w, d } = await world();
     await queue(d);
     w.clock += 25 * 60 * 60 * 1000;
     const before = w.calls.length;
-    expect(await dutyTick(d)).toEqual([
-      {
-        lane: "fix-login",
-        action: "review-expired",
-        detail: "requested 1500m ago with no receipt; record removed",
-      },
-    ]);
+    expect(await dutyTick(d)).toContainEqual({
+      lane: "fix-login",
+      action: "review-queued",
+      detail: "queued, waiting 1500m for the lead's receipt",
+    });
     expect(w.calls.length).toBe(before);
-    expect(queued(d)).toBeUndefined();
-    expect(existsSync(join(queueDir(d), `fix-login@${tip}.json`))).toBe(false);
+    expect(queued(d)).toMatchObject({ state: "queued" });
+    expect(existsSync(join(queueDir(d), `fix-login@${tip}.json`))).toBe(true);
     expect(d.store.laneReceipt("fix-login", tip)).toBeUndefined();
   });
 

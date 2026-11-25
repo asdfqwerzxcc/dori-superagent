@@ -1,5 +1,18 @@
 import { execFileSync } from "node:child_process";
 import { freemem, totalmem } from "node:os";
+import type { HostLoad } from "./store-types.ts";
+
+const MEM_FREE_MIN_PCT = 10;
+/** An absolute floor too: 10% of 7.7 GB is 770 MB, less than one agent's private memory; 700 MB is what this host can actually keep free beside a lead. */
+const MEM_FREE_MIN_MB = 700;
+
+/**
+ * True when free memory cannot carry one more agent. This is the only admission limit shared by lane starts and
+ * reviews: no clock decides whether work may begin.
+ */
+export const memoryLow = (host: HostLoad): boolean =>
+  host.memFreePct < MEM_FREE_MIN_PCT || host.memFreeMb < MEM_FREE_MIN_MB;
+
 const sysctlMemoryLevel = (): string =>
   execFileSync("sysctl", ["-n", "kern.memorystatus_level"], { encoding: "utf8", timeout: 2000, windowsHide: true });
 

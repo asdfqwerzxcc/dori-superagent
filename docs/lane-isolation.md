@@ -71,7 +71,7 @@ orphan, so a running lane cannot be pruned out from under its pane.
 | Command | What it does |
 | --- | --- |
 | `dori start <key> --brief FILE [--cwd DIR]` | records the base, creates and locks `worktrees/<key>` on `lane/<key>`, and opens the pane there |
-| `dori review --lane <key> [--model M]` | diffs `merge-base(baseSha, tip)..tip` in the lane's tree, saves the diff, and records a request (`QUEUED`); a reviewer session (`dori review <owner/repo#N>`) reads it, and its verdict is attested into the lane receipt |
+| `dori review --lane <key> [--model M]` | diffs `merge-base(baseSha, tip)..tip` in the lane's tree, saves the diff, and records a request (`QUEUED`); a reviewer session (`dori review <owner/repo#N> --background`) reads it, and its verdict is attested into the lane receipt |
 | `dori merge <key>` | lane gate: pushes `lane/<key>`, opens/updates the PR, gates on checks, merges with a merge commit, deletes the remote branch |
 | `dori done <key>` | requires a CLEAR receipt at the current tip and a clean tree; verifies `main` contains the lane branch from the PR merge (or fast-forwards from the recorded base), then removes the tree and local branch. A lane whose tree is already gone closes as landed only when `lane/<key>` itself (or its recorded tip with a CLEAR receipt, after the branch was deleted by the landed close) is on `main`; otherwise `--drop` is the explicit exit |
 | `dori done <key> --rebase` | moves the lane onto the current `main` first and re-records its base; the old receipt no longer applies, so review again before `dori merge <key>` lands it |
