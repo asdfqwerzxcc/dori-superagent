@@ -1,13 +1,11 @@
 // The lead restart: drain, kill the pane's lead tree, wait for a shell, type the relaunch, and prove a new pid+engine.
-
 import { existsSync } from "node:fs";
 import { failureDetail } from "./delivery.ts";
-import { insideLeadTree, type LeadSwapPlan } from "./lead-swap-detach.ts";
+import { insideLeadTree, releaseSwap, targetScope, type LeadSwapPlan } from "./lead-swap-detach.ts";
 import { buildLeadCommand, matchLeadStack, newestSession } from "./lead-swap-target.ts";
 import { refText } from "./refs.ts";
 import type { Probe, SessionRef } from "./runtime/types.ts";
 import type { Proc } from "./lead-process-list.ts";
-
 export type LeadSwapResult = {
   readonly code: number;
   readonly outcome: "dry-run" | "restarted" | "delegated" | "failed";
@@ -15,7 +13,6 @@ export type LeadSwapResult = {
   readonly target?: readonly number[];
   readonly newPid?: number;
 };
-
 export type LeadSwapOptions = {
   readonly pane: SessionRef;
   readonly agentCmd: string;
@@ -32,8 +29,10 @@ export type LeadSwapOptions = {
   readonly platform: NodeJS.Platform;
   /** Test seams for the in-tree decision; `delegate` starts the swap outside the tree when it is inside. */
   readonly selfPid?: number;
-  readonly delegate?: (plan: LeadSwapPlan) => Promise<{ readonly pid: number }>;
+  readonly delegate?: (plan: LeadSwapPlan) => Promise<{ readonly pid: number; readonly go: () => void }>;
   readonly selfInPane?: boolean;
+  /** True in the out-of-tree worker: its start line carries worker=1 and its own pid. */
+  readonly worker?: boolean;
   readonly list: () => Promise<readonly Proc[] | undefined>;
   readonly probe: () => Promise<Probe>;
   readonly kill: (pid: number) => Promise<void>;
@@ -50,8 +49,9 @@ export async function runLeadSwap(opts: LeadSwapOptions): Promise<LeadSwapResult
     opts.log(`LEADSWAP FAILED ${reason}`);
     return { code: 1, outcome: "failed", reason };
   };
-  // The start line is first and durable: the incident log had only `drain` left.
-  opts.log(`LEADSWAP start pane=${refText(opts.pane)} session=${opts.session ?? "auto"} drain=${opts.drainMs}`);
+  // The start line is first and durable; the worker tag keeps the two starts of one delegated restart distinguishable.
+  const tag = opts.worker === true ? ` worker=1 pid=${process.pid}` : "";
+  opts.log(`LEADSWAP start pane=${refText(opts.pane)} session=${opts.session ?? "auto"} drain=${opts.drainMs}${tag}`);
   let first: Probe;
   try {
     first = await opts.probe();
@@ -67,7 +67,8 @@ export async function runLeadSwap(opts: LeadSwapOptions): Promise<LeadSwapResult
     procs = undefined;
   }
   if (procs === undefined) return fail("the process list could not be read");
-  const stack = matchLeadStack(procs, first.rootPid, opts.promptPath);
+  const selfPid = opts.selfPid ?? process.pid;
+  const stack = matchLeadStack(targetScope(procs, selfPid), first.rootPid, opts.promptPath);
   if (stack.roots.length === 0) {
     const looked = opts.promptPath === undefined ? "omo.js" : `omo.js or ${opts.promptPath}`;
     return fail(`no lead process under pane ${refText(opts.pane)} (looked for ${looked})`);
@@ -115,15 +116,14 @@ export async function runLeadSwap(opts: LeadSwapOptions): Promise<LeadSwapResult
     force: opts.force,
   };
   // An in-tree swap would kill itself with the lead: hand the restart to a worker outside the tree and kill nothing here.
-  if (
-    opts.delegate !== undefined &&
-    (opts.selfInPane === true || insideLeadTree(procs, oldPids, opts.selfPid ?? process.pid))
-  ) {
+  if (opts.delegate !== undefined && (opts.selfInPane === true || insideLeadTree(procs, oldPids, selfPid))) {
     try {
       const started = await opts.delegate(plan);
       opts.log(
-        `LEADSWAP delegated pid=${started.pid} pane=${refText(opts.pane)} session=${session} target=${target.join(",")}`,
+        `LEADSWAP delegated launcher=${started.pid} pane=${refText(opts.pane)} session=${session} target=${target.join(",")}`,
       );
+      // Log first, release second: the handoff line is durable before the worker probes or kills.
+      releaseSwap(started, opts.log);
       return { code: 0, outcome: "delegated", target };
     } catch (e) {
       return fail(`could not start the out-of-tree swap: ${failureDetail(e)}`);

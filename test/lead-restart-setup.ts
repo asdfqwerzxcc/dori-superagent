@@ -81,7 +81,8 @@ export type Fixture = {
   readonly version: () => Promise<string | undefined>;
   readonly selfPid?: number;
   readonly selfInPane?: boolean;
-  readonly delegate?: (plan: LeadSwapPlan) => Promise<{ readonly pid: number }>;
+  readonly worker?: boolean;
+  readonly delegate?: (plan: LeadSwapPlan) => Promise<{ readonly pid: number; readonly go: () => void }>;
 };
 
 export const options = (f: Fixture): { opts: LeadSwapOptions; lines: string[] } => {
@@ -104,6 +105,7 @@ export const options = (f: Fixture): { opts: LeadSwapOptions; lines: string[] } 
       platform: "win32",
       ...(f.selfPid === undefined ? {} : { selfPid: f.selfPid }),
       ...(f.selfInPane === undefined ? {} : { selfInPane: f.selfInPane }),
+      ...(f.worker === undefined ? {} : { worker: f.worker }),
       ...(f.delegate === undefined ? {} : { delegate: f.delegate }),
       list: f.list,
       probe: f.probe,

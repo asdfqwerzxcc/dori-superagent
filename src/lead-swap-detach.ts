@@ -5,6 +5,8 @@
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { failureDetail } from "./delivery.ts";
+import type { Proc } from "./lead-process-list.ts";
 import type { Exec } from "./runtime/exec.ts";
 import type { SessionRef } from "./runtime/types.ts";
 import { refText } from "./refs.ts";
@@ -26,8 +28,12 @@ export type OutOfTreeLaunch = {
   readonly cwd: string;
   /** The worker writes this file before its first probe; a missing marker is a failed launch, not a slow one. */
   readonly marker: string;
+  /** The parent writes this after logging the handoff; the worker does not probe or kill before it exists. */
+  readonly go: string;
   readonly launcherDir: string;
 };
+
+export type LaunchedSwap = { readonly pid: number; readonly go: () => void };
 
 const quote = (value: string): string => `'${value.replaceAll("'", "''")}'`;
 
@@ -73,13 +79,15 @@ export function swapWorkerEnv(
 
 /**
  * Starts the worker through WMI and waits for its ready marker. The returned pid is the PowerShell launcher; the worker
- * it starts is a child of WmiPrvSE, so killing the lead cannot reach it. Throws when WMI refused or the marker never
- * appeared, and the caller then kills nothing.
+ * it starts is a child of WmiPrvSE, so killing the lead cannot reach it. `go` must be called only after the caller has
+ * logged the handoff; the worker holds before its first probe until the go file exists. Throws when WMI refused or the
+ * marker never appeared, and the caller then kills nothing.
  */
-export async function launchOutOfTree(exec: Exec, launch: OutOfTreeLaunch): Promise<number> {
+export async function launchOutOfTree(exec: Exec, launch: OutOfTreeLaunch): Promise<LaunchedSwap> {
   mkdirSync(dirname(launch.marker), { recursive: true });
   mkdirSync(launch.launcherDir, { recursive: true });
   rmSync(launch.marker, { force: true });
+  rmSync(launch.go, { force: true });
   const launcher = join(launch.launcherDir, `lead-swap-${process.pid}-${Date.now()}.ps1`);
   const body = [
     "$ErrorActionPreference = 'Stop'",
@@ -114,10 +122,27 @@ export async function launchOutOfTree(exec: Exec, launch: OutOfTreeLaunch): Prom
   }
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
-    if (existsSync(launch.marker)) return pid;
+    if (existsSync(launch.marker)) {
+      rmSync(launch.marker, { force: true });
+      return { pid, go: () => writeFileSync(launch.go, String(pid)) };
+    }
     await Bun.sleep(100);
   }
   throw new Error(`the out-of-tree swap pid=${pid} did not report ready within 5000ms`);
+}
+
+/** The rows the target matcher may see: never the caller itself and never a swap worker's own argv. */
+export function targetScope(procs: readonly Proc[], selfPid: number): readonly Proc[] {
+  return procs.filter((p) => p.pid !== selfPid && !/(?:^|\s)--swap-worker(?:\s|$)/.test(p.command));
+}
+
+/** Releases the worker only after the caller logged the handoff; a write failure leaves it to its timeout. */
+export function releaseSwap(started: LaunchedSwap, log: (line: string) => void): void {
+  try {
+    started.go();
+  } catch (e) {
+    log(`LEADSWAP WARN go not written: ${failureDetail(e)}`);
+  }
 }
 
 /** True when the caller itself is inside the lead stack the swap is about to kill, judged by parent pids. */
@@ -137,8 +162,8 @@ export function insideLeadTree(
   return false;
 }
 
-/** The worker's argv: the same CLI, the resolved plan as explicit flags, and no second delegation. */
-export function swapWorkerArgv(argv0: string, cli: string, plan: LeadSwapPlan, marker: string): string[] {
+/** The worker's argv: the same CLI, the resolved plan as explicit flags, the go gate, and no second delegation. */
+export function swapWorkerArgv(argv0: string, cli: string, plan: LeadSwapPlan, marker: string, go: string): string[] {
   return [
     argv0,
     cli,
@@ -154,5 +179,7 @@ export function swapWorkerArgv(argv0: string, cli: string, plan: LeadSwapPlan, m
     ...(plan.prompt === "" ? [] : ["--prompt", plan.prompt]),
     "--marker",
     marker,
+    "--go",
+    go,
   ];
 }

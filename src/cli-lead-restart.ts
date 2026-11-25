@@ -31,8 +31,20 @@ function writeMarker(path: string | undefined): void {
   }
 }
 
+/** The worker holds before its first probe until the parent has logged the handoff and written the go file. */
+async function waitForGo(path: string | undefined): Promise<void> {
+  if (path === undefined) return;
+  const deadline = Date.now() + 30_000;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) return;
+    await Bun.sleep(100);
+  }
+  rmSync(path, { force: true });
+}
+
 export async function leadRestart(d: Deps, a: Args, sessionArg?: string): Promise<number> {
   writeMarker(one(a, "marker"));
+  await waitForGo(one(a, "go"));
   const paneArg = one(a, "pane");
   const lead = paneArg === undefined ? d.store.roles().lead : refFromText(paneArg);
   if (lead === undefined)
@@ -86,17 +98,17 @@ export async function leadRestart(d: Deps, a: Args, sessionArg?: string): Promis
       ? undefined
       : async (plan: LeadSwapPlan) => {
           const marker = join(home, "state", `lead-swap-${process.pid}.ready`);
-          const argv = swapWorkerArgv(process.execPath, join(import.meta.dir, "cli.ts"), plan, marker);
+          const go = join(home, "state", `lead-swap-${process.pid}.go`);
+          const argv = swapWorkerArgv(process.execPath, join(import.meta.dir, "cli.ts"), plan, marker, go);
           const env = swapWorkerEnv(process.env, { DORI_HOME: home, DORI_AGENT_CMD: d.agentCmd });
-          const pid = await launchOutOfTree(d.exec, {
+          return launchOutOfTree(d.exec, {
             argv,
             env,
             cwd: process.cwd(),
             marker,
+            go,
             launcherDir: join(home, "state"),
           });
-          rmSync(marker, { force: true });
-          return { pid };
         };
   const result = await runLeadSwap({
     pane: lead,
@@ -112,6 +124,7 @@ export async function leadRestart(d: Deps, a: Args, sessionArg?: string): Promis
     pollMs: 500,
     platform,
     ...(selfInLeadPane ? { selfInPane: true } : {}),
+    ...(worker ? { worker: true } : {}),
     ...(delegate === undefined ? {} : { delegate }),
     list: () => listAllProcesses(d.exec),
     probe: () => runtime.probe(lead),

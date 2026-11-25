@@ -6,7 +6,7 @@ import { runLeadSwap } from "../src/lead-swap.ts";
 import type { LeadSwapPlan } from "../src/lead-swap-detach.ts";
 import { buildLeadCommand } from "../src/lead-swap-target.ts";
 import { World, href } from "./fake.ts";
-import { captureStdout, engineLine, options, promptText, rowsFor, scratch } from "./lead-restart-setup.ts";
+import { captureStdout, engineLine, options, promptText, rowsFor, scratch, shellOnly } from "./lead-restart-setup.ts";
 
 describe("dori lead-restart", () => {
   test("dry-run finds the ensure-up lead by the pane's process tree and kills nothing", async () => {
@@ -60,9 +60,16 @@ describe("dori lead-restart", () => {
     const rows = [
       ...rowsFor(s.prompt),
       { pid: 4000, command: `bun ${s.home}/bin/lead-restart.ts --session ${s.session}`, parent: 336 },
+      { pid: 700, command: "cmd.exe /c worker-parent", parent: 100 },
+      {
+        pid: 6000,
+        command: `bun cli.ts lead-restart --swap-worker --prompt ${s.prompt} --session ${s.session}`,
+        parent: 700,
+      },
     ];
     let killed = 0;
     let delegated: LeadSwapPlan | undefined;
+    let goSawLog = false;
     const { opts, lines } = options({
       ...s,
       list: async () => rows,
@@ -72,7 +79,12 @@ describe("dori lead-restart", () => {
       },
       delegate: async (plan) => {
         delegated = plan;
-        return { pid: 9876 };
+        return {
+          pid: 9876,
+          go: () => {
+            goSawLog = lines.some((line) => line.startsWith("LEADSWAP delegated launcher=9876"));
+          },
+        };
       },
       selfPid: 4000,
       typeShell: async () => false,
@@ -87,10 +99,14 @@ describe("dori lead-restart", () => {
     expect(delegated?.prompt).toBe(s.prompt);
     expect(delegated?.target).toEqual([26976]);
     expect(delegated?.matched).toEqual([26976, 25176, 2012, 336]);
+    expect(delegated?.matched).not.toContain(6000);
+    expect(delegated?.target).not.toContain(6000);
     expect(delegated?.drainMs).toBe(0);
     expect(delegated?.force).toBe(true);
+    expect(goSawLog).toBe(true);
     expect(lines[0]).toStartWith("LEADSWAP start pane=w1:p1 session=");
-    expect(out).toContain("LEADSWAP delegated pid=9876");
+    expect(out).toContain("LEADSWAP delegated launcher=9876");
+    expect(out).not.toContain("LEADSWAP delegated pid=9876");
     expect(out).not.toContain("LEADSWAP killed");
   });
 
@@ -104,7 +120,7 @@ describe("dori lead-restart", () => {
       probe: async () => ({ status: "idle", shellInFront: false, rootPid: 100 }),
       delegate: async () => {
         delegated += 1;
-        return { pid: 1234 };
+        return { pid: 1234, go: () => {} };
       },
       selfPid: 5000,
       selfInPane: true,
@@ -114,7 +130,7 @@ describe("dori lead-restart", () => {
     const r = await runLeadSwap(opts);
     expect(r.outcome).toBe("delegated");
     expect(delegated).toBe(1);
-    expect(lines.join("\n")).toContain("LEADSWAP delegated pid=1234");
+    expect(lines.join("\n")).toContain("LEADSWAP delegated launcher=1234");
   });
 
   test("a swap running outside the lead tree does not delegate", async () => {
@@ -127,7 +143,7 @@ describe("dori lead-restart", () => {
       probe: async () => ({ status: "working", shellInFront: false, rootPid: 100 }),
       delegate: async () => {
         delegated += 1;
-        return { pid: 1 };
+        return { pid: 1, go: () => {} };
       },
       selfPid: 5000,
       typeShell: async () => true,
@@ -136,6 +152,53 @@ describe("dori lead-restart", () => {
     const r = await runLeadSwap(opts);
     expect(delegated).toBe(0);
     expect(r.outcome).toBe("failed");
+  });
+
+  test("a worker's own argv is never a target and its start line is tagged", async () => {
+    const s = scratch();
+    const rows = [
+      ...rowsFor(s.prompt),
+      { pid: 700, command: "cmd.exe /c worker-parent", parent: 100 },
+      {
+        pid: 6000,
+        command: `bun cli.ts lead-restart --swap-worker --prompt ${s.prompt} --session ${s.session}`,
+        parent: 700,
+      },
+    ];
+    const newRows = [
+      ...rows.filter((p) => p.pid === 100),
+      { pid: 9001, command: `bun "C:\\omo.js" --append-system-prompt "${s.prompt}"`, parent: 100 },
+    ];
+    const killed: number[] = [];
+    let after = false;
+    let typed = false;
+    const { opts, lines } = options({
+      ...s,
+      list: async () => (after ? (typed ? newRows : shellOnly) : rows),
+      probe: async () =>
+        typed
+          ? { status: "working", shellInFront: false, rootPid: 100 }
+          : after
+            ? { status: "shell", shellInFront: true, rootPid: 100 }
+            : { status: "idle", shellInFront: false, rootPid: 100 },
+      kill: async (pid) => {
+        killed.push(pid);
+        after = true;
+      },
+      typeShell: async () => {
+        typed = true;
+        return true;
+      },
+      selfPid: 6000,
+      worker: true,
+      version: async () => engineLine,
+    });
+    const r = await runLeadSwap(opts);
+    expect(r.outcome).toBe("restarted");
+    expect(killed).toEqual([26976]);
+    expect(killed).not.toContain(6000);
+    expect(r.target).toEqual([26976]);
+    expect(lines[0]).toMatch(/worker=1 pid=\d+$/);
   });
 
   test("the start line is first even when the pane cannot be read", async () => {

@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { insideLeadTree, swapWorkerArgv, swapWorkerEnv } from "../src/lead-swap-detach.ts";
+import { insideLeadTree, launchOutOfTree, swapWorkerArgv, swapWorkerEnv } from "../src/lead-swap-detach.ts";
+import { spawnExec } from "../src/runtime/exec.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const readText = (path: string): string | undefined => {
@@ -96,6 +97,7 @@ describe("the out-of-tree lead swap", () => {
         force: true,
       },
       "C:\\state\\ready",
+      "C:\\state\\go",
     );
     expect(argv).toEqual([
       "bun",
@@ -113,7 +115,34 @@ describe("the out-of-tree lead swap", () => {
       "C:\\lead.md",
       "--marker",
       "C:\\state\\ready",
+      "--go",
+      "C:\\state\\go",
     ]);
+  });
+
+  test.skipIf(process.platform !== "win32")("the worker holds before its probe until go is written", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "dori-handshake-"));
+    const marker = join(dir, "ready.txt");
+    const go = join(dir, "go.txt");
+    let launched: { readonly pid: number; readonly go: () => void } | undefined;
+    try {
+      launched = await launchOutOfTree(spawnExec, {
+        argv: [process.execPath, join(import.meta.dir, "fixtures/out-of-tree-handshake.ts"), dir, marker, go],
+        env: {},
+        cwd: process.cwd(),
+        marker,
+        go,
+        launcherDir: dir,
+      });
+      await sleep(500);
+      expect(existsSync(join(dir, "handshake-done.txt"))).toBe(false);
+      launched.go();
+      await until("the handshake worker to finish", () => readText(join(dir, "handshake-done.txt")));
+    } finally {
+      try {
+        launched?.go();
+      } catch {}
+    }
   });
 
   test.skipIf(process.platform !== "win32")("the worker survives the lead's kill and finishes after it", async () => {
