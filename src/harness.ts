@@ -11,7 +11,7 @@ import { type RuntimeChoice, readRuntimeChoice } from "./runtime/select.ts";
 import { Store } from "./store.ts";
 import { type HostLoad, KEY_RE, type Role, reservedKey } from "./store-types.ts";
 import { Telemetry, type Usage } from "./telemetry.ts";
-import { superviseHome, type SupervisedState } from "./supervisor-run.ts";
+import { superviseHome, type SupervisedState } from "./supervise-home.ts";
 
 export { KEY_RE, reservedKey };
 

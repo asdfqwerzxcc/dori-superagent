@@ -181,7 +181,26 @@ supervisor starts its child while `state/plugins.json` enables it; the plugin id
 `state/ensure-up.off` exists. Every 20 s the loop probes the pane `roles.json` registers as `lead`; only when that role
 is missing or its pane is `gone` does it run `dori up`. A probe that fails is doubt and raises nothing. One loop per home
 is enforced by `state/ensure-up.lock` (a dead holder's lock is taken over), so two supervisors cannot raise two
-workspaces. A pane-mode `dori up` (loops not supervised) starts the same plugin child itself.
+workspaces. A pane-mode `dori up` (loops not supervised) starts the same plugin child itself, but only when the home has
+no supervisor process: a supervisor whose beat is late still owns the plugin, because a late beat is doubt about its
+health, not permission for a second loop.
+
+`dori up` and `dori restart` reduce any ensure-up duplicates they find to one and print
+`ENSURE_UP dedupe kept=<pid> killed=<pids> [failed=<pids>] [unverified=<pids>]`. The process holding
+`state/plugins/ensure-up.lock/owner.json` is never ended in favour of an idle child; the supervisor's unit is the keeper
+otherwise, and among non-unit loops the freshest beat wins. Its standby is left alone while another process holds the
+lock. The lock is a directory (an atomic mutex) and is re-read before every kill; after the final keeper is resolved
+every other live candidate, the displaced initial keeper included, is ended. A kill needs a positive start-time match:
+an unreadable or null start time is doubt and the pid is listed `unverified=` instead. A non-null mismatch or an
+old-format lock file is stale and is taken over; a version 1 lock with a null start time stays held. A pid is counted as
+`killed` only after a grace poll confirms the OS no longer holds it; otherwise it stays `failed=` with its contender
+marker. A disabled plugin leaves no ensure-up process; `ensure-up.off` keeps one idle loop. The cleanup runs again after
+a started supervisor registers a live, start-time-matched unit. A plugin child that cannot take the plugin lock writes
+`{ pid, at }` (its OS start time) under `state/plugins/<name>.contenders/`, refreshes that file every 5 s, and retries
+the lock; it leaves the shared tick to the holder. Only a disabled plugin makes it leave; an `ensure-up.off` loop stays
+waiting (the standby that takes over when the holder goes), so the supervisor cannot restart-loop a child that cannot get
+the lock. The library logger is silent; the CLI prints the one dedupe line. The lock and contender rules apply to every
+plugin child, not only ensure-up; an old-format lock from any plugin is taken over once on upgrade.
 
 Because the decision is the lead's own pane, a `dori up` that finds a live lead opens no second workspace: it ensures
 the supervised units and prints one line, and only `dori up --retire-old true` opens a fresh lead and closes the old one.

@@ -1,14 +1,11 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { PLUGINS } from "./plugins/registry.ts";
-import { pluginRunEntry } from "./plugins/plugin.ts";
-import { isPluginEnabled, readPluginRecord } from "./plugins/state.ts";
+import { readPluginRecord } from "./plugins/state.ts";
 import { acquirePidLock } from "./pid-lock.ts";
 import { pidAlive, processStartTimeMs, startedNear, terminateProcess } from "./process-liveness.ts";
 import {
   ageMs,
-  ensureUpHealth,
-  ensureUpOff,
   ensureUpRecord,
   entryFor,
   freshSince,
@@ -17,7 +14,6 @@ import {
   SUPERVISORS,
   supervisorHealth,
   supervisorRecord,
-  type EnsureUpHealth,
   type SupervisorHealth,
   type SupervisorName,
 } from "./supervisors.ts";
@@ -127,6 +123,7 @@ export type EnsureSupervisorsOptions = {
   readonly spawn?: typeof spawnDetached;
   readonly alive?: (pid: number) => boolean;
   readonly sleep?: (ms: number) => Promise<void>;
+  readonly now?: () => number;
 };
 
 /** Starts the supervisors whose record is absent or dead; a live recorded one is left alone (no process scan). */
@@ -148,71 +145,11 @@ export async function ensureSupervisors(
     await waitFresh(
       spawned.map((name) => heartbeatPath(home, name)),
       started,
-      { timeoutMs: waitMs, ...(deps.sleep === undefined ? {} : { sleep: deps.sleep }) },
+      {
+        timeoutMs: waitMs,
+        ...(deps.sleep === undefined ? {} : { sleep: deps.sleep }),
+        ...(deps.now === undefined ? {} : { now: deps.now }),
+      },
     );
-  return supervisorHealth(home);
-}
-
-/** Waits for the ensure-up loop to appear (the supervisor starts it), or returns its absent state at the deadline. */
-export async function waitEnsureUp(home: string, wanted: boolean, timeoutMs = 15_000): Promise<EnsureUpHealth> {
-  if (!wanted) return ensureUpHealth(home);
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const health = ensureUpHealth(home);
-    if (health.alive || Date.now() >= deadline) return health;
-    await Bun.sleep(250);
-  }
-}
-
-/** What `dori up` shows after it made sure the supervised half of the stack runs. */
-export type SupervisedState = {
-  readonly health: readonly SupervisorHealth[];
-  readonly ensureUp: EnsureUpHealth;
-  readonly off: boolean;
-};
-
-/**
- * Starts the supervisors that are missing (`startMissing`) or only reads their health, then reports the ensure-up
- * plugin and waits briefly for its first beat. `dori up` prints this; nothing here opens a workspace.
- */
-export async function superviseHome(
-  home: string,
-  opts: {
-    readonly startMissing: boolean;
-    readonly spawn?: typeof spawnDetached;
-    readonly wait?: typeof waitEnsureUp;
-    readonly ensure?: typeof ensureSupervisors;
-    readonly alive?: (pid: number) => boolean;
-    readonly started?: (pid: number) => number | null;
-    /** Tests can supply the health snapshot that a fresh beat would produce. */
-    readonly health?: readonly SupervisorHealth[];
-  },
-): Promise<SupervisedState> {
-  const alive = opts.alive ?? pidAlive;
-  const health =
-    opts.health ??
-    (opts.startMissing
-      ? await (opts.ensure ?? ensureSupervisors)(home, 30_000, { alive })
-      : supervisorHealth(home, Date.now(), alive));
-  const off = ensureUpOff(home);
-  const wantUp = !off && isPluginEnabled(home, "ensure-up");
-  // A record is authoritative: when it exists, a dead process is not the owner even if a fresh beat exists.
-  // Only a home with no supervisor record may fall back to the heartbeat as its sole ownership evidence.
-  const record = supervisorRecord(home, "supervisor");
-  const supervised =
-    record === undefined
-      ? health.some((h) => h.name === "supervisor" && h.alive)
-      : recordedAlive(
-          { pid: record.pid, at: record.startedAt },
-          { alive, ...(opts.started === undefined ? {} : { started: opts.started }) },
-        );
-  // A live supervisor process owns the plugin even when its beat is late; a startMissing call starts supervisors,
-  // never a second ensure-up itself.
-  const wait = opts.wait ?? waitEnsureUp;
-  let ensureUp = await wait(home, wantUp, supervised ? 15_000 : 0);
-  if (!opts.startMissing && !supervised && wantUp && !ensureUp.alive) {
-    (opts.spawn ?? spawnDetached)(pluginRunEntry(), home, ["ensure-up"]);
-    ensureUp = await wait(home, true, 10_000);
-  }
-  return { health, ensureUp, off };
+  return supervisorHealth(home, deps.now?.() ?? Date.now(), alive);
 }

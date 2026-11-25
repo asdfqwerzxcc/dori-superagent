@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { status } from "../src/cli-up.ts";
 import { pluginCtx } from "../src/plugins/plugin.ts";
+import { processStartTimeMs } from "../src/process-liveness.ts";
 import { PLUGINS, pluginByName } from "../src/plugins/registry.ts";
 import { acquirePluginLock, runPluginChild, runTicks } from "../src/plugins/run.ts";
 import {
@@ -21,7 +22,7 @@ import {
 } from "../src/plugins/state.ts";
 import { World } from "./fake.ts";
 import { captureIo } from "./inbox-setup.ts";
-import { superviseHome } from "../src/supervisor-run.ts";
+import { superviseHome } from "../src/supervise-home.ts";
 
 const homeWithState = (): string => {
   const home = mkdtempSync(join(tmpdir(), "dori-plugin-"));
@@ -159,11 +160,19 @@ describe("plugin records, locks and lines", () => {
   test("the runner lock is held while its owner lives and taken over once it does not", () => {
     const home = homeWithState();
     const path = pluginCtx(home, "x").lockPath;
-    writeFileSync(path, JSON.stringify({ pid: process.ppid, at: 0 }));
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        pid: process.ppid,
+        at: Date.now(),
+        startedAt: processStartTimeMs(process.ppid),
+      }),
+    );
     expect(acquirePluginLock(path)).toBe(false);
     writeFileSync(path, JSON.stringify({ pid: 999_999, at: 0 }));
     expect(acquirePluginLock(path)).toBe(true);
-    expect(readFileSync(path, "utf8")).toContain(String(process.pid));
+    expect(readFileSync(join(path, "owner.json"), "utf8")).toContain(String(process.pid));
     expect(existsSync(path)).toBe(true);
   });
 });
