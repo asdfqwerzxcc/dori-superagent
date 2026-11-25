@@ -116,6 +116,13 @@ describe("a plugin that throws", () => {
   test("an unknown plugin name never becomes a child", async () => {
     expect(await runPluginChild("nope", { home: homeWithState(), ticks: 1 })).toBe(64);
   });
+
+  test("a disabled non-ensure-up plugin never takes its lock", async () => {
+    const home = homeWithState();
+    writePluginsConfig(home, setPluginEnabled(home, "update-check", false));
+    expect(await runPluginChild("update-check", { home, ticks: 1 })).toBe(0);
+    expect(existsSync(join(home, "state", "plugins", "update-check.lock"))).toBe(false);
+  });
 });
 
 describe("plugin records, locks and lines", () => {

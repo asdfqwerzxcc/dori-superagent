@@ -80,6 +80,7 @@ export type SuperviseHomeOptions = {
 
 export type WaitSupervisorUnitOptions = WaitEnsureUpOptions & {
   readonly same?: (child: RecordedChild) => boolean;
+  readonly started?: (pid: number) => number | null;
 };
 
 /** True once the supervisor record names a live, start-time-matched unit. A stale or dead record does not count. */
@@ -92,7 +93,13 @@ export async function waitSupervisorUnit(
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
   const alive = opts.alive ?? pidAlive;
-  const same = opts.same ?? recordedAlive;
+  const same =
+    opts.same ??
+    ((child: RecordedChild) =>
+      recordedAlive(child, {
+        alive,
+        ...(opts.started === undefined ? {} : { started: opts.started }),
+      }));
   const deadline = now() + timeoutMs;
   for (;;) {
     const unit = (supervisorRecord(home, "supervisor")?.units ?? []).find(
@@ -142,7 +149,12 @@ export async function superviseHome(home: string, opts: SuperviseHomeOptions): P
     : supervisorHealth(home, opts.now?.() ?? Date.now(), alive);
   const supervised = supervisorProcessAlive(home, same) || health.some((h) => h.name === "supervisor" && h.alive);
   if (opts.startMissing && supervised && wantUp) {
-    await waitSupervisorUnit(home, "ensure-up", 10_000, { ...wait, same });
+    // The pane unit registers seconds after its process starts: keep the helper's 10 s unit default.
+    await waitSupervisorUnit(home, "ensure-up", 10_000, {
+      ...wait,
+      ...(opts.same === undefined ? {} : { same: opts.same }),
+      ...(opts.started === undefined ? {} : { started: opts.started }),
+    });
   }
   const dedupe = mergeEnsureUpDedupe(first, await dedupeEnsureUp(home, dedupeOpts), alive);
   const cleaned = dedupeLine(dedupe);

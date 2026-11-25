@@ -53,10 +53,13 @@ export function recordedChildren(home: string): RecordedChild[] {
 }
 
 /** Alive and still the process the record named; an unreadable start time is doubt, not evidence of a reused pid. */
-export type RecordedAliveDeps = { readonly started?: (pid: number) => number | null };
+export type RecordedAliveDeps = {
+  readonly started?: (pid: number) => number | null;
+  readonly alive?: (pid: number) => boolean;
+};
 
 export function recordedAlive(child: RecordedChild, deps: RecordedAliveDeps = {}): boolean {
-  if (child.pid === process.pid || !pidAlive(child.pid)) return false;
+  if (child.pid === process.pid || !(deps.alive ?? pidAlive)(child.pid)) return false;
   const started = (deps.started ?? processStartTimeMs)(child.pid);
   return started === null || Math.abs(started - child.at) <= 10_000;
 }

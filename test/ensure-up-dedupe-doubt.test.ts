@@ -85,11 +85,32 @@ describe("ensure-up doubt and beats", () => {
     expect(result.killed).toEqual([]);
   });
 
+  test("a keeper that dies before the final verdict is not returned", async () => {
+    const home = homeWithState();
+    writeLock(home, HOLDER, NOW);
+    let calls = 0;
+    const alive = (pid: number): boolean => {
+      if (pid !== HOLDER) return false;
+      calls++;
+      return calls < 4;
+    };
+    const result = await dedupeEnsureUp(home, {
+      alive,
+      kill: () => true,
+      started: () => NOW,
+    });
+    expect(result.kept).toBeUndefined();
+    expect(result.killed).toEqual([]);
+  });
+
   test("merge drops a kept pid from killed and a failed pid from unverified", () => {
     expect(mergeEnsureUpDedupe({ kept: 5, killed: [5] }, { killed: [] }, () => true).killed).toEqual([]);
     const merged = mergeEnsureUpDedupe({ killed: [], failed: [3] }, { killed: [], unverified: [3] }, () => true);
     expect(merged.unverified).toBeUndefined();
     expect(merged.failed).toEqual([3]);
+    expect(
+      mergeEnsureUpDedupe({ killed: [], unverified: [9] }, { killed: [] }, () => false).unverified,
+    ).toBeUndefined();
   });
 
   test("the freshest contender is its refreshed file, not its old start time", async () => {
