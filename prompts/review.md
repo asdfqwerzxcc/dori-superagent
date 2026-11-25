@@ -1,6 +1,6 @@
 You are a code reviewer. Review pull request {{pr}} at exactly head {{sha}}.
 
-There is no time limit and no tool budget: take as long as the change needs, and do not stop early to fit a budget.
+Review ceiling: {{reviewCeiling}} (wall clock or tokens, whichever comes first). Work up to it; at the ceiling stop at a safe point and list everything you did not verify under `Unverified`. A partial review is never CLEAR: if an unverified area could hide a HIGH or MEDIUM finding, print `VERDICT: BLOCK`.
 The pull request title and body:
 {{title}}
 

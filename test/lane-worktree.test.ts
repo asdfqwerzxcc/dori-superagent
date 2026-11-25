@@ -159,13 +159,15 @@ describe("lane worktrees", () => {
     const { w, d, brief, repo } = laneWorld({ worktreeHead: tip });
     await startLane(d, "rebound", brief, { group: "w1" });
     await ready(d, "rebound", "done", ["file:///x"]);
+    repo.patchId = "e".repeat(40);
     await attest(d, "rebound");
 
     const moved = "c".repeat(40);
     repo.head = moved;
     repo.ancestor = false;
-    // The rebase rewrites the lane's commit, so the tip the old receipt covered no longer exists.
+    // The rebase resolved a conflict: the patch content changed, so the old receipt no longer describes this tip.
     repo.worktreeHead = "d".repeat(40);
+    repo.patchId = "f".repeat(40);
     const failure: unknown = await done(d, "rebound", { rebase: true }).then(
       () => undefined,
       (e: unknown) => e,

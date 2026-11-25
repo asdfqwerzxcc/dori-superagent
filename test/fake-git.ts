@@ -12,6 +12,8 @@ export type Repo = {
   remotes?: Record<string, string>;
   mergeBase?: string;
   diff?: string;
+  /** Answer for `git patch-id`; absent makes the call fail like git without a patch id. */
+  patchId?: string;
   /** Output of `diff --quiet <branch> HEAD`; empty means the same tree (a squash merge). Defaults to `diff`. */
   contentDiff?: string;
   /** Makes `diff --quiet <branch> HEAD` fail like a git error (exit 2) with this stderr, instead of comparing trees. */
@@ -79,6 +81,10 @@ export function fakeGit(w: World, repo: Repo): void {
         ? { code: 1, stdout: "", stderr: "not an ancestor" }
         : { code: 0, stdout: "", stderr: "" };
     if (cmd === "merge-base") return { code: 0, stdout: `${repo.mergeBase ?? repo.head}\n` };
+    if (cmd === "patch-id")
+      return repo.patchId === undefined
+        ? { code: 1, stdout: "", stderr: "unhandled git patch-id" }
+        : { code: 0, stdout: `${repo.patchId} ${"0".repeat(40)}\n` };
     if (args.includes("diff") && args.includes("--diff-filter=U")) return { code: 0, stdout: repo.conflictFiles ?? "" };
     if (args.includes("diff")) {
       if (args.includes("--quiet") && repo.diffError !== undefined)

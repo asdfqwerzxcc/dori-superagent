@@ -1,4 +1,5 @@
 import type { Deps } from "./harness.ts";
+import { laneReceiptFor } from "./lane-patch.ts";
 import { laneHead, laneRepo } from "./lane-repo.ts";
 import { reviewJobFor } from "./review-queue.ts";
 import type { Lane } from "./store-types.ts";
@@ -23,7 +24,7 @@ export async function laneGate(d: Deps, lane: Lane): Promise<LaneGate> {
       reason: `lane ${lane.key}: cannot read HEAD in ${laneRepo(lane)}; fix the checkout, then run: dori review --lane ${lane.key} (or dori done --drop ${lane.key} --reason <text>)`,
     };
   if (tip === lane.baseSha) return { ok: true };
-  const receipt = d.store.laneReceipt(lane.key, tip);
+  const receipt = await laneReceiptFor(d, lane, tip);
   const job = reviewJobFor(d.store.root, lane.key, tip);
   // A queued request is the lead's work now: done says so instead of sending the lead to review it again. A legacy
   // `review_partial` receipt must not hide the request that was queued after it.
@@ -72,7 +73,7 @@ export async function reviewLabel(d: Deps, lane: Lane): Promise<string> {
   if (lane.baseSha === undefined) return "no receipt";
   const tip = (await laneHead(d, lane)) ?? lane.tipSha;
   if (tip === undefined) return "no receipt";
-  const receipt = d.store.laneReceipt(lane.key, tip);
+  const receipt = await laneReceiptFor(d, lane, tip);
   if (!receipt) {
     const job = reviewJobFor(d.store.root, lane.key, tip);
     if (job === "corrupt") return "unreadable";

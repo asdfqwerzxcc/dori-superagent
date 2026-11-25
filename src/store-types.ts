@@ -106,6 +106,8 @@ export type LaneReceipt = {
   verdict: LaneVerdict;
   base: string;
   tip: string;
+  /** `git patch-id --stable` of `base..tip`; an older receipt with this id still covers a rebased tip. */
+  patchId?: string;
   brief: string;
   reviewer: string;
   at: number;

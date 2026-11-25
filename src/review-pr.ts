@@ -8,6 +8,7 @@ import { gh, headSha, parsePr } from "./gate.ts";
 import { prompt, type Deps } from "./harness.ts";
 import { loadHooks, loadReviewSettings, substitute } from "./hooks.ts";
 import type { ExecOptions } from "./runtime/exec.ts";
+import { CEILING_VARS } from "./worker-limits.ts";
 
 /** Windows caps one CreateProcess command line near 32,767 chars; leave room for the executable and its flags. */
 const HOOK_ARGV_LIMIT = 30_000;
@@ -62,6 +63,7 @@ export async function review(
     sha,
     title: `${String(view.title ?? "")}\n\n${String(view.body ?? "")}`.trim(),
     diff,
+    ...CEILING_VARS,
   };
   const text = prompt("review.md", vars);
   const callbacks =

@@ -1,8 +1,7 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { need, one, USAGE, type Args } from "./cli-args.ts";
 import { shq } from "./delivery.ts";
-import { prompt, promptsDir, type Deps } from "./harness.ts";
+import { prompt, type Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
 import { askCheckpoint, capture, type MigrateOpts, type Subject } from "./migrate-capture.ts";
 import { swapAgent, swapLoop } from "./migrate-swap.ts";
@@ -17,6 +16,7 @@ import {
   writeJournal,
 } from "./store-journal.ts";
 import type { Lane, Role } from "./store-types.ts";
+import { CEILING_VARS } from "./worker-limits.ts";
 
 export type Target = { readonly lane?: string; readonly role?: Role; readonly all?: boolean };
 
@@ -36,7 +36,7 @@ function laneSubject(d: Deps, key: string): Subject {
     from: lane.sessionRef,
     cwd,
     brief: () => readFileSync(lane.brief, "utf8"),
-    footer: prompt("lane-footer.md", { key, dori: d.doriCmd }),
+    footer: prompt("lane-footer.md", { key, dori: d.doriCmd, ...CEILING_VARS }),
     logTail: lane.log.slice(-20).map((e) => `- ${new Date(e.at).toISOString()} ${e.kind}: ${e.text}`),
     ...(lane.sessionPath === undefined ? {} : { sessionPath: lane.sessionPath }),
     spec: (group) => ({
@@ -61,7 +61,7 @@ function roleSubject(d: Deps, role: Role, from: SessionRef): Subject {
     kind: "role",
     from,
     cwd: process.cwd(),
-    brief: () => readFileSync(join(promptsDir(), name), "utf8").replaceAll("{{dori}}", d.doriCmd),
+    brief: () => prompt(name, { dori: d.doriCmd, ...CEILING_VARS }),
     logTail: [],
     spec: (group) => ({
       name: role === "lead" ? "dori" : "duty",

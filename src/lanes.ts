@@ -11,6 +11,7 @@ import { refText } from "./refs.ts";
 import { groupId } from "./runtime/group.ts";
 import { openSession, type SessionRef } from "./runtime/types.ts";
 import { KEY_RE, reservedKey, type Lane } from "./store-types.ts";
+import { CEILING_VARS } from "./worker-limits.ts";
 
 /** @public The type pruneLaneRecords returns; kept at its pre-split import path. */
 export type { PruneResult } from "./lane-prune.ts";
@@ -69,7 +70,7 @@ export async function startLane(
   }
   const laneCwd = worktree ?? cwd;
   const briefPath = d.store.briefPath(key);
-  const footer = prompt("lane-footer.md", { key, dori: d.doriCmd });
+  const footer = prompt("lane-footer.md", { key, dori: d.doriCmd, ...CEILING_VARS });
   let ref: SessionRef;
   try {
     await Bun.write(briefPath, `${readFileSync(briefFile, "utf8").trimEnd()}\n\n${footer}`);

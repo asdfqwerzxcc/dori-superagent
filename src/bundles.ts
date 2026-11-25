@@ -3,6 +3,7 @@
 
 import { resolve } from "node:path";
 import type { Deps } from "./harness.ts";
+import { laneReceiptFor } from "./lane-patch.ts";
 import { asSha, gitOut } from "./lane-repo.ts";
 import { Refusal } from "./refusal.ts";
 import { checkRepo } from "./repo-policy.ts";
@@ -28,7 +29,7 @@ export async function gateMember(d: Deps, key: string): Promise<MemberGate> {
   const head = asSha(await gitOut(d, lane.repo, ["rev-parse", "--verify", "--quiet", `refs/heads/lane/${key}`]));
   if (head === undefined)
     return { ok: false, reason: `lane ${key}: cannot read refs/heads/lane/${key} in ${lane.repo}` };
-  const receipt = d.store.laneReceipt(key, head);
+  const receipt = await laneReceiptFor(d, lane, head);
   if (receipt === undefined) {
     const older = d.store.receipts.laneReceipts(key)[0];
     if (older !== undefined)

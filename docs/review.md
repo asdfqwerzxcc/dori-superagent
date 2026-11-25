@@ -4,8 +4,10 @@ Dori reviews lane work locally first. `dori review --lane <key>` records the lan
 `QUEUED`. The review itself runs in its own session: `dori review <owner/repo#N> --background` opens that session,
 returns at once, and the worker records a PR receipt; its verdict is recorded as the lane receipt with `dori review
 <key> --attest ...`. The foreground `dori review <owner/repo#N>` still runs one reviewer in the caller's process for a
-manual check. Neither path has a time limit or a tool budget. The lane receipt's schema and the gate rules are
-unchanged. Once the lane receipt is CLEAR, `dori merge <key>` is the landing path.
+manual check. Both paths stop at the review ceiling (2 hours or 250000 tokens, whichever comes first; the constants live
+in `src/worker-limits.ts`): at the ceiling the reviewer stops at a safe point, lists what stayed unverified, and prints
+`VERDICT: BLOCK` when that could hide a HIGH or MEDIUM finding. The lane receipt schema is additive: `patchId` is
+optional, and older receipts need no migration. Once the lane receipt is CLEAR, `dori merge <key>` is the landing path.
 
 Why: reviews must not run as children of the lead pane. A gate-review child keeps the lead `working`, holds its inbox
 and puts review work in the human's session (Lee, 2026-11-24). A separate reviewer session keeps the lead free for
@@ -74,9 +76,10 @@ rows/logs are pruned (20 kept, 7 days; running rows are preserved). The full rev
 `receipts/<pr>@<sha>.review.txt` with a 64KB cap, and the receipt summary keeps the first and last 2000 characters, so
 a HIGH at the top of a long transcript is not lost.
 
-There is no time limit and no tool budget on either path: a review that needs longer keeps running. A review that
-passes two hours is reported to the lead once with its last output line and the log path, and is left running. Duty
-never kills, shortens or fails a review for its age. A dead worker is checked against the sha recorded before the
+There is no review deadline in the harness: duty never kills, shortens or fails a review for its age, and a hook or a
+reviewer that ignores the ceiling is left running. The reviewer itself stops at the review ceiling (2 hours or 250000
+tokens, whichever comes first) and a partial review is never CLEAR. A review that passes two hours is reported to the
+lead once with its last output line and the log path. A dead worker is checked against the sha recorded before the
 reviewer ran: if the receipt exists the job is done, and only a dead worker without that receipt fails (once, with the
 log path). A pid whose start time cannot be read is unknown, not dead; a record from another host is skipped. Free
 memory, not a clock, decides admission: one reviewer needs about 500 MB, and a start is refused while `memFreePct < 10`
@@ -89,9 +92,12 @@ dori review <key> --attest --verdict CLEAR|BLOCK --reviewer <name> --evidence <r
 ```
 
 `--evidence` is required: name the report, task id, path or URL the verdict rested on. The receipt carries the verdict,
-base, tip, brief path, reviewer name, time, summary and the evidence links. It names the exact tip, so it can never
-describe a different diff: a new commit invalidates it and the lead reviews again. `BLOCK` wins at one tip: a later
-CLEAR attest never replaces a BLOCK already on disk; a lane clears a BLOCK only by moving the tip.
+base, tip, brief path, reviewer name, time, summary and the evidence links, plus the `git patch-id --stable` of
+`base..tip` when git can compute one. The gate takes the receipt at the exact tip first; with no receipt there, it
+compares the current patch-id with the ids on disk. A new commit with different content invalidates the receipt and the
+lead reviews again, while a rebase that leaves the patch unchanged keeps it valid (and `dori done --rebase` no longer
+forces a re-review for a clean rebase). `BLOCK` wins for one patch: a later CLEAR attest never replaces a BLOCK on
+disk, and moving only the SHA does not clear it; a lane clears a BLOCK by changing the patch.
 
 ### What duty does
 
@@ -154,8 +160,8 @@ records `dropped` with the reason, and never touches `main`.
 ## `dori status`
 
 Each lane row ends with `review=reviewed`, `review=queued`, `review=<verdict>` (for example `review=BLOCK`) or
-`review=no receipt`, read from the receipt pinned to the lane's current tip and the request record at that tip.
-`reviewed` means a CLEAR receipt exists; `queued` means the lead has a request to answer; any other verdict means that
+`review=no receipt`, read from the receipt pinned to the lane's current tip (or one whose patch-id matches the current
+`base..tip`) and the request record at that tip. `reviewed` means a CLEAR receipt covers the tip; `queued` means the lead has a request to answer; any other verdict means that
 receipt refused the tip; `no receipt` means neither.
 
 ## Limits

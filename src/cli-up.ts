@@ -1,7 +1,7 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { shq } from "./delivery.ts";
-import { promptsDir, type Deps } from "./harness.ts";
+import { prompt, type Deps } from "./harness.ts";
 import { reviewLabel } from "./lane-gate.ts";
 import { paneWorktreeMismatch } from "./lane-worktree.ts";
 import { leadRestartBusy } from "./lead-restart-busy.ts";
@@ -17,6 +17,7 @@ import { pluginLines, enabledPluginNames } from "./plugins/state.ts";
 import { CORE_UNITS, formatEnsureUp, formatSupervised, supervisorHealth } from "./supervisors.ts";
 import { formatUnitPlacement } from "./unit-placement.ts";
 import { unitMode } from "./supervisors/unit-mode.ts";
+import { CEILING_VARS } from "./worker-limits.ts";
 import { scanWorktrees } from "./worktrees.ts";
 
 const supervisorAlive = (root: string): boolean =>
@@ -55,7 +56,7 @@ const leadLiveness = async (d: Deps, ref: SessionRef): Promise<LeadLiveness> => 
 function renderPrompt(d: Deps, name: string): string {
   const dir = join(d.store.root, "prompts");
   mkdirSync(dir, { recursive: true });
-  const src = readFileSync(join(promptsDir(), name), "utf8").replaceAll("{{dori}}", d.doriCmd);
+  const src = prompt(name, { dori: d.doriCmd, ...CEILING_VARS });
   const out = join(dir, name);
   writeFileSync(out, src);
   return out;

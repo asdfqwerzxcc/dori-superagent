@@ -6,6 +6,7 @@ import { need, one, type Args } from "./cli-args.ts";
 import { attest, isPrId } from "./gate.ts";
 import type { Deps } from "./harness.ts";
 import { loadReviewSettings } from "./hooks.ts";
+import { lanePatchId, pickLaneReceipt } from "./lane-patch.ts";
 import { laneReviewTarget } from "./lane-review-target.ts";
 import { Refusal } from "./refusal.ts";
 import { reviewRunLines } from "./review-drain.ts";
@@ -126,8 +127,9 @@ export type LaneAttest = { readonly verdict: "CLEAR" | "BLOCK"; readonly tip: st
 export async function attestLane(d: Deps, key: string, opts: LaneAttestOptions): Promise<LaneAttest> {
   if (opts.evidence.length === 0)
     throw new Refusal("--attest needs at least one --evidence link (task id, path or url)");
-  const { lane, tip, base } = await laneReviewTarget(d, key);
-  const existing = d.store.laneReceipt(key, tip);
+  const { lane, repo, tip, base } = await laneReviewTarget(d, key);
+  const patchId = await lanePatchId(d, repo, base, tip);
+  const existing = pickLaneReceipt(d.store.receipts.laneReceipts(key), tip, patchId);
   const kept = existing?.verdict === "BLOCK" && opts.verdict === "CLEAR";
   const verdict = kept ? "BLOCK" : opts.verdict;
   if (!kept) {
@@ -136,6 +138,7 @@ export async function attestLane(d: Deps, key: string, opts: LaneAttestOptions):
       verdict,
       base,
       tip,
+      ...(patchId === undefined ? {} : { patchId }),
       brief: lane.brief,
       reviewer: opts.reviewer,
       at: d.now(),
