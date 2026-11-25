@@ -3,8 +3,8 @@ import { hcCall, isKind } from "../runtime/hc/exec.ts";
 import { parseProbe } from "../runtime/hc/probe.ts";
 import { close as hcClose, slugName } from "../runtime/hc/sessions.ts";
 import type { Probe, SessionRef } from "../runtime/types.ts";
-import type { PaneAdapter, PaneProbe } from "./panes.ts";
-import { oneLine } from "./panes.ts";
+import { argvHasMarker } from "./marker.ts";
+import { oneLine, type PaneAdapter, type PaneProbe } from "./panes.ts";
 
 const OPS_GROUP = "dori-ops";
 
@@ -75,7 +75,12 @@ export class HcPanes implements PaneAdapter {
     await hcCall(this.exec, ["send", ref.id, "--", command]);
   }
 
-  async pid(ref: SessionRef, _marker: readonly string[]): Promise<PaneProbe> {
+  /**
+   * The unit's pid, matched by pid and command: the terminal's foreground argv must be exactly the unit's marker after
+   * its interpreter. A record with no argv (or a one-word argv) carries no command line to match, so it is doubt, never
+   * a match — a foreign bun in a unit pane must not suppress the unit.
+   */
+  async pid(ref: SessionRef, marker: readonly string[], program?: string): Promise<PaneProbe> {
     let probe: Probe;
     try {
       probe = parseProbe(await hcCall(this.exec, ["get", ref.id]));
@@ -84,8 +89,18 @@ export class HcPanes implements PaneAdapter {
       return { kind: "unknown", why: oneLine(e) };
     }
     if (probe.status === "gone" || probe.shellInFront) return { kind: "stopped" };
-    const pid = probe.foreground?.[0]?.pid;
-    return pid === undefined ? { kind: "unknown", why: "foreground pid missing" } : { kind: "running", pid };
+    const foreground = probe.foreground?.[0];
+    const pid = foreground?.pid;
+    if (pid === undefined) return { kind: "unknown", why: "foreground pid missing" };
+    const argv = foreground?.argv ?? [];
+    if (argvHasMarker(argv, marker, program)) return { kind: "running", pid };
+    // hc reports a process in front but no command line this unit can match. The pid is only a hint for a pane the
+    // supervisor itself typed into; otherwise this is doubt, never a match.
+    return {
+      kind: "unknown",
+      why: `pane foreground is another command: ${foreground?.name || argv[0] || "no command line"}`,
+      pid,
+    };
   }
 
   async close(ref: SessionRef): Promise<void> {

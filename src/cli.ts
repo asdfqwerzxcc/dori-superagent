@@ -27,9 +27,8 @@ import { Refusal } from "./refusal.ts";
 import { runMigrate } from "./migrate.ts";
 import { refText } from "./refs.ts";
 import { ConfigError as RuntimeConfigError, RuntimeChoiceError } from "./runtime/select.ts";
-import { formatEnsureUp, formatSupervised } from "./supervisors.ts";
 import { unitMode } from "./supervisors/unit-mode.ts";
-import { restartSupervisors } from "./supervisor-restart.ts";
+import { restartLines, restartSupervisors } from "./supervisor-restart.ts";
 
 export async function main(argv: readonly string[], d: Deps = defaultDeps()): Promise<number> {
   const a = parse(argv);
@@ -170,14 +169,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "restart": {
       const units = unitMode(d.store.root);
       const r = await restartSupervisors(d.store.root);
-      for (const line of formatSupervised(r.health)) console.log(line);
-      console.log(formatEnsureUp(r.ensureUp, r.off));
-      for (const part of r.missing) console.log(`RESTART MISSING ${part}`);
-      const ws = r.wsHeartbeatAgeMs === undefined ? "missing" : `${Math.round(r.wsHeartbeatAgeMs / 1000)}s`;
-      const retried = r.retried ? " retried=1" : "";
-      console.log(
-        `${r.ok ? "RESTARTED" : "RESTART INCOMPLETE"} killed=${r.killed.length} ms=${r.elapsedMs} ws=${ws}${retried} units=${units}`,
-      );
+      for (const line of restartLines(r, units)) console.log(line);
       return r.ok ? 0 : 1;
     }
     case "status":

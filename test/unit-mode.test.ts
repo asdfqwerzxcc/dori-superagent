@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ConfigError } from "../src/hooks.ts";
-import { PaneUnits } from "../src/supervisors/panes.ts";
+import { PaneUnits } from "../src/supervisors/pane-units.ts";
 import type { UnitPanes } from "../src/supervisors/ops-panes.ts";
 import { readUnitPanes, unitMode, unitPaneLayer } from "../src/supervisors/unit-mode.ts";
 import { FakeAdapter } from "./ops-panes-fixture.ts";

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { argvHasMarker, canonicalExe } from "../src/supervisors/marker.ts";
 import { PaneCloseFailed, PaneUnknown } from "../src/supervisors/panes.ts";
 import { paneCommand } from "../src/supervisors/units.ts";
 import { DUTY, FakeAdapter, pref, unitsOf } from "./ops-panes-fixture.ts";
@@ -99,5 +100,25 @@ describe("pane command lines", () => {
     expect(paneCommand("/usr/bin/bun", ["/a b/cli.ts", "duty"], "sh")).toBe("'/usr/bin/bun' '/a b/cli.ts' 'duty'");
     expect(paneCommand("/b", ["it's"], "sh")).toBe("'/b' 'it'\\''s'");
     expect(paneCommand("b", ["it's"], "powershell")).toBe("& 'b' 'it''s'");
+  });
+
+  test("the unit's command line must be exactly the argv tail after the interpreter", () => {
+    expect(argvHasMarker(["bun", "cli.ts", "duty"], ["cli.ts", "duty"])).toBe(true);
+    expect(argvHasMarker(["bun", "other.ts", "cli.ts", "duty"], ["cli.ts", "duty"])).toBe(false);
+    expect(argvHasMarker(["bun", "cli.ts", "duty", "extra"], ["cli.ts", "duty"])).toBe(false);
+    expect(argvHasMarker(["bun", '"C:/a b/cli.ts"', "duty"], ["C:/a b/cli.ts", "duty"])).toBe(true);
+    expect(argvHasMarker(["bun", "CLI.TS", "duty"], ["cli.ts", "duty"])).toBe(false);
+    expect(argvHasMarker(["bun"], ["cli.ts", "duty"])).toBe(false);
+  });
+
+  test("the interpreter must be the unit's own program, and only path words fold case", () => {
+    expect(argvHasMarker(["node", "cli.ts", "duty"], ["cli.ts", "duty"], "C:/bun/bun.exe")).toBe(false);
+    expect(argvHasMarker(["C:/other/bun.exe", "cli.ts", "duty"], ["cli.ts", "duty"], "C:/bun/bun.exe")).toBe(true);
+    expect(argvHasMarker(["C:/bun/bun.exe", "cli.ts", "DUTY"], ["cli.ts", "duty"], "C:/bun/bun.exe")).toBe(false);
+    expect(argvHasMarker(["C:/bun/bun.exe", "C:/X/CLI.TS", "duty"], ["C:/x/cli.ts", "duty"], "C:/bun/bun.exe")).toBe(
+      process.platform === "win32",
+    );
+    expect(canonicalExe("C:\\BIN\\BUN.EXE")).toBe(process.platform === "win32" ? "bun" : "BUN.EXE");
+    expect(canonicalExe("/usr/local/bin/bun")).toBe("bun");
   });
 });

@@ -1,6 +1,7 @@
 import type { SessionRef } from "../runtime/types.ts";
 import type { PlacedUnit } from "./panes.ts";
-import { oneLine, PaneUnknown } from "./panes.ts";
+import { oneLine, PaneCloseFailed, PaneUnknown } from "./panes.ts";
+import { printable } from "../unit-placement.ts";
 
 /** The shell a pane's run/send types into: PowerShell on Windows herdr panes, sh everywhere hc runs. */
 export type PaneShell = "powershell" | "sh";
@@ -24,6 +25,8 @@ export type RunUnitOptions = {
   readonly headless: () => Promise<never>;
   readonly onStart: (placed: PlacedUnit) => void;
   readonly onExit: () => void;
+  /** The unit is no longer in a pane but is not gone: clear just its recorded pane before the headless child starts. */
+  readonly onUnplace?: () => void;
   readonly alive: (pid: number) => boolean;
   readonly enabled?: () => boolean;
   readonly log: (line: string) => void;
@@ -40,6 +43,7 @@ export async function runUnitInPane(o: RunUnitOptions): Promise<never> {
   const poll = o.pollMs ?? 1_000;
   const restart = o.restartMs ?? 5_000;
   let unknownLogged = false;
+  let closeHeldLogged = false;
   for (;;) {
     if (o.enabled !== undefined && !o.enabled()) {
       await o.sleep(poll);
@@ -52,16 +56,30 @@ export async function runUnitInPane(o: RunUnitOptions): Promise<never> {
       // An unreadable process list is not a dead unit: retry placement instead of starting a headless second copy.
       if (e instanceof PaneUnknown) {
         if (!unknownLogged) {
-          o.log(`SUPERVISED ${o.name}_pane_unknown reason=${oneLine(e)}`);
+          o.log(`SUPERVISED ${printable(o.name)}_pane_unknown reason=${printable(oneLine(e))}`);
           unknownLogged = true;
         }
         await o.sleep(poll);
         continue;
       }
-      o.log(`SUPERVISED ${o.name}_pane_fallback reason=${oneLine(e)}`);
+      // A pane that was typed into and would not close may still run that line: wait for it instead of putting the unit
+      // headless beside it. Placement will adopt the line if it starts, else close the pane and replace it.
+      if (e instanceof PaneCloseFailed) {
+        if (!closeHeldLogged) {
+          o.log(`SUPERVISED ${printable(o.name)}_pane_close_held reason=${printable(oneLine(e))}`);
+          closeHeldLogged = true;
+        }
+        await o.sleep(poll);
+        continue;
+      }
+      o.log(`SUPERVISED ${printable(o.name)}_pane_fallback reason=${printable(oneLine(e))}`);
+      // No unit runs in a pane any more: clear only the pane, so a headless child failing to start leaves the unit
+      // recorded (dead) instead of unrecorded.
+      o.onUnplace?.();
       return o.headless();
     }
     unknownLogged = false;
+    closeHeldLogged = false;
     o.onStart(placed);
     let stopped = false;
     while (o.alive(placed.pid)) {

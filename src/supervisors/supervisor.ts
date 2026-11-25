@@ -8,6 +8,7 @@ import { pluginRunEntry } from "../plugins/plugin.ts";
 import { isPluginEnabled, removePluginRecord, writePluginRecord } from "../plugins/state.ts";
 import { claimSupervisor, killTree } from "../supervisor-run.ts";
 import { pidAlive, stateDir, writeSupervisorRecord, type UnitRecord } from "../supervisors.ts";
+import { CORE_UNITS, type CoreName } from "./core-units.ts";
 import { unitPaneLayer } from "./unit-mode.ts";
 import type { PaneUnit } from "./panes.ts";
 import { runPluginUnit } from "./plugins.ts";
@@ -17,8 +18,7 @@ import { DEFAULT_MAX_LANES, DEFAULT_MAX_STARTS, loopArgs, readLoopCaps, type Loo
 const RESTART_MS = 5_000;
 const BEAT_MS = 30_000;
 
-type CoreName = "discord-gateway" | "duty" | "loop";
-const CORE: readonly CoreName[] = ["discord-gateway", "duty", "loop"];
+const CORE: readonly CoreName[] = CORE_UNITS;
 const ORDER: readonly string[] = [...CORE, ...PLUGINS.map((p) => p.name)];
 
 type Unit = {
@@ -104,6 +104,7 @@ export async function runSupervisor(): Promise<never> {
     name,
     command: paneCommand(process.execPath, [entry, ...args], panes?.shell ?? "sh"),
     marker: [entry, ...args],
+    program: process.execPath,
   });
 
   const specs: readonly Unit[] = [
@@ -152,6 +153,12 @@ export async function runSupervisor(): Promise<never> {
     return child;
   };
 
+  const unplace = (name: string) => (): void => {
+    const cur = units.get(name);
+    if (cur === undefined) return;
+    units.set(name, { name: cur.name, pid: cur.pid, at: cur.at });
+    write();
+  };
   const pluginStart =
     (name: string) =>
     (pid: number, pane?: string): void => {
@@ -194,6 +201,7 @@ export async function runSupervisor(): Promise<never> {
       enabled,
       onStart: (placed) => pluginStart(plugin.name)(placed.pid, placed.pane.id),
       onExit: pluginStop(plugin.name),
+      onUnplace: unplace(plugin.name),
       alive: pidAlive,
       log,
       sleep,
@@ -226,6 +234,7 @@ export async function runSupervisor(): Promise<never> {
         units.delete(spec.name);
         write();
       },
+      onUnplace: unplace(spec.name),
       alive: pidAlive,
       log,
       sleep,

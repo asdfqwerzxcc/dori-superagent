@@ -1,5 +1,6 @@
 import type { SessionRef } from "../src/runtime/types.ts";
-import { PaneUnits, type PaneAdapter, type PaneProbe, type PaneUnit } from "../src/supervisors/panes.ts";
+import { PaneUnits } from "../src/supervisors/pane-units.ts";
+import type { PaneAdapter, PaneProbe, PaneUnit } from "../src/supervisors/panes.ts";
 
 export const pref = (id: string): SessionRef => ({ runtime: "herdr", id, group: "w1", container: `t-${id}` });
 
@@ -53,7 +54,12 @@ export class FakeAdapter implements PaneAdapter {
   }
 }
 
-export const DUTY: PaneUnit = { name: "duty", command: "'bun' 'cli.ts' 'duty'", marker: ["cli.ts", "duty"] };
+export const DUTY: PaneUnit = {
+  name: "duty",
+  command: "'bun' 'cli.ts' 'duty'",
+  marker: ["cli.ts", "duty"],
+  program: "bun",
+};
 
 export const unitsOf = (adapter: PaneAdapter, log: (line: string) => void = () => {}): PaneUnits =>
-  new PaneUnits({ adapter, log, sleep: async () => {}, pidTimeoutMs: 0 });
+  new PaneUnits({ adapter, log, sleep: async () => {}, startWindowMs: 0 });

@@ -9,7 +9,9 @@ import {
   supervisorHealth,
   supervisorRecord as readSupervisorRecord,
   writeSupervisorRecord,
+  type SupervisorHealth,
 } from "../src/supervisors.ts";
+import { formatUnitPlacement } from "../src/unit-placement.ts";
 import { FIVE_UNITS, NOW, beat, homeWithState, supervisorRecord, watchdogRecord } from "./supervisor-fixtures.ts";
 
 describe("supervisor records and heartbeats", () => {
@@ -52,6 +54,60 @@ describe("supervisor records and heartbeats", () => {
     expect(formatSupervisor(supervisorHealth(home, NOW)[0]!)).toBe(
       `SUPERVISED supervisor up pid=${process.pid} hb=0s units=duty:${process.pid}@w9:p3`,
     );
+  });
+
+  test("the unit placement line names every headless unit instead of a tab count", () => {
+    const health: SupervisorHealth[] = [
+      {
+        name: "supervisor",
+        pid: 1,
+        alive: true,
+        units: [
+          { name: "duty", pid: 2, pane: "w1:p1", alive: true },
+          { name: "loop", pid: 3, alive: true },
+        ],
+      },
+      { name: "watchdog", pid: 4, alive: true, units: [] },
+    ];
+    expect(formatUnitPlacement(health, ["duty", "loop", "silence-check"])).toBe(
+      "UNITS panes=1/3 headless=loop dead=none missing=silence-check",
+    );
+    expect(formatUnitPlacement(health, ["duty", "loop", "silence-check"], true)).toBe(
+      "UNITS snapshot=startup panes=1/3 headless=loop dead=none missing=silence-check",
+    );
+    expect(formatUnitPlacement([], ["duty"])).toBe("UNITS panes=0/1 headless=none dead=none missing=duty");
+  });
+
+  test("dead units are dead with or without a pane, and names are stripped of control characters", () => {
+    const dead = formatUnitPlacement(
+      [
+        {
+          name: "supervisor",
+          pid: 1,
+          alive: true,
+          units: [
+            { name: "duty", pid: 2, pane: "w1:p1", alive: true },
+            { name: "loop", pid: 3, pane: "w1:p2", alive: false },
+            { name: "relay", pid: 5, alive: false },
+            { name: "du\nty", pid: 4, alive: true },
+          ],
+        },
+      ],
+      ["duty", "loop", "relay", "du\nty"],
+    );
+    expect(dead).toBe("UNITS panes=1/4 headless=du?ty dead=loop,relay missing=none");
+    expect(dead).not.toContain("\n");
+  });
+
+  test("the supervisor line strips control characters from unit names and panes", () => {
+    const line = formatSupervisor({
+      name: "supervisor",
+      pid: 1,
+      alive: true,
+      units: [{ name: "du\u202ety", pid: 2, pane: "w1:p1", alive: true }],
+    });
+    expect(line).toContain("units=du?ty:2@w1:p1");
+    expect(line).not.toContain("\u202e");
   });
 
   test("old per-half heartbeats no longer make a supervisor, and the watchdog prints separately", () => {

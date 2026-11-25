@@ -1,8 +1,11 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Exec } from "../runtime/exec.ts";
 import { ConfigError, RuntimeChoiceError, readRuntimeChoice } from "../runtime/select.ts";
 import type { RuntimeKind } from "../runtime/types.ts";
-import { oneLine, PaneUnits } from "./panes.ts";
+import { stateDir } from "../supervisors.ts";
+import { PaneUnits } from "./pane-units.ts";
+import { oneLine, type PendingPanes } from "./panes.ts";
 import { HcPanes } from "./panes-hc.ts";
 import { HerdrPanes } from "./panes-herdr.ts";
 import type { PaneShell } from "./units.ts";
@@ -29,6 +32,34 @@ export type OpenUnitPanesOptions = {
   readonly exists?: (path: string) => boolean;
   readonly shell?: PaneShell;
 };
+
+/**
+ * Typed pane ids on disk: a supervisor restarted in the middle of a 10 s start window must still know which pane holds a
+ * pending line. A missing or unreadable file is an empty set (worst case one pane is closed and reopened); a write
+ * failure never stops placement.
+ */
+export function panePendingStore(home: string): PendingPanes {
+  const dir = stateDir(home);
+  const path = join(dir, "panes-pending.json");
+  return {
+    read: () => {
+      try {
+        const raw: unknown = JSON.parse(readFileSync(path, "utf8"));
+        return Array.isArray(raw) ? raw.filter((id): id is string => typeof id === "string") : [];
+      } catch {
+        return [];
+      }
+    },
+    write: (ids) => {
+      try {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(path, `${JSON.stringify(ids)}\n`);
+      } catch {
+        // A pane set that cannot be written only costs a reopen after a restart; placement itself keeps going.
+      }
+    },
+  };
+}
 
 /**
  * The pane layer when the chosen runtime answers, else undefined after one warning line: a missing runtime (or a broken
@@ -72,7 +103,7 @@ export async function openUnitPanes(o: OpenUnitPanesOptions): Promise<UnitPanes 
   }
   o.log(`SUPERVISED panes ready runtime=${kind}`);
   return {
-    units: new PaneUnits({ adapter, log: o.log, sleep: o.sleep }),
+    units: new PaneUnits({ adapter, log: o.log, sleep: o.sleep, pending: panePendingStore(o.home) }),
     shell: o.shell ?? (kind === "hc" || process.platform !== "win32" ? "sh" : "powershell"),
   };
 }
