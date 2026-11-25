@@ -9,6 +9,39 @@ import { placement, RUNNING, STOPPED } from "./ops-panes-scripted.ts";
 const STOP = new Error("stop the test loop");
 
 describe("a placement that never matches falls back to headless", () => {
+  test("a re-placement failure keeps the last pane's pid as a dead record", async () => {
+    const { units } = placement(() => RUNNING, { windowMs: 0 });
+    const record = new Map<string, { name: string; pid: number; pane?: string; alive: boolean }>();
+    const lines: string[] = [];
+    let calls = 0;
+    const running = runUnitInPane({
+      name: "duty",
+      place: async () => {
+        calls += 1;
+        if (calls === 1) return units.place(DUTY);
+        throw new Error("pane layer gone");
+      },
+      close: async () => {},
+      headless: async () => {
+        lines.push("headless");
+        throw STOP;
+      },
+      onStart: (placed) => record.set("duty", { name: "duty", pid: placed.pid, pane: placed.pane.id, alive: true }),
+      onExit: () => {
+        record.delete("duty");
+      },
+      onUnplace: (placed) => {
+        if (placed !== undefined) record.set("duty", { name: "duty", pid: placed.pid, alive: false });
+      },
+      alive: () => false,
+      log: () => {},
+      sleep: async () => {},
+    });
+    await running.catch(() => undefined);
+    expect(record.get("duty")).toEqual({ name: "duty", pid: 400, alive: false });
+    expect(lines).toEqual(["headless"]);
+  });
+
   test("a throwing log never turns a close-held error into a headless fallback", async () => {
     let headless = false;
     await runUnitInPane({

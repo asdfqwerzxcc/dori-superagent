@@ -25,7 +25,7 @@ const UNKNOWN_WAIT_MS = 10_000;
  * hc pane is closed after a bounded wait rather than suppressing its unit forever.
  */
 export class PaneUnits {
-  private readonly unknownSince = new Map<string, number>();
+  private readonly unknownSince = new Map<string, { readonly since: number; readonly ids: string }>();
   private readonly ledger: PaneLedger;
 
   constructor(private readonly o: PaneUnitsOptions) {
@@ -42,7 +42,13 @@ export class PaneUnits {
   }
 
   async place(unit: PaneUnit): Promise<PlacedUnit> {
-    await this.o.adapter.ready();
+    try {
+      await this.o.adapter.ready();
+    } catch (e) {
+      // A pending line may still run: readiness failure is doubt, never a reason to start a headless copy beside it.
+      if (this.ledger.size() > 0) throw new PaneUnknown(`cannot ready the runtime: ${oneLine(e)}`);
+      throw e;
+    }
     const now = this.o.now ?? Date.now;
     const deadline = now() + (this.o.pidTimeoutMs ?? PID_BUDGET_MS);
     const attempts = Math.max(1, this.o.startAttempts ?? START_ATTEMPTS);
@@ -117,7 +123,7 @@ export class PaneUnits {
         await this.ledger.closeRetry(unit.name, fresh);
         break;
       }
-      const outcome = await this.startIn(unit, fresh, deadline, tries === 1);
+      const outcome = await this.startIn(unit, fresh, deadline, lines === 0);
       if (outcome.placed !== undefined) return outcome.placed;
       if (outcome.typed) lines += 1;
       else lastStart = outcome.failure;
@@ -129,7 +135,7 @@ export class PaneUnits {
           : `no ${unit.name} process appeared: every start was refused (${oneLine(lastStart)})`,
       );
     }
-    throw new Error(`no ${unit.name} process appeared after ${lines === 1 ? "1 attempt" : `${lines} attempts`}`);
+    throw new Error(`no ${unit.name} process appeared after ${tries} attempt${tries === 1 ? "" : "s"}`);
   }
 
   /** Closes a unit's pane; the caller turns a throw into a warning. */

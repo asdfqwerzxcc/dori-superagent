@@ -36,8 +36,10 @@ command in its own pane instead of a headless pipe, so `herdr pane list` shows t
   doubt, even when a bun child exists and even when herdr reports no pid for it; when herdr reports no readable command
   line for the entry in front, the shell's sole bun child is accepted (a path form herdr reports differently must not
   leave the unit unplaced forever). hc has no process tree, so a foreground it cannot name is doubt: if this supervisor
-  typed into that pane, its pid is the unit; otherwise the pane is closed after a 10 s bounded wait
-  (`_pane_doubt_closed`) and replaced, so a foreign bun cannot suppress the unit and an unnameable unit still starts.
+  typed into that pane, its pid is the unit; otherwise the pane is closed after a bounded wait (10 s when it is the only
+  candidate, `_pane_doubt_closed`) and replaced, so a foreign bun cannot suppress the unit and an unnameable unit still
+  starts. When a named or hinted pane already is the unit, an unnamed hc leftover is closed at once (duplicate cleanup,
+  no wait) and a herdr leftover is only logged (`_pane_doubt_left`).
   A dead unit restarts in that same pane; a pane that refuses the command is closed (retried) and only a confirmed close
   is replaced. A process list that cannot be read waits and retries placement, and a typed pane that will not close
   waits too (`_pane_close_held`), because its pending line could still run. A fallback clears only the recorded pane,
@@ -52,8 +54,8 @@ command in its own pane instead of a headless pipe, so `herdr pane list` shows t
   start window closes that pane instead of typing over the pending line. The file is replaced atomically (temp file
   plus rename) and a failed write is logged; if it cannot be read, every stopped pane is treated as possibly holding a
   pending line and is closed before reuse, so an unreadable file costs a reopen but never a duplicate line. A failed
-  write truncates the file, and if even that fails it leaves `panes-pending.json.degraded`, which also reads as
-  unreadable, so a restart still fails safe; only when the marker cannot be written either does the stale set remain. The 30 s budget covers the reuse of an existing pane, every `open`, and every line after the first; a pane
+  write replaces the file with `{}` (valid JSON, read as unreadable), and if even that fails it leaves
+  `panes-pending.json.degraded`, which also reads as unreadable, so a restart still fails safe; only when the marker cannot be written either does the stale set remain. The 30 s budget covers the reuse of an existing pane, every `open`, and every line after the first; a pane
   opened past the deadline is closed without a line being typed. All units share one `dori-ops` workspace even when
   they start at once.
 - **Fallback**: a missing runtime, no runtime on PATH, or a runtime that does not answer at startup logs one

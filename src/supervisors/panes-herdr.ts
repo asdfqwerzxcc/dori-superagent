@@ -145,7 +145,17 @@ export class HerdrPanes implements PaneAdapter {
     const info = await this.paneInfo(ref.id);
     if (info === undefined) return { kind: "unknown", why: `pane ${ref.id} process-info is unreadable` };
     const match = foregroundMatch(info.foreground, marker, program);
-    if (match !== undefined) return { kind: "running", pid: match };
+    if (match !== undefined) {
+      // A named foreground beside another bun child can be a copy while the real unit runs in the background.
+      const nodes = await this.tree();
+      if (nodes === undefined) return { kind: "unknown", why: "process tree unavailable" };
+      if (info.shell === undefined) return { kind: "unknown", why: `pane ${ref.id} process-info has no shell pid` };
+      const children = bunChildren(nodes, info.shell);
+      const others = children.filter((pid) => pid !== match);
+      if (others.length > 0 || (children.length === 1 && children[0] !== undefined && children[0] !== match))
+        return { kind: "unknown", why: `pane ${ref.id} foreground is not its only bun child` };
+      return { kind: "running", pid: match };
+    }
     if (info.shell === undefined) return { kind: "unknown", why: `pane ${ref.id} process-info has no shell pid` };
     const nodes = await this.tree();
     if (nodes === undefined) return { kind: "unknown", why: "process tree unavailable" };

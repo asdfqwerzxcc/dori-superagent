@@ -56,11 +56,17 @@ export async function clearDoubtPanes(
   o: DoubtOptions,
   unit: string,
   panes: readonly SessionRef[],
-  timers: Map<string, number>,
+  timers: Map<string, { readonly since: number; readonly ids: string }>,
 ): Promise<boolean> {
   if (o.kind !== "hc" || panes.length === 0) return false;
-  const since = timers.get(unit) ?? o.now;
-  timers.set(unit, since);
+  // The wait belongs to one set of doubtful panes: a replaced pane starts its own window.
+  const ids = panes
+    .map((p) => p.id)
+    .sort()
+    .join(",");
+  const cur = timers.get(unit);
+  const since = cur === undefined || cur.ids !== ids ? o.now : cur.since;
+  timers.set(unit, { since, ids });
   if (o.now - since < o.waitMs) return false;
   for (const ref of panes) {
     if (!(await o.close(ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
@@ -94,6 +100,9 @@ export class PaneLedger {
     try {
       this.o.log(line);
     } catch {}
+  }
+  size(): number {
+    return this.typed.size;
   }
   has(id: string): boolean {
     return this.typed.has(id);

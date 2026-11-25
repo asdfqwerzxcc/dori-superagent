@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { panePendingStore } from "../src/supervisors/ops-panes.ts";
@@ -92,5 +92,20 @@ describe("the pending-pane store", () => {
     writeFileSync(join(dir, "state", "panes-pending.json"), JSON.stringify(["w1:p1"]));
     writeFileSync(join(dir, "state", "panes-pending.json.degraded"), "2026-11-25T00:00:00Z\n");
     expect(panePendingStore(dir).read()).toBeUndefined();
+  });
+
+  test("both failing writes leave a degraded marker", () => {
+    const dir = home();
+    mkdirSync(join(dir, "state"), { recursive: true });
+    const file = join(dir, "state", "panes-pending.json");
+    writeFileSync(file, JSON.stringify(["w1:p1"]));
+    chmodSync(file, 0o444);
+    mkdirSync(`${file}.tmp`, { recursive: true });
+    const warns: string[] = [];
+    const store = panePendingStore(dir, (line) => warns.push(line));
+    store.write(["w1:p2"]);
+    expect(warns.some((l) => /panes_pending_write_failed_unreadable/.test(l))).toBe(true);
+    expect(store.read()).toBeUndefined();
+    chmodSync(file, 0o666);
   });
 });

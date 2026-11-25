@@ -26,7 +26,7 @@ export type RunUnitOptions = {
   readonly onStart: (placed: PlacedUnit) => void;
   readonly onExit: () => void;
   /** The unit is no longer in a pane but is not gone: clear just its recorded pane before the headless child starts. */
-  readonly onUnplace?: () => void;
+  readonly onUnplace?: (placed: PlacedUnit | undefined) => void;
   readonly alive: (pid: number) => boolean;
   readonly enabled?: () => boolean;
   readonly log: (line: string) => void;
@@ -49,6 +49,7 @@ export async function runUnitInPane(o: RunUnitOptions): Promise<never> {
   const restart = o.restartMs ?? 5_000;
   let unknownLogged = false;
   let closeHeldLogged = false;
+  let last: PlacedUnit | undefined;
   for (;;) {
     if (o.enabled !== undefined && !o.enabled()) {
       await o.sleep(poll);
@@ -57,6 +58,7 @@ export async function runUnitInPane(o: RunUnitOptions): Promise<never> {
     let placed: PlacedUnit;
     try {
       placed = await o.place();
+      last = placed;
     } catch (e) {
       // An unreadable process list is not a dead unit: retry placement instead of starting a headless second copy.
       if (e instanceof PaneUnknown) {
@@ -80,7 +82,7 @@ export async function runUnitInPane(o: RunUnitOptions): Promise<never> {
       say(`SUPERVISED ${printable(o.name)}_pane_fallback reason=${printable(oneLine(e))}`);
       // No unit runs in a pane any more: clear only the pane, so a headless child failing to start leaves the unit
       // recorded (dead) instead of unrecorded.
-      o.onUnplace?.();
+      o.onUnplace?.(last);
       return o.headless();
     }
     unknownLogged = false;
@@ -96,7 +98,7 @@ export async function runUnitInPane(o: RunUnitOptions): Promise<never> {
     }
     o.onExit();
     if (stopped) {
-      say(`SUPERVISED ${o.name}_stop pane=${placed.pane.id}`);
+      say(`SUPERVISED ${printable(o.name)}_stop pane=${printable(placed.pane.id)}`);
       try {
         await o.close(placed.pane);
       } catch (e) {
@@ -104,7 +106,7 @@ export async function runUnitInPane(o: RunUnitOptions): Promise<never> {
       }
       continue;
     }
-    say(`SUPERVISED ${o.name}_exit code=? pane=${placed.pane.id}`);
+    say(`SUPERVISED ${printable(o.name)}_exit code=? pane=${printable(placed.pane.id)}`);
     await o.sleep(restart);
   }
 }

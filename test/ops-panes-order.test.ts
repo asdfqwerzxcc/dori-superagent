@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { PaneCloseFailed } from "../src/supervisors/panes.ts";
+import { PaneCloseFailed, PaneUnknown } from "../src/supervisors/panes.ts";
 import { DUTY, pref } from "./ops-panes-fixture.ts";
 import { placement, RUNNING, STOPPED } from "./ops-panes-scripted.ts";
 
@@ -85,5 +85,56 @@ describe("the doubt line is logged once", () => {
     expect(logs.filter((line) => line.includes("_pane_doubt_closed"))).toHaveLength(0);
     expect(await units.place(DUTY)).toEqual({ pid: 400, pane: pref("p2") });
     expect(logs.filter((line) => line.includes("_pane_doubt_closed"))).toHaveLength(1);
+  });
+});
+
+describe("a readiness failure with a pending line", () => {
+  test("is doubt, not a headless fallback", async () => {
+    const pending = { read: () => ["p1"], write: () => {} };
+    const { units } = placement(() => RUNNING, { windowMs: 0, existing: [pref("p1")], pending, readyFails: true });
+    const failure: unknown = await units.place(DUTY).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(failure).toBeInstanceOf(PaneUnknown);
+  });
+
+  test("is a plain error when no line is pending", async () => {
+    const { units } = placement(() => RUNNING, { windowMs: 0, readyFails: true });
+    const failure: unknown = await units.place(DUTY).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(failure).not.toBeInstanceOf(PaneUnknown);
+    expect(String(failure)).toContain("runtime not ready");
+  });
+});
+
+describe("a replaced doubtful pane", () => {
+  test("starts its own wait instead of inheriting the old timer", async () => {
+    const existing = [pref("p1")];
+    const { advance, units } = placement(
+      (pane) => (pane === "p1" || pane === "p2" ? { kind: "unknown", why: "no argv", pid: 957 } : RUNNING),
+      { windowMs: 0, kind: "hc", unknownWaitMs: 5_000, existing },
+    );
+    const first: unknown = await units.place(DUTY).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(first).toBeInstanceOf(PaneUnknown);
+    existing.length = 0;
+    existing.push(pref("p2"));
+    advance(3_000);
+    const second: unknown = await units.place(DUTY).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(second).toBeInstanceOf(PaneUnknown);
+    advance(2_500);
+    const third: unknown = await units.place(DUTY).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(third).toBeInstanceOf(PaneUnknown);
   });
 });

@@ -22,6 +22,7 @@ export type ScriptedOptions = {
   readonly panesDelayMs?: number;
   readonly closeAttempts?: number;
   readonly log?: (line: string) => void;
+  readonly readyFails?: boolean;
   readonly advance?: (ms: number) => void;
 };
 
@@ -39,7 +40,9 @@ export class ScriptedPanes implements PaneAdapter {
     this.kind = opts.kind ?? "herdr";
   }
 
-  async ready(): Promise<void> {}
+  async ready(): Promise<void> {
+    if (this.opts.readyFails === true) throw new Error("runtime not ready");
+  }
   async panes(): Promise<readonly SessionRef[]> {
     if (this.opts.panesDelayMs !== undefined) this.opts.advance?.(this.opts.panesDelayMs);
     const open = (id: string): boolean => !this.closed.includes(id);

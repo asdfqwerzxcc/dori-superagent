@@ -158,6 +158,21 @@ describe("the herdr probe matches pid and command", () => {
     expect(await panes.pid(pane, ["cli.ts", "duty"], "bun")).toEqual({ kind: "running", pid: 32 });
   });
 
+  test("a named foreground beside another bun child is doubt, not the unit", async () => {
+    const w = world();
+    w.workspaces.push({ workspace_id: "w1", label: "dori-ops" });
+    w.panes.push({ pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", label: "duty" });
+    w.shells.set("w1:p1", 101);
+    w.tree = [
+      { pid: 31, parent: 101, exe: "bun" },
+      { pid: 33, parent: 101, exe: "bun" },
+    ];
+    w.foreground.set("w1:p1", [{ name: "bun", argv: ["bun", "cli.ts", "duty"], pid: 31 }]);
+    const panes = adapter(w);
+    await panes.ready();
+    expect(await panes.pid((await panes.panes("duty"))[0]!, ["cli.ts", "duty"])).toMatchObject({ kind: "unknown" });
+  });
+
   test("every unit starting at once shares one ops workspace", async () => {
     const w = world();
     const panes = adapter(w);

@@ -172,7 +172,7 @@ describe("the doubt timer after an adoption", () => {
     expect(await units.place(DUTY)).toEqual({ pid: 960, pane: pref("p1") });
     existing.length = 0;
     existing.push(pref("p2"));
-    advance(4_000);
+    advance(6_000);
     const failure: unknown = await units.place(DUTY).then(
       () => undefined,
       (e: unknown) => e,
