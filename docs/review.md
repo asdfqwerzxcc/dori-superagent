@@ -41,6 +41,7 @@ from a directory that is not a repository uses the harness checkout `$DORI_HOME/
 
 A request for the same lane and tip while one is queued prints `already queued <job> (queued)` and returns without
 adding a second record. `--restart` replaces the request (a new `requestedAt`) and prints `QUEUED ... (restarted)`.
+Queueing a new tip for a lane removes that lane's older-tip request, and the drain detail names the tip.
 The request record is `$DORI_HOME/state/review-queue/<key>@<tip>.json`, written atomically, holding `lane`, `tip`,
 `base`, `model` (when one was given), `requestedAt` and `state`. It stays `queued` until a receipt is recorded or the
 lead replaces it with `--restart`; nothing expires it for its age.
