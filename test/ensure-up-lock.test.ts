@@ -60,11 +60,48 @@ describe("the plugin lock", () => {
     expect(ownerPid(path)).toBe(process.pid);
   });
 
-  test("an old-format lock is taken over and a second contender cannot take the new one", () => {
+  test("an old-format lock with a dead pid is taken over and a second contender cannot take the new one", () => {
     const home = homeWithState();
     const path = lockPath(home);
     writeFileSync(path, JSON.stringify({ pid: process.ppid, at: Date.now() }));
-    expect(acquirePluginLock(path)).toBe(true);
+    expect(acquirePluginLock(path, { alive: () => false })).toBe(true);
+    expect(acquirePluginLock(path)).toBe(false);
+  });
+
+  test("an old-format lock with a live pid is doubt, not a takeover", () => {
+    const home = homeWithState();
+    const path = lockPath(home);
+    writeFileSync(path, JSON.stringify({ pid: process.ppid, at: Date.now() }));
+    expect(acquirePluginLock(path, { alive: () => true })).toBe(false);
+  });
+
+  test("two contenders racing for a stale lock produce one holder", async () => {
+    const home = homeWithState();
+    const path = lockPath(home);
+    writeFileSync(path, JSON.stringify({ version: 1, pid: 0, at: NOW, startedAt: NOW }));
+    const script = `import { acquirePluginLock } from "./src/plugins/run.ts"; const ok = acquirePluginLock(${JSON.stringify(path)}); console.log(ok ? "yes" : "no"); if (ok) await Bun.sleep(1000);`;
+    const run = () =>
+      Bun.spawn({
+        cmd: ["bun", "-e", script],
+        cwd: join(import.meta.dir, ".."),
+        stdout: "pipe",
+        stderr: "pipe",
+        windowsHide: true,
+      });
+    const a = run();
+    const b = run();
+    const [outA, outB] = await Promise.all([new Response(a.stdout).text(), new Response(b.stdout).text()]);
+    await Promise.all([a.exited, b.exited]);
+    expect([outA.trim(), outB.trim()].sort()).toEqual(["no", "yes"]);
+  });
+
+  test("a claim whose write cannot read the start time still holds its own lock", () => {
+    const home = homeWithState();
+    const path = lockPath(home);
+    const real = processStartTimeMs(process.pid) ?? 1;
+    let calls = 0;
+    const started = (): number | null => (calls++ === 0 ? null : real);
+    expect(acquirePluginLock(path, { started })).toBe(true);
     expect(acquirePluginLock(path)).toBe(false);
   });
 

@@ -1,7 +1,7 @@
 import { isPluginEnabled, readPluginRecord } from "./plugins/state.ts";
 import { leaveContenders, readContenders, readPluginLock, START_SLACK_MS } from "./plugins/plugin.ts";
 import { pidAlive, processStartTimeMs, terminateProcess } from "./process-liveness.ts";
-import { recordedAlive, type RecordedChild } from "./supervisor-run.ts";
+import type { RecordedChild } from "./supervisor-run.ts";
 import { ensureUpRecord, supervisorRecord } from "./supervisors.ts";
 
 export type EnsureUpDedupe = {
@@ -31,12 +31,15 @@ function ensureUpCandidates(home: string, same: (child: RecordedChild) => boolea
   const loop = ensureUpRecord(home);
   const plugin = readPluginRecord(home, "ensure-up");
   const lock = readPluginLock(home, "ensure-up");
+  const valid = (pid: unknown): pid is number => Number.isInteger(pid) && (pid as number) > 0;
   return [
-    ...(unit === undefined ? [] : [{ pid: unit.pid, at: unit.at, beat: unit.at }]),
-    ...(loop === undefined ? [] : [{ pid: loop.pid, at: loop.startedAt, beat: loop.at }]),
-    ...(plugin === undefined ? [] : [{ pid: plugin.pid, at: plugin.startedAt, beat: plugin.at }]),
-    ...readContenders(home, "ensure-up", { same }).map((c) => ({ pid: c.pid, at: c.at, beat: c.at })),
-    ...(lock?.startedAt === undefined ? [] : [{ pid: lock.pid, at: lock.startedAt, beat: lock.at }]),
+    ...(unit !== undefined && valid(unit.pid) ? [{ pid: unit.pid, at: unit.at, beat: unit.at }] : []),
+    ...(loop !== undefined && valid(loop.pid) ? [{ pid: loop.pid, at: loop.startedAt, beat: loop.at }] : []),
+    ...(plugin !== undefined && valid(plugin.pid) ? [{ pid: plugin.pid, at: plugin.startedAt, beat: plugin.at }] : []),
+    ...readContenders(home, "ensure-up", { same }).map((c) => ({ pid: c.pid, at: c.at, beat: c.beat ?? c.at })),
+    ...(lock !== undefined && valid(lock.pid) && lock.startedAt !== null
+      ? [{ pid: lock.pid, at: lock.startedAt, beat: lock.at }]
+      : []),
   ];
 }
 
@@ -48,18 +51,25 @@ function ensureUpCandidates(home: string, same: (child: RecordedChild) => boolea
 export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions = {}): Promise<EnsureUpDedupe> {
   const alive = deps.alive ?? pidAlive;
   const kill = deps.kill ?? terminateProcess;
-  const same = deps.same ?? recordedAlive;
   const startedOf = deps.started ?? processStartTimeMs;
+  const unitPid = supervisorRecord(home, "supervisor")?.units.find((u) => u.name === "ensure-up")?.pid;
+  const same =
+    deps.same ??
+    ((c: RecordedChild): boolean => {
+      if (c.pid === process.pid) return false;
+      const started = startedOf(c.pid);
+      if (started === null) return false;
+      return Math.abs(started - c.at) <= (c.pid === unitPid ? 10_000 : START_SLACK_MS);
+    });
   const keep = deps.keep ?? isPluginEnabled(home, "ensure-up");
   const graceMs = deps.graceMs ?? 2_000;
   const sleep = deps.sleep ?? ((ms: number) => Bun.sleep(ms));
   const now = deps.now ?? Date.now;
-  const unitPid = supervisorRecord(home, "supervisor")?.units.find((u) => u.name === "ensure-up")?.pid;
   const holderOf = (): number | undefined => {
     const lock = readPluginLock(home, "ensure-up");
-    if (lock === undefined || lock.startedAt === undefined || lock.pid === process.pid) return undefined;
-    if (!alive(lock.pid) || !same({ pid: lock.pid, at: lock.startedAt })) return undefined;
-    return lock.pid;
+    if (lock === undefined || lock.pid === process.pid || !alive(lock.pid)) return undefined;
+    if (lock.startedAt === null) return lock.pid;
+    return same({ pid: lock.pid, at: lock.startedAt }) ? lock.pid : undefined;
   };
   const confirmed = (c: Candidate): boolean => {
     const started = startedOf(c.pid);
@@ -67,11 +77,14 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
   };
   const startHolder = holderOf();
   const seen = new Set<number>();
-  const live = ensureUpCandidates(home, same).filter((c) => {
-    if (seen.has(c.pid) || c.pid === process.pid || !alive(c.pid) || !same(c)) return false;
+  const live: Candidate[] = [];
+  const unsure: number[] = [];
+  for (const c of ensureUpCandidates(home, same)) {
+    if (c.pid === process.pid || seen.has(c.pid) || !alive(c.pid)) continue;
     seen.add(c.pid);
-    return true;
-  });
+    if (same(c)) live.push(c);
+    else unsure.push(c.pid);
+  }
   const liveHolder = startHolder === undefined ? undefined : live.find((c) => c.pid === startHolder)?.pid;
   const unit = live.find((c) => c.pid === unitPid);
   const freshest = live
@@ -81,7 +94,7 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
   const spareUnit = keep ? unitPid : undefined;
   const killed: number[] = [];
   const failed: number[] = [];
-  const unverified: number[] = [];
+  const unverified: number[] = [...unsure];
   const confirmGone = async (pid: number): Promise<boolean> => {
     const deadline = now() + graceMs;
     while (alive(pid) && now() < deadline) await sleep(50);
@@ -109,10 +122,9 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
   const finalHolder =
     keep &&
     finalLock !== undefined &&
-    finalLock.startedAt !== undefined &&
     finalLock.pid !== process.pid &&
     alive(finalLock.pid) &&
-    same({ pid: finalLock.pid, at: finalLock.startedAt })
+    (finalLock.startedAt === null || same({ pid: finalLock.pid, at: finalLock.startedAt }))
       ? finalLock.pid
       : undefined;
   const keptSoFar = keep
@@ -123,20 +135,22 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
   const lastHolder =
     keep &&
     lastLock !== undefined &&
-    lastLock.startedAt !== undefined &&
     lastLock.pid !== process.pid &&
     alive(lastLock.pid) &&
-    same({ pid: lastLock.pid, at: lastLock.startedAt })
+    (lastLock.startedAt === null || same({ pid: lastLock.pid, at: lastLock.startedAt }))
       ? lastLock.pid
       : undefined;
   const kept = keep ? (lastHolder ?? keptSoFar) : undefined;
   const keptAt =
     kept === undefined
       ? undefined
-      : (live.find((c) => c.pid === kept)?.at ?? (lastHolder === kept ? lastLock?.startedAt : undefined));
+      : (live.find((c) => c.pid === kept)?.at ??
+        (lastHolder === kept ? (lastLock?.startedAt ?? undefined) : undefined));
   const killedOut = killed.filter((pid) => pid !== kept);
   const failedOut = failed.filter((pid) => pid !== kept && alive(pid));
-  const unverifiedOut = unverified.filter((pid) => pid !== kept && !killedOut.includes(pid));
+  const unverifiedOut = unverified.filter(
+    (pid) => pid !== kept && !killedOut.includes(pid) && !failedOut.includes(pid),
+  );
   return {
     ...(kept === undefined ? {} : { kept }),
     ...(keptAt === undefined ? {} : { keptAt }),
@@ -158,12 +172,12 @@ export const mergeEnsureUpDedupe = (
   const carried = valid(first) ? first.kept : undefined;
   const kept = secondKept ?? carried;
   const keptAt = kept === undefined ? undefined : kept === secondKept ? second.keptAt : first.keptAt;
-  const killed = [...new Set([...first.killed, ...second.killed])];
+  const killed = [...new Set([...first.killed, ...second.killed])].filter((pid) => pid !== kept);
   const failed = [...new Set([...(first.failed ?? []), ...(second.failed ?? [])])].filter(
     (pid) => pid !== kept && !killed.includes(pid) && alive(pid),
   );
   const unverified = [...new Set([...(first.unverified ?? []), ...(second.unverified ?? [])])].filter(
-    (pid) => pid !== kept && !killed.includes(pid),
+    (pid) => pid !== kept && !killed.includes(pid) && !failed.includes(pid),
   );
   return {
     ...(kept === undefined ? {} : { kept }),

@@ -51,8 +51,12 @@ describe("the contender registry", () => {
     };
     expect(stored.pid).toBe(process.ppid);
     expect(Number.isInteger(stored.at) && stored.at > 0).toBe(true);
-    expect(readContenders(home, "ensure-up", { same: () => true })).toEqual([stored]);
-    expect(readContenders(home, "ensure-up")).toEqual([stored]);
+    const injected = readContenders(home, "ensure-up", { same: () => true });
+    expect(injected.map(({ pid, at }) => ({ pid, at }))).toEqual([stored]);
+    expect(typeof injected[0]?.beat).toBe("number");
+    const listed = readContenders(home, "ensure-up");
+    expect(listed.map(({ pid, at }) => ({ pid, at }))).toEqual([stored]);
+    expect(typeof listed[0]?.beat).toBe("number");
   });
 
   test("a pid without an OS start time is not recorded as a contender", () => {
@@ -195,7 +199,9 @@ describe("a plugin child that loses the lock", () => {
       };
       expect(stored.pid).toBe(child.pid);
       expect(Number.isInteger(stored.at) && stored.at > 0).toBe(true);
-      expect(readContenders(home, "ensure-up")).toEqual([stored]);
+      const listed = readContenders(home, "ensure-up");
+      expect(listed.map(({ pid, at }) => ({ pid, at }))).toEqual([stored]);
+      expect(typeof listed[0]?.beat).toBe("number");
     } finally {
       watcher.close();
       terminateProcess(child.pid);

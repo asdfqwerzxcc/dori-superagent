@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pidAlive, processStartTimeMs } from "../process-liveness.ts";
@@ -65,24 +65,28 @@ export function lockHeldByRecord(raw: unknown, deps: LockRecordDeps = {}): boole
   if (typeof raw !== "object" || raw === null) return false;
   const record = raw as { version?: unknown; pid?: unknown; startedAt?: unknown };
   const version = Number(record.version);
-  if (version !== 1) return false;
   const pid = Number(record.pid);
   if (!Number.isInteger(pid) || pid <= 0) return false;
   if (!(deps.alive ?? pidAlive)(pid)) return false;
-  const startedAt = Number(record.startedAt);
+  if (version !== 1) return true; // an old-format live holder is doubt; wait for it to exit
+  const rawStart = record.startedAt;
+  if (rawStart === null || rawStart === undefined) return true;
+  const startedAt = Number(rawStart);
   if (!Number.isInteger(startedAt) || startedAt <= 0) return true;
   const started = (deps.started ?? processStartTimeMs)(pid);
   if (started === null) return true;
   return Math.abs(started - startedAt) <= START_SLACK_MS;
 }
 
-const selfHeld = (lock: string): boolean => {
+const selfHeld = (lock: string, deps: LockRecordDeps = {}): boolean => {
   const record = readJson(ownerPath(lock));
   if (record === undefined) return false;
   if (Number(record["version"]) !== 1 || Number(record["pid"]) !== process.pid) return false;
-  const startedAt = Number(record["startedAt"]);
-  const own = processStartTimeMs(process.pid);
-  if (!Number.isInteger(startedAt)) return true;
+  const rawStart = record["startedAt"];
+  if (rawStart === null || rawStart === undefined) return true;
+  const startedAt = Number(rawStart);
+  if (!Number.isInteger(startedAt) || startedAt <= 0) return true;
+  const own = (deps.started ?? processStartTimeMs)(process.pid);
   return own === null || Math.abs(own - startedAt) <= START_SLACK_MS;
 };
 
@@ -109,11 +113,11 @@ export function acquirePluginLock(lock: string, deps: LockRecordDeps = {}): bool
           version: 1,
           pid: process.pid,
           at: Date.now(),
-          startedAt: processStartTimeMs(process.pid) ?? null,
+          startedAt: (deps.started ?? processStartTimeMs)(process.pid) ?? null,
         }),
       );
     } catch {}
-    return selfHeld(lock);
+    return selfHeld(lock, deps);
   };
   if (claim()) return true;
   const record = readLockRecord(lock);
@@ -124,8 +128,15 @@ export function acquirePluginLock(lock: string, deps: LockRecordDeps = {}): bool
     const age = dirAgeMs(lock);
     if (age !== null && age < 30_000) return false;
   }
+  // An atomic rename picks one taker: the loser's rename fails and it retries later.
+  const stale = `${lock}.stale.${process.pid}.${Date.now()}`;
   try {
-    rmSync(lock, { recursive: true, force: true });
+    renameSync(lock, stale);
+  } catch {
+    return false;
+  }
+  try {
+    rmSync(stale, { recursive: true, force: true });
   } catch {}
   return claim();
 }

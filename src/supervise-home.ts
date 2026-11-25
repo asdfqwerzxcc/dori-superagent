@@ -1,7 +1,13 @@
 import { isPluginEnabled } from "./plugins/state.ts";
 import { pluginRunEntry } from "./plugins/plugin.ts";
 import { pidAlive } from "./process-liveness.ts";
-import { ensureSupervisors, recordedAlive, spawnDetached, type RecordedChild } from "./supervisor-run.ts";
+import {
+  ensureSupervisors,
+  recordedAlive,
+  spawnDetached,
+  strictRecordedAlive,
+  type RecordedChild,
+} from "./supervisor-run.ts";
 import {
   ensureUpHealth,
   ensureUpOff,
@@ -52,7 +58,10 @@ export type SupervisedState = {
 };
 
 /** A supervisor the OS still holds, even when its beat is late: a late beat is doubt, never permission for a second loop. */
-export function supervisorProcessAlive(home: string, same: (child: RecordedChild) => boolean = recordedAlive): boolean {
+export function supervisorProcessAlive(
+  home: string,
+  same: (child: RecordedChild) => boolean = strictRecordedAlive,
+): boolean {
   const record = supervisorRecord(home, "supervisor");
   return record !== undefined && same({ pid: record.pid, at: record.startedAt });
 }
@@ -104,13 +113,13 @@ export async function superviseHome(home: string, opts: SuperviseHomeOptions): P
   const alive = opts.alive ?? pidAlive;
   const spawned = opts.spawn ?? spawnDetached;
   const log = opts.log ?? (() => {});
-  const same = opts.same ?? recordedAlive;
+  const same = opts.same ?? strictRecordedAlive;
   const off = ensureUpOff(home);
   const enabled = isPluginEnabled(home, "ensure-up");
   const wantUp = enabled && !off;
   const dedupeOpts: DedupeEnsureUpOptions = {
     alive,
-    same,
+    ...(opts.same === undefined ? {} : { same: opts.same }),
     keep: enabled,
     ...(opts.started === undefined ? {} : { started: opts.started }),
     ...(opts.kill === undefined ? {} : { kill: opts.kill }),
@@ -135,13 +144,12 @@ export async function superviseHome(home: string, opts: SuperviseHomeOptions): P
   if (opts.startMissing && supervised && wantUp) {
     await waitSupervisorUnit(home, "ensure-up", 10_000, { ...wait, same });
   }
-  const dedupe = mergeEnsureUpDedupe(first, await dedupeEnsureUp(home, dedupeOpts), alive, same);
+  const dedupe = mergeEnsureUpDedupe(first, await dedupeEnsureUp(home, dedupeOpts), alive);
   const cleaned = dedupeLine(dedupe);
   if (cleaned !== undefined) log(cleaned);
   let ensureUp = await waitEnsureUp(home, wantUp, supervised ? 15_000 : 0, wait);
-  const standby =
-    dedupe.kept !== undefined &&
-    (dedupe.keptAt === undefined ? alive(dedupe.kept) : same({ pid: dedupe.kept, at: dedupe.keptAt }));
+  // The dedupe already elected the keeper strictly; alive is the standby test here.
+  const standby = dedupe.kept !== undefined && alive(dedupe.kept);
   // The supervisor owns the plugin; only a home nobody supervises starts one here, and only with no live keeper.
   if (!opts.startMissing && !supervised && wantUp && !ensureUp.alive && !standby) {
     spawned(pluginRunEntry(), home, ["ensure-up"]);
