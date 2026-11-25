@@ -57,9 +57,14 @@ export function recordedChildren(home: string): RecordedChild[] {
 }
 
 /** Alive and still the process the record named; an unreadable start time is doubt, not evidence of a reused pid. */
-export function recordedAlive(child: RecordedChild): boolean {
-  if (child.pid === process.pid || !pidAlive(child.pid)) return false;
-  const started = processStartTimeMs(child.pid);
+export type RecordedAliveDeps = {
+  readonly alive?: (pid: number) => boolean;
+  readonly started?: (pid: number) => number | null;
+};
+
+export function recordedAlive(child: RecordedChild, deps: RecordedAliveDeps = {}): boolean {
+  if (child.pid === process.pid || !(deps.alive ?? pidAlive)(child.pid)) return false;
+  const started = (deps.started ?? processStartTimeMs)(child.pid);
   return started === null || Math.abs(started - child.at) <= 10_000;
 }
 
@@ -170,16 +175,44 @@ export type SupervisedState = {
  * Starts the supervisors that are missing (`startMissing`) or only reads their health, then reports the ensure-up
  * plugin and waits briefly for its first beat. `dori up` prints this; nothing here opens a workspace.
  */
-export async function superviseHome(home: string, opts: { readonly startMissing: boolean }): Promise<SupervisedState> {
-  const health = opts.startMissing ? await ensureSupervisors(home) : supervisorHealth(home);
+export async function superviseHome(
+  home: string,
+  opts: {
+    readonly startMissing: boolean;
+    readonly spawn?: typeof spawnDetached;
+    readonly wait?: typeof waitEnsureUp;
+    readonly ensure?: typeof ensureSupervisors;
+    readonly alive?: (pid: number) => boolean;
+    readonly started?: (pid: number) => number | null;
+    /** Tests can supply the health snapshot that a fresh beat would produce. */
+    readonly health?: readonly SupervisorHealth[];
+  },
+): Promise<SupervisedState> {
+  const alive = opts.alive ?? pidAlive;
+  const health =
+    opts.health ??
+    (opts.startMissing
+      ? await (opts.ensure ?? ensureSupervisors)(home, 30_000, { alive })
+      : supervisorHealth(home, Date.now(), alive));
   const off = ensureUpOff(home);
   const wantUp = !off && isPluginEnabled(home, "ensure-up");
-  const supervised = health.some((h) => h.name === "supervisor" && h.alive);
-  let ensureUp = await waitEnsureUp(home, wantUp, supervised ? 15_000 : 0);
-  // The supervisor owns the ensure-up plugin; only a pane-mode `dori up` starts it outside a supervisor.
-  if (!supervised && wantUp && !ensureUp.alive) {
-    spawnDetached(pluginRunEntry(), home, ["ensure-up"]);
-    ensureUp = await waitEnsureUp(home, true, 10_000);
+  // A record is authoritative: when it exists, a dead process is not the owner even if a fresh beat exists.
+  // Only a home with no supervisor record may fall back to the heartbeat as its sole ownership evidence.
+  const record = supervisorRecord(home, "supervisor");
+  const supervised =
+    record === undefined
+      ? health.some((h) => h.name === "supervisor" && h.alive)
+      : recordedAlive(
+          { pid: record.pid, at: record.startedAt },
+          { alive, ...(opts.started === undefined ? {} : { started: opts.started }) },
+        );
+  // A live supervisor process owns the plugin even when its beat is late; a startMissing call starts supervisors,
+  // never a second ensure-up itself.
+  const wait = opts.wait ?? waitEnsureUp;
+  let ensureUp = await wait(home, wantUp, supervised ? 15_000 : 0);
+  if (!opts.startMissing && !supervised && wantUp && !ensureUp.alive) {
+    (opts.spawn ?? spawnDetached)(pluginRunEntry(), home, ["ensure-up"]);
+    ensureUp = await wait(home, true, 10_000);
   }
   return { health, ensureUp, off };
 }
