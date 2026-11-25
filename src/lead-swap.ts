@@ -1,9 +1,8 @@
-// The lead restart itself: drain, kill the pane's lead tree, wait for a bare shell, type the relaunch, and prove a new
-// process plus its engine version. The only success line is printed after the new pid, the engine version and the
-// runtime build were all read; any other exit prints `LEADSWAP FAILED` and returns 1.
+// The lead restart: drain, kill the pane's lead tree, wait for a shell, type the relaunch, and prove a new pid+engine.
 
 import { existsSync } from "node:fs";
 import { failureDetail } from "./delivery.ts";
+import { insideLeadTree, type LeadSwapPlan } from "./lead-swap-detach.ts";
 import { buildLeadCommand, matchLeadStack, newestSession } from "./lead-swap-target.ts";
 import { refText } from "./refs.ts";
 import type { Probe, SessionRef } from "./runtime/types.ts";
@@ -11,7 +10,7 @@ import type { Proc } from "./lead-process-list.ts";
 
 export type LeadSwapResult = {
   readonly code: number;
-  readonly outcome: "dry-run" | "restarted" | "failed";
+  readonly outcome: "dry-run" | "restarted" | "delegated" | "failed";
   readonly reason?: string;
   readonly target?: readonly number[];
   readonly newPid?: number;
@@ -31,6 +30,10 @@ export type LeadSwapOptions = {
   readonly launchMs: number;
   readonly pollMs: number;
   readonly platform: NodeJS.Platform;
+  /** Test seams for the in-tree decision; `delegate` starts the swap outside the tree when it is inside. */
+  readonly selfPid?: number;
+  readonly delegate?: (plan: LeadSwapPlan) => Promise<{ readonly pid: number }>;
+  readonly selfInPane?: boolean;
   readonly list: () => Promise<readonly Proc[] | undefined>;
   readonly probe: () => Promise<Probe>;
   readonly kill: (pid: number) => Promise<void>;
@@ -47,6 +50,8 @@ export async function runLeadSwap(opts: LeadSwapOptions): Promise<LeadSwapResult
     opts.log(`LEADSWAP FAILED ${reason}`);
     return { code: 1, outcome: "failed", reason };
   };
+  // The start line is first and durable: the incident log had only `drain` left.
+  opts.log(`LEADSWAP start pane=${refText(opts.pane)} session=${opts.session ?? "auto"} drain=${opts.drainMs}`);
   let first: Probe;
   try {
     first = await opts.probe();
@@ -97,6 +102,32 @@ export async function runLeadSwap(opts: LeadSwapOptions): Promise<LeadSwapResult
     );
     opts.log(`LEADSWAP command ${command}`);
     return { code: 0, outcome: "dry-run", target };
+  }
+
+  const plan: LeadSwapPlan = {
+    pane: opts.pane,
+    session,
+    prompt,
+    command,
+    target,
+    matched: [...oldPids],
+    drainMs: opts.drainMs,
+    force: opts.force,
+  };
+  // An in-tree swap would kill itself with the lead: hand the restart to a worker outside the tree and kill nothing here.
+  if (
+    opts.delegate !== undefined &&
+    (opts.selfInPane === true || insideLeadTree(procs, oldPids, opts.selfPid ?? process.pid))
+  ) {
+    try {
+      const started = await opts.delegate(plan);
+      opts.log(
+        `LEADSWAP delegated pid=${started.pid} pane=${refText(opts.pane)} session=${session} target=${target.join(",")}`,
+      );
+      return { code: 0, outcome: "delegated", target };
+    } catch (e) {
+      return fail(`could not start the out-of-tree swap: ${failureDetail(e)}`);
+    }
   }
 
   if (!opts.force) {

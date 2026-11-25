@@ -28,7 +28,15 @@ const herdrPanes = (panes: Readonly<Record<string, string>>): Exec => {
       if (status === undefined) return { code: 1, stdout: "", stderr: `pane_not_found ${argv[2]}` };
       return {
         code: 0,
-        stdout: JSON.stringify({ result: { pane: { pane_id: argv[2], agent: "pi", agent_status: status } } }),
+        stdout: JSON.stringify({
+          result: {
+            pane: {
+              pane_id: argv[2],
+              agent: status === "shell" ? null : "pi",
+              agent_status: status,
+            },
+          },
+        }),
         stderr: "",
       };
     }
@@ -52,6 +60,7 @@ const herdrPanes = (panes: Readonly<Record<string, string>>): Exec => {
 };
 
 const LEAD = herdrPanes({ "w9:p1": "idle" });
+const LEAD_SHELL = herdrPanes({ "w9:p1": "shell" });
 const LEAD_GONE = herdrPanes({});
 
 /** A home whose roles.json names a lead, as `dori up` writes it. */
@@ -66,8 +75,28 @@ describe("ensure-up decisions", () => {
     const home = homeWithLead("w9:p1");
     expect(leadRef(home)).toEqual({ runtime: "herdr", id: "w9:p1" });
     expect(await leadStatus(home, LEAD)).toBe("idle");
+    expect(await leadStatus(home, LEAD_SHELL)).toBe("shell");
     expect(await leadStatus(home, LEAD_GONE)).toBe("gone");
     expect(await leadStatus(homeWithState(), LEAD)).toBe("absent");
+  });
+
+  test("a lead pane that is only a shell is down and runs dori up once", async () => {
+    const home = homeWithLead("w9:p1");
+    let calls = 0;
+    const states: EnsureUpState[] = [];
+    const state = await ensureUpCheck({
+      home,
+      exec: LEAD_SHELL,
+      up: async () => {
+        calls += 1;
+        return { code: 0, detail: "UP runtime=herdr lead=w9:p2" };
+      },
+      log: () => {},
+      report: (s) => states.push(s),
+    });
+    expect(state).toBe("down");
+    expect(calls).toBe(1);
+    expect(states).toEqual(["down"]);
   });
 
   test("a live lead alone is alive and raises nothing", async () => {

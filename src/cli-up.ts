@@ -33,12 +33,14 @@ const supervise = (d: Deps, startMissing: boolean): Promise<SupervisedState> =>
     ? d.supervise(d.store.root, { startMissing })
     : superviseHome(d.store.root, { startMissing });
 
-/** A registered lead is replaced only when its pane is gone; a probe that fails is doubt, and doubt must not add a second lead. */
+/** A registered lead is replaced when its pane is gone OR is only a shell: a bare shell holds no conversation. A probe
+ * that fails is doubt, and doubt must not add a second lead. */
 type LeadLiveness = "alive" | "unverified" | "gone";
 
 const leadLiveness = async (d: Deps, ref: SessionRef): Promise<LeadLiveness> => {
   try {
-    return (await d.runtimes.for(ref).probe(ref)).status === "gone" ? "gone" : "alive";
+    const { status } = await d.runtimes.for(ref).probe(ref);
+    return status === "gone" || status === "shell" ? "gone" : "alive";
   } catch {
     return "unverified";
   }

@@ -78,6 +78,21 @@ describe("dori up", () => {
     expect(w.superviseCalls).toEqual([{ startMissing: false }]);
   });
 
+  test("a registered lead that is only a shell is replaced by a new lead", async () => {
+    const w = new World();
+    w.addPane("w1:p1", "shell");
+    const d = w.deps();
+    d.store.setRole("lead", href("w1:p1"));
+    const { out } = await captureIo(async () => {
+      await up(d, "/w");
+      return 0;
+    });
+    expect(d.store.roles().lead).toEqual(href("w1:p2"));
+    expect(out).toContain("UP runtime=herdr lead=w1:p2");
+    // The bare shell is left alone: a new workspace is what replaces it, not a second lead in that pane.
+    expect(w.panes.has("w1:p1")).toBe(true);
+  });
+
   test("a live registered lead with the supervisor down starts it: no new workspace or duty", async () => {
     const w = new World();
     w.addPane("w1:p1", "idle");

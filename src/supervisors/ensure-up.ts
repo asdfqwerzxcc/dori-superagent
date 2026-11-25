@@ -125,11 +125,18 @@ export async function ensureUpCheck(opts: EnsureUpOptions = {}): Promise<EnsureU
   }
   try {
     const lead = await leadStatus(home, exec);
-    if (lead !== "gone" && lead !== "absent") {
+    // A lead pane that answers `shell` has no agent: it is as down as a gone pane, and waiting for `gone` left a bare
+    // shell unrepaired for 33 minutes (2026-11-25).
+    if (lead !== "gone" && lead !== "absent" && lead !== "shell") {
       opts.report?.("alive", "ENSURE_UP alive");
       return "alive";
     }
-    const why = lead === "absent" ? "no lead role" : "lead pane is gone";
+    const why =
+      lead === "absent"
+        ? "no lead role"
+        : lead === "shell"
+          ? "lead pane has a shell, not an agent"
+          : "lead pane is gone";
     opts.report?.("down", `ENSURE_UP ${why}; running dori up`);
     const r = await up();
     log(`DORI_UP exit=${r.code} ${r.detail}`);
