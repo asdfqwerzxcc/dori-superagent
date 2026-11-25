@@ -19,7 +19,7 @@ const writeLock = (home: string, pid: number, startedAt?: number): void => {
   mkdirSync(join(home, "state", "plugins"), { recursive: true });
   writeFileSync(
     join(home, "state", "plugins", "ensure-up.lock"),
-    JSON.stringify({ pid, at: Date.now(), ...(startedAt === undefined ? {} : { startedAt }) }),
+    JSON.stringify({ version: 1, pid, at: Date.now(), ...(startedAt === undefined ? {} : { startedAt }) }),
   );
 };
 
@@ -156,8 +156,8 @@ describe("ensure-up owners and kill fences", () => {
     const home = homeWithState();
     const keeper = 7300;
     const target = 7301;
-    mkdirSync(join(home, "state", "plugins", "ensure-up.lock"), { recursive: true });
-    const owner = join(home, "state", "plugins", "ensure-up.lock", "owner.json");
+    mkdirSync(join(home, "state", "plugins", "ensure-up.lock.d"), { recursive: true });
+    const owner = join(home, "state", "plugins", "ensure-up.lock.d", "owner.json");
     writeFileSync(owner, JSON.stringify({ version: 1, pid: keeper, at: NOW, startedAt: NOW }));
     writeContender(home, target, NOW);
     const h = harness([keeper, target]);

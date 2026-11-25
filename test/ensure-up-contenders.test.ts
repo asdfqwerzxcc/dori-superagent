@@ -123,7 +123,9 @@ describe("a plugin child that loses the lock", () => {
     });
     expect(held).toBe(true);
     expect(sleeps).toBeGreaterThan(0);
-    expect((JSON.parse(readFileSync(join(lock, "owner.json"), "utf8")) as { pid: number }).pid).toBe(process.pid);
+    expect((JSON.parse(readFileSync(join(`${lock}.d`, "owner.json"), "utf8")) as { pid: number }).pid).toBe(
+      process.pid,
+    );
     expect(existsSync(contenderPath(home, process.pid))).toBe(false);
   });
 

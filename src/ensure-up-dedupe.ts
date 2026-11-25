@@ -1,5 +1,5 @@
 import { isPluginEnabled, readPluginRecord } from "./plugins/state.ts";
-import { leaveContenders, readContenders, readPluginLock, START_SLACK_MS } from "./plugins/plugin.ts";
+import { leaveContenders, pluginLockHeld, readContenders, readPluginLock, START_SLACK_MS } from "./plugins/plugin.ts";
 import { pidAlive, processStartTimeMs, terminateProcess } from "./process-liveness.ts";
 import type { RecordedChild } from "./supervisor-run.ts";
 import { ensureUpRecord, supervisorRecord, type SupervisorRecord, type UnitRecord } from "./supervisors.ts";
@@ -90,12 +90,18 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
   const graceMs = deps.graceMs ?? 2_000;
   const sleep = deps.sleep ?? ((ms: number) => Bun.sleep(ms));
   const now = deps.now ?? Date.now;
+  const lockDeps = {
+    alive,
+    ...(deps.started === undefined ? {} : { started: deps.started }),
+    ...(deps.now === undefined ? {} : { now: deps.now }),
+  };
   const holderOf = (): number | undefined => {
     const lock = readPluginLock(home, "ensure-up");
     if (lock === undefined || lock.pid === process.pid || !alive(lock.pid)) return undefined;
-    if (lock.startedAt === null) return lock.pid;
-    return same({ pid: lock.pid, at: lock.startedAt }) ? lock.pid : undefined;
+    return lockHeld(lock) ? lock.pid : undefined;
   };
+  const lockHeld = (lock: { readonly pid: number; readonly startedAt: number | null }): boolean =>
+    lock.startedAt === null ? pluginLockHeld(home, "ensure-up", lockDeps) : same({ pid: lock.pid, at: lock.startedAt });
   const startHolder = holderOf();
   const seen = new Set<number>();
   const live: Candidate[] = [];
@@ -162,11 +168,7 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
   for (const c of live) await endCandidate(c, keptAtStart);
   const finalLock = keep ? readPluginLock(home, "ensure-up") : undefined;
   const finalHolder =
-    keep &&
-    finalLock !== undefined &&
-    finalLock.pid !== process.pid &&
-    alive(finalLock.pid) &&
-    (finalLock.startedAt === null || same({ pid: finalLock.pid, at: finalLock.startedAt }))
+    keep && finalLock !== undefined && finalLock.pid !== process.pid && alive(finalLock.pid) && lockHeld(finalLock)
       ? finalLock.pid
       : undefined;
   const keptSoFar = keep
@@ -175,11 +177,7 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
   for (const c of live) await endCandidate(c, keptSoFar);
   const lastLock = keep ? readPluginLock(home, "ensure-up") : undefined;
   const lastHolder =
-    keep &&
-    lastLock !== undefined &&
-    lastLock.pid !== process.pid &&
-    alive(lastLock.pid) &&
-    (lastLock.startedAt === null || same({ pid: lastLock.pid, at: lastLock.startedAt }))
+    keep && lastLock !== undefined && lastLock.pid !== process.pid && alive(lastLock.pid) && lockHeld(lastLock)
       ? lastLock.pid
       : undefined;
   const finalFallback = keptSoFar !== undefined && alive(keptSoFar) ? keptSoFar : undefined;

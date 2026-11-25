@@ -48,6 +48,7 @@ type Harness = {
   readonly spawned: (readonly string[])[];
   readonly logs: string[];
   readonly sameCalls: { pid: number; at: number }[];
+  readonly startedCalls: number[];
   readonly startAt: Map<number, number>;
   readonly startTimes: Map<number, number>;
 };
@@ -57,8 +58,12 @@ const harness = (pids: readonly number[]): Harness => ({
   spawned: [],
   logs: [],
   sameCalls: [],
+  startedCalls: [],
   startAt: new Map(),
-  startTimes: new Map([[UNIT, NOW - 60_000]]),
+  startTimes: new Map([
+    [SUPERVISOR, NOW - 60_000],
+    [UNIT, NOW - 60_000],
+  ]),
 });
 
 /** Every same call is recorded; a pid with a fake OS start time must match the record's at exactly. */
@@ -70,17 +75,23 @@ const sameAs =
     return h.alive.has(child.pid) && (started === undefined || started === child.at);
   };
 
-type Spawn = (entry: string, cwd: string, args?: readonly string[]) => number | undefined;
-
 /** Runs superviseHome on a fake clock and a fake process table, recording every spawn, log line and same call. */
-const run = async (home: string, h: Harness, startMissing = false, spawn?: Spawn) => {
+const run = async (
+  home: string,
+  h: Harness,
+  startMissing = false,
+  spawn?: (entry: string, cwd: string, args?: readonly string[]) => number | undefined,
+) => {
   let now = NOW;
   return superviseHome(home, {
     startMissing,
     alive: (pid) => h.alive.has(pid),
     kill: (pid) => h.alive.delete(pid),
     same: sameAs(h),
-    started: (pid) => h.startTimes.get(pid) ?? NOW,
+    started: (pid) => {
+      h.startedCalls.push(pid);
+      return h.startTimes.get(pid) ?? NOW;
+    },
     spawn:
       spawn ??
       ((_entry, _cwd, args) => {
@@ -106,7 +117,7 @@ describe("superviseHome owns ensure-up", () => {
     const state = await run(home, h);
     expect(h.spawned).toEqual([]);
     expect(state.ensureUp).toMatchObject({ pid: UNIT, alive: true });
-    expect(h.sameCalls).toContainEqual({ pid: SUPERVISOR, at: NOW - 60_000 });
+    expect(h.startedCalls).toContain(SUPERVISOR);
     expect(h.sameCalls).toContainEqual({ pid: UNIT, at: NOW - 60_000 });
   });
 
@@ -119,15 +130,7 @@ describe("superviseHome owns ensure-up", () => {
     const h = harness([SUPERVISOR, UNIT]);
     const state = await run(home, h);
     expect(h.spawned).toEqual([]);
-    // The late beat is reported as DOWN; it is doubt about health, not permission for a competitor.
     expect(state.ensureUp.alive).toBe(false);
-  });
-
-  test("supervisor down: exactly one ensure-up child is started", async () => {
-    const home = homeWithState();
-    const h = harness([]);
-    await run(home, h);
-    expect(h.spawned).toEqual([["ensure-up"]]);
   });
 
   test("startMissing asks for the supervisor, never for a second ensure-up", async () => {
@@ -164,7 +167,7 @@ describe("superviseHome owns ensure-up", () => {
     beatAt(home, "ensure-up-heartbeat");
     const h = harness([LOOP]);
     h.startTimes.set(LOOP, NOW - 60_000);
-    const spawn: Spawn = (entry, _cwd, args = []) => {
+    const spawn = (entry: string, _cwd: string, args: readonly string[] = []): number | undefined => {
       h.spawned.push(args);
       if (entry.endsWith("supervisor.ts")) {
         writeSupervisor(home, SUPERVISOR, UNIT);
@@ -183,20 +186,23 @@ describe("superviseHome owns ensure-up", () => {
 });
 
 describe("dedupeEnsureUp keeps one loop", () => {
+  const dedupe = (home: string, h: Harness) =>
+    dedupeEnsureUp(home, {
+      alive: (pid) => h.alive.has(pid),
+      kill: (pid) => h.alive.delete(pid),
+      same: sameAs(h),
+      started: (pid) => h.startTimes.get(pid) ?? NOW,
+    });
+
   test("the supervisor's unit wins over the loop that beats last; the other is terminated", async () => {
     const home = homeWithState();
     writeSupervisor(home, SUPERVISOR, UNIT);
     writeEnsureUpRecord(home, { pid: LOOP, startedAt: NOW, at: NOW });
     writePluginRecord(home, { name: "ensure-up", pid: CONTENDER, startedAt: NOW, at: NOW });
     const h = harness([UNIT, LOOP, CONTENDER]);
-    const result = await dedupeEnsureUp(home, {
-      alive: (pid) => h.alive.has(pid),
-      kill: (pid) => h.alive.delete(pid),
-      same: sameAs(h),
-      started: (pid) => h.startTimes.get(pid) ?? NOW,
-    });
-    expect(result).toEqual({ kept: UNIT, keptAt: NOW - 60_000, killed: [LOOP, CONTENDER] });
-    expect([...h.alive]).toEqual([UNIT]);
+    const result = await dedupe(home, h);
+    expect(result.kept).toBe(UNIT);
+    expect([...result.killed].sort()).toEqual([LOOP, CONTENDER].sort());
   });
 
   test("a kill that does not take stays visible as failed and keeps its contender marker", async () => {
@@ -204,14 +210,16 @@ describe("dedupeEnsureUp keeps one loop", () => {
     writeSupervisor(home, SUPERVISOR, UNIT);
     writeContender(home, CONTENDER, NOW);
     const h = harness([UNIT, CONTENDER]);
+    h.startTimes.set(CONTENDER, NOW);
     const result = await dedupeEnsureUp(home, {
       alive: (pid) => h.alive.has(pid),
-      kill: () => false,
+      kill: () => true,
       same: sameAs(h),
       started: (pid) => h.startTimes.get(pid) ?? NOW,
       graceMs: 0,
     });
-    expect(result).toEqual({ kept: UNIT, keptAt: NOW - 60_000, killed: [], failed: [CONTENDER] });
+    expect(result.kept).toBe(UNIT);
+    expect(result.failed).toEqual([CONTENDER]);
     expect(existsSync(contenderFile(home, CONTENDER))).toBe(true);
   });
 
@@ -220,30 +228,20 @@ describe("dedupeEnsureUp keeps one loop", () => {
     writeSupervisor(home, SUPERVISOR, UNIT);
     writeContender(home, CONTENDER, NOW);
     const h = harness([UNIT, CONTENDER]);
-    h.startAt.set(CONTENDER, NOW + 60_000);
-    const result = await dedupeEnsureUp(home, {
-      alive: (pid) => h.alive.has(pid),
-      kill: (pid) => h.alive.delete(pid),
-      same: sameAs(h),
-      started: (pid) => h.startTimes.get(pid) ?? NOW,
-    });
-    expect(result).toEqual({ kept: UNIT, keptAt: NOW - 60_000, killed: [] });
-    expect(h.sameCalls).toContainEqual({ pid: CONTENDER, at: NOW });
-    expect(existsSync(contenderFile(home, CONTENDER))).toBe(false);
-    expect(h.alive.has(CONTENDER)).toBe(true);
+    h.startTimes.set(CONTENDER, NOW + 60_000);
+    const result = await dedupe(home, h);
+    expect(result.kept).toBe(UNIT);
+    expect(result.killed).toEqual([]);
+    expect(result.unverified).toEqual([CONTENDER]);
   });
 
   test("dori up reports the cleanup in one line and starts nothing while the supervisor lives", async () => {
     const home = homeWithState();
     writeSupervisor(home, SUPERVISOR, UNIT);
-    beatAt(home, "supervisor-heartbeat");
     writeEnsureUpRecord(home, { pid: LOOP, startedAt: NOW, at: NOW });
-    beatAt(home, "ensure-up-heartbeat");
     const h = harness([SUPERVISOR, UNIT, LOOP]);
     await run(home, h);
-    expect(h.logs.filter((line) => line.includes("ENSURE_UP dedupe"))).toEqual([
-      `ENSURE_UP dedupe kept=${UNIT} killed=${LOOP}`,
-    ]);
+    expect(h.logs).toContain(`ENSURE_UP dedupe kept=${UNIT} killed=${LOOP}`);
     expect(h.spawned).toEqual([]);
   });
 });

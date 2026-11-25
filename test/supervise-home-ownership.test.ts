@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { superviseHome } from "../src/supervisor-run.ts";
+import { superviseHome } from "../src/supervise-home.ts";
 import { writeSupervisorRecord, type SupervisorHealth } from "../src/supervisors.ts";
 
 const SUP_PID = 4242;

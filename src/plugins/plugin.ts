@@ -1,6 +1,9 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pidAlive, processStartTimeMs } from "../process-liveness.ts";
+import { lockHeldByRecord, readLockRecord, START_SLACK_MS, type LockRecordDeps } from "./lock-record.ts";
+
+export { START_SLACK_MS } from "./lock-record.ts";
 
 // The plugin contract and the files one plugin owns under state/plugins/. A plugin is a timed side-job, not the
 // delivery path: the supervisor runs each one as its own child, so a throw here can never reach duty or the gateway.
@@ -44,9 +47,6 @@ export const contendersDir = (home: string, name: string): string => join(plugin
 
 export type Contender = { readonly pid: number; readonly at: number; readonly beat?: number };
 
-/** The OS start time is stable for a pid; a different value means the pid was reused. */
-export const START_SLACK_MS = 2_000;
-
 const contenderPath = (home: string, name: string, pid: number): string =>
   join(contendersDir(home, name), `${pid}.json`);
 
@@ -81,37 +81,22 @@ export function leaveContenders(home: string, name: string, pid: number = proces
 
 export type PluginLock = { readonly pid: number; readonly at: number; readonly startedAt: number | null };
 
-/** The lock's holder: a version 1 owner inside the lock directory, or an older file for migration. */
+/** The lock's holder: the version 1 owner in the lock directory, or the historical file during migration. */
 export function readPluginLock(home: string, name: string): PluginLock | undefined {
-  const lock = pluginPath(home, name, "lock");
-  const read = (path: string): Record<string, unknown> | undefined => {
-    try {
-      const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
-      return typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : undefined;
-    } catch {
-      return undefined;
-    }
-  };
-  const raw = read(join(lock, "owner.json")) ?? read(join(lock, "owner.json")) ?? read(lock);
-  if (raw === undefined) {
-    // The owner is written to a temp file and renamed into place; a reader that sees only the temp file
-    // still knows the pid. A live pid there is doubt, never an absent lock.
-    try {
-      for (const name of readdirSync(lock)) {
-        const m = /^\.owner\.(\d+)\./.exec(name);
-        if (m === null) continue;
-        const pid = Number(m[1]);
-        if (Number.isInteger(pid) && pid > 0 && pidAlive(pid)) return { pid, at: 0, startedAt: null };
-      }
-    } catch {}
-    return undefined;
-  }
+  const raw = readLockRecord(pluginPath(home, name, "lock"));
+  if (raw === undefined) return undefined;
   const pid = Number(raw["pid"]);
   const at = Number(raw["at"]);
   const rawStart = raw["startedAt"];
   const startedAt = rawStart === null || rawStart === undefined ? null : Number(rawStart);
   if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(at)) return undefined;
   return { pid, at, startedAt: startedAt !== null && Number.isInteger(startedAt) && startedAt > 0 ? startedAt : null };
+}
+
+/** Whether the lock's record still owns it; the dedupe uses the same judgment as acquisition. */
+export function pluginLockHeld(home: string, name: string, deps: LockRecordDeps = {}): boolean {
+  const raw = readLockRecord(pluginPath(home, name, "lock"));
+  return raw !== undefined && lockHeldByRecord(raw, deps);
 }
 
 /** A contender is evidence only while the pid is alive and its OS start time matches the recorded moment. */

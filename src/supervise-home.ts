@@ -69,10 +69,14 @@ export function supervisorProcessAlive(
 export type SuperviseHomeOptions = {
   readonly startMissing: boolean;
   readonly spawn?: typeof spawnDetached;
+  readonly wait?: typeof waitEnsureUp;
+  readonly ensure?: typeof ensureSupervisors;
   readonly alive?: (pid: number) => boolean;
   readonly kill?: (pid: number) => boolean;
   readonly same?: (child: RecordedChild) => boolean;
   readonly started?: (pid: number) => number | null;
+  /** Tests can supply the health snapshot that a fresh beat would produce. */
+  readonly health?: readonly SupervisorHealth[];
   readonly log?: (line: string) => void;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly now?: () => number;
@@ -120,7 +124,6 @@ export async function superviseHome(home: string, opts: SuperviseHomeOptions): P
   const alive = opts.alive ?? pidAlive;
   const spawned = opts.spawn ?? spawnDetached;
   const log = opts.log ?? (() => {});
-  const same = opts.same ?? strictRecordedAlive;
   const off = ensureUpOff(home);
   const enabled = isPluginEnabled(home, "ensure-up");
   const wantUp = enabled && !off;
@@ -139,15 +142,26 @@ export async function superviseHome(home: string, opts: SuperviseHomeOptions): P
     ...(opts.now === undefined ? {} : { now: opts.now }),
     ...(opts.sleep === undefined ? {} : { sleep: opts.sleep }),
   };
-  const health = opts.startMissing
-    ? await ensureSupervisors(home, 30_000, {
-        spawn: spawned,
-        alive,
-        ...(opts.sleep === undefined ? {} : { sleep: opts.sleep }),
-        ...(opts.now === undefined ? {} : { now: opts.now }),
-      })
-    : supervisorHealth(home, opts.now?.() ?? Date.now(), alive);
-  const supervised = supervisorProcessAlive(home, same) || health.some((h) => h.name === "supervisor" && h.alive);
+  const health =
+    opts.health ??
+    (opts.startMissing
+      ? await (opts.ensure ?? ensureSupervisors)(home, 30_000, {
+          spawn: spawned,
+          alive,
+          ...(opts.sleep === undefined ? {} : { sleep: opts.sleep }),
+          ...(opts.now === undefined ? {} : { now: opts.now }),
+        })
+      : supervisorHealth(home, opts.now?.() ?? Date.now(), alive));
+  // A record is authoritative: a dead recorded supervisor is not the owner even if its beat is fresh. Only a
+  // home with no supervisor record may fall back to the heartbeat as its sole ownership evidence.
+  const record = supervisorRecord(home, "supervisor");
+  const supervised =
+    record === undefined
+      ? health.some((h) => h.name === "supervisor" && h.alive)
+      : recordedAlive(
+          { pid: record.pid, at: record.startedAt },
+          { alive, ...(opts.started === undefined ? {} : { started: opts.started }) },
+        );
   if (opts.startMissing && supervised && wantUp) {
     // The pane unit registers seconds after its process starts: keep the helper's 10 s unit default.
     await waitSupervisorUnit(home, "ensure-up", 10_000, {
@@ -164,14 +178,13 @@ export async function superviseHome(home: string, opts: SuperviseHomeOptions): P
   const dedupe = mergeEnsureUpDedupe(first, await dedupeEnsureUp(home, dedupeOpts), alive, mergeSame);
   const cleaned = dedupeLine(dedupe);
   if (cleaned !== undefined) log(cleaned);
-  let ensureUp = await waitEnsureUp(home, wantUp, supervised ? 15_000 : 0, wait);
+  let ensureUp = await (opts.wait ?? waitEnsureUp)(home, wantUp, supervised ? 15_000 : 0, wait);
   // The dedupe already elected the keeper strictly; alive is the standby test here.
   const standby = dedupe.kept !== undefined && alive(dedupe.kept);
-  // The supervisor owns the plugin; only a home nobody supervises starts one here, and only with no live keeper.
-  // This also covers a startMissing call in pane mode, where no supervisor process exists to own the plugin.
-  if (!supervised && wantUp && !ensureUp.alive && !standby) {
+  // A live supervisor owns the plugin; a startMissing call starts supervisors, never a second ensure-up itself.
+  if (!opts.startMissing && !supervised && wantUp && !ensureUp.alive && !standby) {
     spawned(pluginRunEntry(), home, ["ensure-up"]);
-    ensureUp = await waitEnsureUp(home, true, 10_000, wait);
+    ensureUp = await (opts.wait ?? waitEnsureUp)(home, true, 10_000, wait);
   }
   return { health, ensureUp, off };
 }

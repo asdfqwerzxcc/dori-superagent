@@ -21,7 +21,7 @@ type PluginCtx = {
   stateDir: string;    // <home>/state
   now(): number;
   log(line: string): void;
-  lockPath: string;    // <home>/state/plugins/<name>.lock, held for the child's life
+  lockPath: string;    // <home>/state/plugins/<name>.lock; the protocol mutex lives in <name>.lock.d, held for the child's life
   tickPath: string;    // <home>/state/plugins/<name>.tick, rewritten every 30 s by the host
   startedAt: number;
 };
@@ -61,7 +61,8 @@ is restarted after 5 s.
 | `state/plugins.json` | `dori plugin enable/disable` | `{ "disabled": ["name", ...] }`; missing file = everything enabled |
 | `state/plugins/<name>.json` | supervisor | `{ name, pid, startedAt, at }`, the record of the running child; removed when the child is stopped |
 | `state/plugins/<name>.tick` | plugin child | `{ pid, at }`, rewritten every 30 s; a hung child cannot fake it |
-| `state/plugins/<name>.lock/owner.json` | plugin child | `{ version: 1, pid, at, startedAt }`; one child per plugin per home. A lock directory is the atomic mutex. `owner.json` is written to a temp file and renamed into place. A stale takeover takes a per-generation `O_EXCL` token, re-reads the lock inside it, and only then renames the directory; a delayed loser therefore cannot rename a fresh owner's lock. An old-format file with a dead pid, a dead holder, or a start-time mismatch is taken over, while a live old-format holder and an unreadable or null start time are doubt and stay held. The rule applies to every plugin child, not only ensure-up |
+| `state/plugins/<name>.lock` | plugin child | the historical compatibility file, `{ version: 1, pid, at, startedAt }`; the owner mirrors its record here so an older release's child reads a live pid and waits instead of meeting a directory. A live old-format holder here is waited out; a dead one is taken over. A directory an earlier layout left at this path is migrated once its owner is stale |
+| `state/plugins/<name>.lock.d/owner.json` | plugin child | the lock directory: one child per plugin per home. `owner.json` is written to a temp file and renamed into place. A stale takeover takes a per-generation `O_EXCL` token, re-reads the lock inside it, and only then renames the directory, so a delayed loser cannot rename a fresh owner's lock. A dead holder, a 2 s start-time mismatch, or a null/corrupt start older than 30 s is stale; a fresh null start and an unreadable start are doubt and stay held. The rule applies to every plugin child, not only ensure-up |
 | `state/plugins/<name>.contenders/<pid>.json` | plugin child that lost the lock | `{ pid, at }` with the pid's OS start time, refreshed every 5 s; the waiting child does not write the shared tick. `dori up`/`dori restart` ends every contender but the kept loop (the lock holder is never ended in favour of an idle child; a failed kill stays listed as `failed=`); only a disabled plugin makes it exit |
 | `state/silence-check.json` | `silence-check` | `{ <channel>: { messageId, rung } }`, the last rung fired for that channel's newest unanswered human message |
 

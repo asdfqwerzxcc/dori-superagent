@@ -45,7 +45,7 @@ const writeLock = (home: string, pid: number, startedAt?: number): void => {
   mkdirSync(join(home, "state", "plugins"), { recursive: true });
   writeFileSync(
     join(home, "state", "plugins", "ensure-up.lock"),
-    JSON.stringify({ pid, at: Date.now(), ...(startedAt === undefined ? {} : { startedAt }) }),
+    JSON.stringify({ version: 1, pid, at: Date.now(), ...(startedAt === undefined ? {} : { startedAt }) }),
   );
 };
 

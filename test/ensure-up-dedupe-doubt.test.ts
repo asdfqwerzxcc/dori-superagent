@@ -19,7 +19,7 @@ const writeLock = (home: string, pid: number, startedAt?: number): void => {
   mkdirSync(join(home, "state", "plugins"), { recursive: true });
   writeFileSync(
     join(home, "state", "plugins", "ensure-up.lock"),
-    JSON.stringify({ pid, at: Date.now(), ...(startedAt === undefined ? {} : { startedAt }) }),
+    JSON.stringify({ version: 1, pid, at: Date.now(), ...(startedAt === undefined ? {} : { startedAt }) }),
   );
 };
 
@@ -65,11 +65,29 @@ describe("ensure-up doubt and beats", () => {
     expect(result.kept).toBeUndefined();
   });
 
+  test("an old null-start lock record is not elected as the keeper", async () => {
+    const home = homeWithState();
+    mkdirSync(join(home, "state", "plugins", "ensure-up.lock.d"), { recursive: true });
+    writeFileSync(
+      join(home, "state", "plugins", "ensure-up.lock.d", "owner.json"),
+      JSON.stringify({ version: 1, pid: HOLDER, at: NOW - 120_000, startedAt: null }),
+    );
+    const h = harness([HOLDER]);
+    const result = await dedupeEnsureUp(home, {
+      alive: (pid) => h.alive.has(pid),
+      kill: (pid) => h.alive.delete(pid),
+      started: () => null,
+      now: () => NOW,
+    });
+    expect(result.kept).toBeUndefined();
+    expect(result.unverified).toEqual([HOLDER]);
+  });
+
   test("a null-start lock holder is protected as the keeper", async () => {
     const home = homeWithState();
-    mkdirSync(join(home, "state", "plugins", "ensure-up.lock"), { recursive: true });
+    mkdirSync(join(home, "state", "plugins", "ensure-up.lock.d"), { recursive: true });
     writeFileSync(
-      join(home, "state", "plugins", "ensure-up.lock", "owner.json"),
+      join(home, "state", "plugins", "ensure-up.lock.d", "owner.json"),
       JSON.stringify({ version: 1, pid: HOLDER, at: NOW, startedAt: null }),
     );
     const h = harness([HOLDER]);
@@ -87,9 +105,9 @@ describe("ensure-up doubt and beats", () => {
 
   test("a disabled plugin reports a null-start lock holder as unverified", async () => {
     const home = homeWithState();
-    mkdirSync(join(home, "state", "plugins", "ensure-up.lock"), { recursive: true });
+    mkdirSync(join(home, "state", "plugins", "ensure-up.lock.d"), { recursive: true });
     writeFileSync(
-      join(home, "state", "plugins", "ensure-up.lock", "owner.json"),
+      join(home, "state", "plugins", "ensure-up.lock.d", "owner.json"),
       JSON.stringify({ version: 1, pid: HOLDER, at: NOW, startedAt: null }),
     );
     const h = harness([HOLDER]);

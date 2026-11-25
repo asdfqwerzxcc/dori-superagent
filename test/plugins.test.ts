@@ -179,7 +179,7 @@ describe("plugin records, locks and lines", () => {
     expect(acquirePluginLock(path)).toBe(false);
     writeFileSync(path, JSON.stringify({ pid: 999_999, at: 0 }));
     expect(acquirePluginLock(path)).toBe(true);
-    expect(readFileSync(join(path, "owner.json"), "utf8")).toContain(String(process.pid));
+    expect(readFileSync(join(`${path}.d`, "owner.json"), "utf8")).toContain(String(process.pid));
     expect(existsSync(path)).toBe(true);
   });
 });
