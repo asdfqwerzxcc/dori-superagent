@@ -60,8 +60,11 @@ The review runs in its own session, never as a `task`/subagent child of the lead
 --background` opens a tab in the lead's workspace, starts the worker there, prints `REVIEW_STARTED ...` and returns.
 The worker fetches the PR head; a lane PR (head branch `lane/<key>` with a saved diff at that head) is rendered from
 `prompts/review-lane.md` with the saved lane diff and the lane's brief, and every other PR from `prompts/review.md` with
-the `gh pr diff`. It starts one fresh non-interactive reviewer (`omo -p`, or the configured `reviewCommand` hook), and
-records its answer as a PR receipt. The PR head must equal the lane tip. The reviewer contract is the same one the gate
+the `gh pr diff`. A lane PR never calls `gh pr diff`, so a gh diff outage cannot block it, and its prompt's base is the
+base the saved diff was generated from (its request/receipt, else the lane's merge-base), not the lane's start commit. A
+brief larger than 12k characters is cut in the middle but the lane contract footer `dori start` appends is kept whole.
+It starts one fresh non-interactive reviewer (`omo -p`, or the configured `reviewCommand` hook), and records its answer
+as a PR receipt. The PR head must equal the lane tip. The reviewer contract is the same one the gate
 has always used: check the
 change against the lane's goal for correctness, regressions, missing tests, security issues and scope creep; list
 findings by severity (HIGH/MEDIUM/LOW); print exactly one final `VERDICT: CLEAR` (no HIGH or MEDIUM) or `VERDICT: BLOCK`
@@ -102,19 +105,25 @@ dori review <key> --attest --verdict CLEAR|BLOCK --reviewer <name> --evidence <r
 
 `--evidence` is required: name the report, task id, path or URL the verdict rested on. The receipt carries the verdict,
 base, tip, brief path, reviewer name, time, summary and the evidence links, plus both identities of the reviewed diff —
-`patchId` (`git patch-id --stable`) and `contentId` (`--verbatim`, whitespace included) — and the `reviewedTip` it came
-from. `--attest` refuses unless a saved review diff (`lane-reviews/lane_<key>@<tip>.diff`) matches the current
-`base..tip` in both ids: the exact tip, or an older saved diff whose ids are the same. A commit after the review changes
-the ids and is refused; an edit that changes only whitespace moves `contentId` and is refused too, even though
-`--stable` would ignore it. A rebase that leaves the diff unchanged (context included) keeps the receipt valid and
-records the older `reviewedTip`; a rebase that changes context or content needs a new review. When the base a saved
-diff was generated from is recorded (its request, or the receipt at that tip), `--attest` regenerates the diff from git
-and refuses a file that is not the diff git produces, so an edited `lane-reviews/*.diff` cannot stand in for the
-reviewed range; with no recorded base only the ids can be compared. The saved diff is local evidence, not
-authenticated: the reviewer's `--evidence` link is the audit trail. The gate takes a BLOCK for the same patch first,
-then the exact tip, then the newest same-patch receipt: a later CLEAR attest never replaces a BLOCK on disk, even when
-the SHA moves back to an older CLEAR tip, and a lane clears a BLOCK by changing the patch. A receipt written before
-`contentId` existed covers only its exact tip.
+`patchId` (`git patch-id --stable`) and `contentId` (`--verbatim`, whitespace included) — and the `reviewedTip` (with
+`reviewedBase`, the base that saved diff came from, when the receipt lands at a rebased tip). `--attest` refuses unless
+a saved review diff (`lane-reviews/lane_<key>@<tip>.diff`) matches the current `base..tip` in both ids: the exact tip,
+or an older saved diff whose ids are the same. A commit after the review changes the ids and is refused; an edit that
+changes only whitespace moves `contentId` and is refused too, even though `--stable` would ignore it. A rebase that
+leaves the diff unchanged (context included) keeps the receipt valid and records the older `reviewedTip`; a rebase that
+changes context or content needs a new review. When the base a saved diff was generated from is recorded (its request,
+the receipt at that tip, or a receipt's `reviewedBase`), `--attest` regenerates the diff from git and refuses a file
+that is not the diff git produces. A saved diff whose base is not recorded anywhere and whose range git cannot
+reproduce is refused as unverified, never accepted by id alone. The saved diff is local evidence, not authenticated:
+the reviewer's `--evidence` link is the audit trail. The gate takes a BLOCK for the same patch first, then the exact
+tip, then the newest same-patch receipt. A legacy **CLEAR** without `contentId` covers only its exact tip, but a legacy
+**BLOCK** without one cannot name the whitespace variant it saw, so it blocks every whitespace variant of that
+`patchId` until a review lands a different patch (or the lane is dropped); it is never hidden by a later CLEAR.
+
+A git failure while reading or hashing the lane's range is not “no diff”: the gate throws the error and keeps the lane
+open (`dori status` shows `review=unreadable`). The same applies to a git that does not support `patch-id --verbatim`:
+it is named in the refusal and the lane is not approved until git is upgraded or the work is re-reviewed on a runner
+that supports it.
 
 A lane whose `base..tip` is empty or net-zero has no patch to review: `dori review --lane` and `--attest` refuse it with
 that reason. Without an exact receipt (which still gates its tip), close such a lane with `dori done --drop <key>

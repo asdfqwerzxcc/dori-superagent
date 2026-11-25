@@ -123,4 +123,26 @@ describe("lane review gate", () => {
     expect(row("red")).toContain("review=BLOCK");
     expect(row("plain")).toContain("review=no receipt");
   });
+
+  test("status reports unreadable instead of a false review when git cannot inspect the diff", async () => {
+    const { d, repo } = await world(["fix-login"]);
+    await attest(d, "fix-login");
+    d.store.saveLaneReceipt({
+      lane: "fix-login",
+      verdict: "BLOCK",
+      base,
+      tip: "c".repeat(40),
+      patchId: "2".repeat(40),
+      brief: d.store.lane("fix-login")!.brief,
+      reviewer: "omo-native-gate-reviewer",
+      at: 2,
+      summary: "",
+    });
+    repo.diffFails = "fatal: unable to read tree deadbeef";
+    const { out } = await captureIo(async () => {
+      await status(d);
+      return 0;
+    });
+    expect(out.split("\n").find((line) => line.startsWith("fix-login"))).toContain("review=unreadable");
+  });
 });

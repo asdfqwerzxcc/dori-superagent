@@ -112,6 +112,8 @@ export type LaneReceipt = {
   contentId?: string;
   /** The saved review diff this verdict rested on; different from `tip` when a rebase moved only the SHA. */
   reviewedTip?: string;
+  /** The base the saved diff at `reviewedTip` was generated from, so a later attestation can still verify that file. */
+  reviewedBase?: string;
   brief: string;
   reviewer: string;
   at: number;

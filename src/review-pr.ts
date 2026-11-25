@@ -8,7 +8,7 @@ import { gh, headSha, parsePr } from "./gate.ts";
 import { prompt, type Deps } from "./harness.ts";
 import { loadHooks, loadReviewSettings, substitute } from "./hooks.ts";
 import { laneRepo } from "./lane-repo.ts";
-import { reviewJobFor } from "./review-queue.ts";
+import { savedDiffBase } from "./lane-review-binding.ts";
 import type { ExecOptions } from "./runtime/exec.ts";
 import { CEILING_VARS } from "./worker-limits.ts";
 
@@ -20,6 +20,20 @@ const SUMMARY_SIDE = 2_000;
 /** A lane brief is inlined because the reviewer has no tools; cap it so a huge brief cannot crowd out the diff. */
 const BRIEF_CAP = 12_000;
 const LANE_BRANCH_RE = /^lane\/([a-z][a-z0-9-]{1,40})$/;
+const FOOTER_MARK = "## Lane rules (added by dori for lane ";
+
+/** Cap the user brief but keep the lane contract `startLane` appends: the footer is the contract's final copy. */
+function capBrief(text: string): string {
+  if (text.length <= BRIEF_CAP) return text;
+  const at = text.lastIndexOf(FOOTER_MARK);
+  if (at < 0) return `${text.slice(0, BRIEF_CAP)}\n... [brief truncated at ${BRIEF_CAP} characters]`;
+  const body = text.slice(0, at).trimEnd();
+  const footer = text.slice(at);
+  const room = Math.max(0, BRIEF_CAP - footer.length);
+  const kept =
+    body.length <= room ? body : `${body.slice(0, room)}\n... [brief truncated; the lane contract follows unchanged]`;
+  return `${kept}\n\n${footer}`;
+}
 
 type LaneReview = {
   readonly key: string;
@@ -35,7 +49,7 @@ type LaneReview = {
  * binds — instead of the server-rendered PR diff. A PR that is not a lane branch, or whose head has no saved diff,
  * returns undefined and is reviewed as an ordinary PR.
  */
-function laneReview(d: Deps, view: Record<string, unknown>, sha: string): LaneReview | undefined {
+async function laneReview(d: Deps, view: Record<string, unknown>, sha: string): Promise<LaneReview | undefined> {
   const key = LANE_BRANCH_RE.exec(String(view["headRefName"] ?? ""))?.[1];
   if (key === undefined) return undefined;
   const lane = d.store.lane(key);
@@ -54,13 +68,9 @@ function laneReview(d: Deps, view: Record<string, unknown>, sha: string): LaneRe
     const why = e instanceof Error ? e.message : String(e);
     throw new Error(`lane ${key}: cannot read its brief at ${lane.brief} (${why}); the reviewer needs the contract`);
   }
-  const job = reviewJobFor(d.store.root, key, sha);
-  const base = job !== undefined && job !== "corrupt" ? job.base : (lane.baseSha ?? sha);
-  const capped =
-    brief.length <= BRIEF_CAP
-      ? brief
-      : `${brief.slice(0, BRIEF_CAP)}\n... [brief truncated at ${BRIEF_CAP} characters]`;
-  return { key, base, brief: capped, diff, diffPath, checkout: laneRepo(lane) };
+  const repo = laneRepo(lane);
+  const base = (await savedDiffBase(d, lane, repo, sha)) ?? "unknown";
+  return { key, base, brief: capBrief(brief), diff, diffPath, checkout: repo };
 }
 
 const argvLength = (argv: readonly string[]): number => argv.reduce((total, part) => total + part.length + 1, 0);
@@ -104,8 +114,8 @@ export async function review(
   const view = JSON.parse(
     await gh(d, ["pr", "view", String(pr.number), "--repo", pr.repo, "--json", "title,body,headRefName"]),
   );
-  const diff = await gh(d, ["pr", "diff", String(pr.number), "--repo", pr.repo]);
-  const lane = laneReview(d, view, sha);
+  const lane = await laneReview(d, view, sha);
+  const diff = lane === undefined ? await gh(d, ["pr", "diff", String(pr.number), "--repo", pr.repo]) : "";
   const vars = {
     pr: pr.id,
     repo: pr.repo,

@@ -17,7 +17,10 @@ commit with different content invalidates it — including one that changes only
 while `--stable` stays the same: review again, or drop the lane. A rebase that leaves the diff unchanged (context
 included) keeps it valid, because the gate compares the current ids with the ids on disk when no receipt exists at the
 new tip. `--attest` also regenerates the saved diff from git when its base is recorded, so an edited
-`lane-reviews/*.diff` is refused.
+`lane-reviews/*.diff` is refused; a saved diff with no recorded base and no reproducible range is refused as
+unverified. A legacy `contentId`-less CLEAR covers only its exact tip, while a legacy BLOCK with the same `patchId`
+blocks every whitespace variant until a different patch is reviewed. A git failure while inspecting the range is
+reported, never read as “no diff” (the gate stays closed; `dori status` shows `review=unreadable`).
 
 ## What `dori start` sets up
 

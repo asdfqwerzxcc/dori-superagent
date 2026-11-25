@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { Deps } from "../src/harness.ts";
 import { pickLaneReceipt } from "../src/lane-patch.ts";
 import { done, ready, startLane } from "../src/lanes.ts";
 import { attestLane } from "../src/review-lane-cli.ts";
 import { queueLaneReview, reviewJobFor } from "../src/review-queue.ts";
+import { jobPath } from "../src/review-job.ts";
 import type { LaneReceipt } from "../src/store-types.ts";
 import { fakeGit, type Repo } from "./fake-git.ts";
 import { setup } from "./harness-setup.ts";
@@ -75,6 +76,13 @@ describe("patch-id receipt judgment", () => {
     expect(pickLaneReceipt([clear, block], tip, patch, content)?.verdict).toBe("BLOCK");
     expect(pickLaneReceipt([clear, otherBlock], rebased, patch, content)?.verdict).toBe("CLEAR");
   });
+
+  test("a legacy BLOCK without contentId still blocks a same-patch CLEAR", () => {
+    const clear = receipt({ tip, patchId: patch, contentId: content, at: 99 });
+    const legacy = receipt({ tip: other, verdict: "BLOCK", patchId: patch, at: 1 });
+    expect(pickLaneReceipt([clear, legacy], rebased, patch, content)).toBe(legacy);
+    expect(pickLaneReceipt([clear, legacy], tip, patch, content)).toBe(legacy);
+  });
 });
 
 describe("patch-id lane receipts", () => {
@@ -135,6 +143,7 @@ describe("patch-id lane receipts", () => {
     expect(result).toMatchObject({ verdict: "CLEAR", tip: rebased });
     const written = d.store.laneReceipt("fix-login", rebased);
     expect(written?.reviewedTip).toBe(tip);
+    expect(written?.reviewedBase).toBe(base);
     expect(written?.patchId).toBe(patch);
     expect(reviewJobFor(d.store.root, "fix-login", tip)).toBeUndefined();
   });
@@ -161,6 +170,38 @@ describe("patch-id lane receipts", () => {
     repo.worktreeHead = other;
     expect(await done(d, "fix-login", { rebase: true })).toBeUndefined();
     expect(d.store.lane("fix-login")!.baseSha).toBe(rebased);
+  });
+
+  test("done refuses a legacy BLOCK for the same patch even with an exact CLEAR", async () => {
+    const { d } = await laneWorld();
+    await attest(d);
+    d.store.saveLaneReceipt(receipt({ tip: other, verdict: "BLOCK", patchId: patch, at: 99 }));
+    await expect(done(d, "fix-login")).rejects.toThrow("is BLOCK");
+  });
+
+  test("the gate fails closed with an explicit error when git cannot inspect the lane diff", async () => {
+    const { d, repo } = await laneWorld();
+    await attest(d);
+    d.store.saveLaneReceipt(
+      receipt({ tip: other, verdict: "BLOCK", patchId: changed, contentId: otherContent, at: 2 }),
+    );
+    repo.diffFails = "fatal: unable to read tree deadbeef";
+    await expect(done(d, "fix-login")).rejects.toThrow("cannot inspect");
+  });
+
+  test("attest refuses a saved diff whose tip has no request or receipt record", async () => {
+    const { d, repo } = await laneWorld();
+    await queueLaneReview(d, "fix-login", undefined);
+    rmSync(jobPath(d.store.root, "fix-login", tip));
+    repo.head = rebased;
+    await expect(laneAttest(d)).rejects.toThrow("cannot be verified against git");
+  });
+
+  test("attest fails closed when git does not support patch-id --verbatim", async () => {
+    const { d, repo } = await laneWorld();
+    await queueLaneReview(d, "fix-login", undefined);
+    repo.patchIdVerbatimFails = "error: unknown option `verbatim'";
+    await expect(laneAttest(d)).rejects.toThrow("does not support git patch-id --verbatim");
   });
 
   test("a receipt written before patch-id still gates its exact tip", async () => {

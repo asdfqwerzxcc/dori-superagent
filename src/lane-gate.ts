@@ -2,7 +2,7 @@ import type { Deps } from "./harness.ts";
 import { laneReceiptFor } from "./lane-patch.ts";
 import { laneHead, laneRepo } from "./lane-repo.ts";
 import { reviewJobFor } from "./review-queue.ts";
-import type { Lane } from "./store-types.ts";
+import type { Lane, LaneReceipt } from "./store-types.ts";
 
 export type LaneGate =
   | { readonly ok: true; readonly note?: string }
@@ -73,7 +73,12 @@ export async function reviewLabel(d: Deps, lane: Lane): Promise<string> {
   if (lane.baseSha === undefined) return "no receipt";
   const tip = (await laneHead(d, lane)) ?? lane.tipSha;
   if (tip === undefined) return "no receipt";
-  const receipt = await laneReceiptFor(d, lane, tip);
+  let receipt: LaneReceipt | undefined;
+  try {
+    receipt = await laneReceiptFor(d, lane, tip);
+  } catch {
+    return "unreadable";
+  }
   if (!receipt) {
     const job = reviewJobFor(d.store.root, lane.key, tip);
     if (job === "corrupt") return "unreadable";

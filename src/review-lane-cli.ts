@@ -6,7 +6,8 @@ import { need, one, type Args } from "./cli-args.ts";
 import { attest, isPrId } from "./gate.ts";
 import type { Deps } from "./harness.ts";
 import { loadReviewSettings } from "./hooks.ts";
-import { laneDiff, patchIdsOfDiff, pickLaneReceipt, reviewBinding } from "./lane-patch.ts";
+import { lanePatch, pickLaneReceipt } from "./lane-patch.ts";
+import { reviewBinding } from "./lane-review-binding.ts";
 import { laneReviewTarget } from "./lane-review-target.ts";
 import { Refusal } from "./refusal.ts";
 import { reviewRunLines } from "./review-drain.ts";
@@ -131,37 +132,40 @@ export async function attestLane(d: Deps, key: string, opts: LaneAttestOptions):
   if (opts.evidence.length === 0)
     throw new Refusal("--attest needs at least one --evidence link (task id, path or url)");
   const { lane, repo, tip, base } = await laneReviewTarget(d, key);
-  const diff = await laneDiff(d, repo, base, tip);
-  if (diff === undefined)
+  const patch = await lanePatch(d, repo, base, tip);
+  if (patch.kind === "failed")
     throw new Refusal(
-      `lane ${key}: cannot read the diff ${base.slice(0, 12)}..${tip.slice(0, 12)} in ${repo}; the lane is not ` +
-        `attested. Check the checkout, run dori review --lane ${key} again, then attest`,
+      `lane ${key}: cannot inspect ${base.slice(0, 12)}..${tip.slice(0, 12)} in ${patch.repo} (${patch.why}); the ` +
+        `lane is not attested. Check the checkout, run dori review --lane ${key} again, then attest`,
     );
-  if (diff.trim() === "")
+  if (patch.kind === "unsupported-verbatim")
+    throw new Refusal(
+      `lane ${key}: this git does not support git patch-id --verbatim (${patch.why}); upgrade git so a whitespace-only ` +
+        `change cannot reuse a receipt; the lane is not attested`,
+    );
+  if (patch.kind === "empty")
     throw new Refusal(
       `lane ${key} at ${tip.slice(0, 12)}: base..tip is empty or net-zero, so there is nothing to review and no ` +
         `patch-id to bind; the lane is not attested. Close it with dori done --drop ${key} --reason <text> or add a ` +
         `change and review again`,
     );
-  const ids = await patchIdsOfDiff(d, diff);
-  if (ids === undefined)
-    throw new Refusal(
-      `lane ${key}: cannot compute the patch-id of ${tip.slice(0, 12)}; the lane is not attested. ` +
-        `Check the checkout, run dori review --lane ${key} again, then attest`,
-    );
+  const ids = patch.ids;
   const binding = await reviewBinding(d, lane, repo, tip, base, ids);
   if (!binding.ok) {
     const saved = binding.tips.length === 0 ? "none" : binding.tips.map((t) => t.slice(0, 12)).join(", ");
     const why =
       binding.reason === "no-review"
         ? `no reviewed diff is saved for lane ${key}`
-        : binding.reason === "stale-diff"
-          ? `the saved review diff at ${tip.slice(0, 12)} does not match the current base..tip`
-          : binding.reason === "whitespace-only"
-            ? `the saved review diff differs from the current base..tip only in whitespace`
-            : binding.reason === "tampered-diff"
-              ? `the saved review diff at ${tip.slice(0, 12)} is not the diff git produces for its range`
-              : `no saved review diff matches the current base..tip (saved: ${saved})`;
+        : binding.reason === "whitespace-only"
+          ? `the saved review diff differs from the current base..tip only in whitespace`
+          : binding.reason === "tampered-diff"
+            ? `the saved review diff at ${tip.slice(0, 12)} is not the diff git produces for its range`
+            : binding.reason === "unverified-diff"
+              ? `the saved review diff cannot be verified against git: no request or receipt records its base, or ` +
+                `git cannot reproduce that range`
+              : binding.reason === "unsupported-verbatim"
+                ? `this git does not support git patch-id --verbatim`
+                : `no saved review diff matches the current base..tip (saved: ${saved})`;
     throw new Refusal(
       `lane ${key} at ${tip.slice(0, 12)}: ${why}; the lane changed after the review or was never reviewed. ` +
         `Run dori review --lane ${key} to review the current diff, then attest`,
@@ -179,6 +183,7 @@ export async function attestLane(d: Deps, key: string, opts: LaneAttestOptions):
       patchId: ids.patchId,
       contentId: ids.contentId,
       reviewedTip: binding.reviewedTip,
+      ...(binding.reviewedTip === tip ? {} : { reviewedBase: binding.reviewedBase }),
       brief: lane.brief,
       reviewer: opts.reviewer,
       at: d.now(),
