@@ -52,8 +52,8 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
       if (e instanceof Refusal) {
         // A closed lane's pane keeps its inbox forever otherwise: the loop retries the same entry every
         // pass and the log fills with inbox-target-gone. Drop it only when the target can never come
-        // back — neither a registered role nor a live (not done) lane. A pane that is merely restarting
-        // still has its lane, so its queue is kept.
+        // back — neither a registered role nor a live lane (`laneBySession` skips done, dropped and lost). A pane
+        // that is merely restarting still has its lane, so its queue is kept.
         const isRole = Object.values(d.store.roles()).some((r) => sameSession(r, ref));
         if (isRole || d.store.laneBySession(ref) !== undefined) {
           events.push({ pane: paneId, action: "inbox-target-gone" });
