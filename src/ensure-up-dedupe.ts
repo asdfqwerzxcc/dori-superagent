@@ -2,7 +2,7 @@ import { isPluginEnabled, readPluginRecord } from "./plugins/state.ts";
 import { leaveContenders, readContenders, readPluginLock, START_SLACK_MS } from "./plugins/plugin.ts";
 import { pidAlive, processStartTimeMs, terminateProcess } from "./process-liveness.ts";
 import type { RecordedChild } from "./supervisor-run.ts";
-import { ensureUpRecord, supervisorRecord } from "./supervisors.ts";
+import { ensureUpRecord, supervisorRecord, type SupervisorRecord, type UnitRecord } from "./supervisors.ts";
 
 export type EnsureUpDedupe = {
   readonly kept?: number;
@@ -21,13 +21,18 @@ export type DedupeEnsureUpOptions = {
   readonly graceMs?: number;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly now?: () => number;
+  /** One supervisor snapshot for this pass; tests use it to model a unit replaced between reads. */
+  readonly supervisor?: () => SupervisorRecord | undefined;
 };
 
 type Candidate = RecordedChild & { readonly beat?: number };
 
 /** Every pid a record, a contender or the live lock names, with the start time and the beat that proves it. */
-function ensureUpCandidates(home: string, same: (child: RecordedChild) => boolean): Candidate[] {
-  const unit = supervisorRecord(home, "supervisor")?.units.find((u) => u.name === "ensure-up");
+function ensureUpCandidates(
+  home: string,
+  same: (child: RecordedChild) => boolean,
+  unit: UnitRecord | undefined,
+): Candidate[] {
   const loop = ensureUpRecord(home);
   const plugin = readPluginRecord(home, "ensure-up");
   const lock = readPluginLock(home, "ensure-up");
@@ -52,7 +57,9 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
   const alive = deps.alive ?? pidAlive;
   const kill = deps.kill ?? terminateProcess;
   const startedOf = deps.started ?? processStartTimeMs;
-  const unitPid = supervisorRecord(home, "supervisor")?.units.find((u) => u.name === "ensure-up")?.pid;
+  const supervisor = (deps.supervisor ?? (() => supervisorRecord(home, "supervisor")))();
+  const unitRecord = supervisor?.units.find((u) => u.name === "ensure-up");
+  const unitPid = unitRecord?.pid;
   const same =
     deps.same ??
     ((c: RecordedChild): boolean => {
@@ -71,15 +78,16 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
     if (lock.startedAt === null) return lock.pid;
     return same({ pid: lock.pid, at: lock.startedAt }) ? lock.pid : undefined;
   };
+  const toleranceOf = (pid: number): number => (pid === unitPid ? 10_000 : START_SLACK_MS);
   const confirmed = (c: Candidate): boolean => {
     const started = startedOf(c.pid);
-    return started !== null && Math.abs(started - c.at) <= START_SLACK_MS;
+    return started !== null && Math.abs(started - c.at) <= toleranceOf(c.pid);
   };
   const startHolder = holderOf();
   const seen = new Set<number>();
   const live: Candidate[] = [];
   const unsure: number[] = [];
-  for (const c of ensureUpCandidates(home, same)) {
+  for (const c of ensureUpCandidates(home, same, unitRecord)) {
     if (c.pid === process.pid || seen.has(c.pid) || !alive(c.pid)) continue;
     seen.add(c.pid);
     if (same(c)) live.push(c);
@@ -107,6 +115,17 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
     if (keep && holderOf() === c.pid) return;
     if (!confirmed(c)) {
       unverified.push(c.pid);
+      return;
+    }
+    // A target that claimed the lock after the holder check is a fresh holder, not a duplicate.
+    const fresh = readPluginLock(home, "ensure-up");
+    if (
+      keep &&
+      fresh !== undefined &&
+      fresh.pid === c.pid &&
+      (fresh.startedAt === null || same({ pid: fresh.pid, at: fresh.startedAt })) &&
+      now() - fresh.at <= 2_000
+    ) {
       return;
     }
     kill(c.pid);
@@ -140,7 +159,8 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
     (lastLock.startedAt === null || same({ pid: lastLock.pid, at: lastLock.startedAt }))
       ? lastLock.pid
       : undefined;
-  const kept = keep ? (lastHolder ?? keptSoFar) : undefined;
+  const finalFallback = keptSoFar !== undefined && alive(keptSoFar) ? keptSoFar : undefined;
+  const kept = keep ? (lastHolder ?? finalFallback) : undefined;
   const keptAt =
     kept === undefined
       ? undefined
@@ -149,7 +169,7 @@ export async function dedupeEnsureUp(home: string, deps: DedupeEnsureUpOptions =
   const killedOut = killed.filter((pid) => pid !== kept);
   const failedOut = failed.filter((pid) => pid !== kept && alive(pid));
   const unverifiedOut = unverified.filter(
-    (pid) => pid !== kept && !killedOut.includes(pid) && !failedOut.includes(pid),
+    (pid) => pid !== kept && !killedOut.includes(pid) && !failedOut.includes(pid) && alive(pid),
   );
   return {
     ...(kept === undefined ? {} : { kept }),
@@ -177,7 +197,7 @@ export const mergeEnsureUpDedupe = (
     (pid) => pid !== kept && !killed.includes(pid) && alive(pid),
   );
   const unverified = [...new Set([...(first.unverified ?? []), ...(second.unverified ?? [])])].filter(
-    (pid) => pid !== kept && !killed.includes(pid) && !failed.includes(pid),
+    (pid) => pid !== kept && !killed.includes(pid) && !failed.includes(pid) && alive(pid),
   );
   return {
     ...(kept === undefined ? {} : { kept }),

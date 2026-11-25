@@ -82,12 +82,20 @@ describe("the contender registry", () => {
     expect(existsSync(path)).toBe(false);
   });
 
+  test("another plugin's contenders do not leak into ensure-up", () => {
+    const home = homeWithState();
+    joinContenders(home, "other", process.ppid);
+    expect(readContenders(home, "ensure-up")).toEqual([]);
+    expect(readContenders(home, "other").map((c) => c.pid)).toEqual([process.ppid]);
+  });
+
   test("a directory or a malformed file is skipped, never thrown on", () => {
     const home = homeWithState();
     mkdirSync(join(contendersDir(home), "7005.json"), { recursive: true });
     writeFileSync(join(contendersDir(home), "7006.json"), "not json");
     expect(readContenders(home, "ensure-up", { same: () => true })).toEqual([]);
-    expect(existsSync(join(contendersDir(home), "7006.json"))).toBe(false);
+    // A parse failure may be a concurrent truncation: ignore it, never delete the live marker.
+    expect(existsSync(join(contendersDir(home), "7006.json"))).toBe(true);
   });
 });
 

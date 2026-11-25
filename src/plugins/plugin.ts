@@ -1,4 +1,4 @@
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pidAlive, processStartTimeMs } from "../process-liveness.ts";
 
@@ -60,10 +60,17 @@ export function joinContenders(
 ): void {
   const at = (deps.started ?? processStartTimeMs)(pid);
   if (at === null) return;
+  const target = contenderPath(home, name, pid);
+  const tmp = `${target}.${process.pid}.tmp`;
   try {
     mkdirSync(contendersDir(home, name), { recursive: true });
-    writeFileSync(contenderPath(home, name, pid), JSON.stringify({ pid, at }));
-  } catch {}
+    writeFileSync(tmp, JSON.stringify({ pid, at }));
+    renameSync(tmp, target);
+  } catch {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {}
+  }
 }
 
 export function leaveContenders(home: string, name: string, pid: number = process.pid): void {
@@ -124,13 +131,16 @@ export function readContenders(home: string, name: string, opts: ReadContendersO
     if (!entry.isFile() || !/^\d+\.json$/.test(entry.name)) continue;
     const path = join(dir, entry.name);
     let contender: Contender | undefined;
+    let parsed = false;
     try {
       const raw = JSON.parse(readFileSync(path, "utf8")) as { pid?: unknown; at?: unknown };
       const pid = Number(raw.pid);
       const at = Number(raw.at);
+      parsed = true;
       if (Number.isInteger(pid) && pid > 0 && Number.isInteger(at) && at > 0) contender = { pid, at };
     } catch {}
-    if (contender !== undefined && same(contender)) {
+    if (!parsed || contender === undefined) continue;
+    if (same(contender)) {
       let beat: number | undefined;
       try {
         beat = statSync(path).mtimeMs;

@@ -105,6 +105,15 @@ describe("the plugin lock", () => {
     expect(acquirePluginLock(path)).toBe(false);
   });
 
+  test("the same lock protocol serves another plugin: live legacy is doubt, dead legacy is stale", () => {
+    const home = homeWithState();
+    mkdirSync(join(home, "state", "plugins"), { recursive: true });
+    const path = join(home, "state", "plugins", "other.lock");
+    writeFileSync(path, JSON.stringify({ pid: process.ppid, at: Date.now() }));
+    expect(acquirePluginLock(path, { alive: () => true })).toBe(false);
+    expect(acquirePluginLock(path, { alive: () => false })).toBe(true);
+  });
+
   test("a release removes only this process's lock", () => {
     const home = homeWithState();
     const path = lockPath(home);
