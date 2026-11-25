@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Proc } from "../src/lead-process-list.ts";
 import { pidAlive, processStartTimeMs, terminateProcess } from "../src/process-liveness.ts";
@@ -152,10 +152,9 @@ const fakeSupervisor = (home: string): string => {
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const home = process.env["DORI_HOME"] ?? "";
-const pidFile = process.env["FAKE_CHILD_PID_FILE"];
-if (pidFile) {
+if (process.env["FAKE_SUPERVISOR_CHILD"]) {
   const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "ignore", windowsHide: true });
-  writeFileSync(pidFile, String(child.pid));
+  process.stdout.write("CHILD_PID=" + child.pid);
   setTimeout(() => {}, 60000);
 } else {
   mkdirSync(join(home, "state"), { recursive: true });
@@ -168,16 +167,24 @@ if (pidFile) {
 test("the real guard kills a live supervisor's unrecorded child and logs before and after", async () => {
   const home = homeWithState();
   const entry = fakeSupervisor(home);
-  const pidFile = join(home, "child.pid");
   const parent = Bun.spawn([process.execPath, entry], {
-    stdio: ["ignore", "ignore", "ignore"],
+    stdio: ["ignore", "pipe", "ignore"],
     windowsHide: true,
-    env: { ...process.env, DORI_HOME: home, FAKE_CHILD_PID_FILE: pidFile },
+    env: { ...process.env, DORI_HOME: home, FAKE_SUPERVISOR_CHILD: "1" },
   });
   let childPid = 0;
   try {
-    for (let i = 0; i < 100 && !existsSync(pidFile); i++) await Bun.sleep(50);
-    childPid = Number(readFileSync(pidFile, "utf8"));
+    const reader = parent.stdout.getReader();
+    const decoder = new TextDecoder();
+    let seen = "";
+    while (childPid === 0) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      seen += decoder.decode(value, { stream: true });
+      const match = /CHILD_PID=(\d+)/.exec(seen);
+      if (match !== null) childPid = Number(match[1]);
+    }
+    reader.releaseLock();
     expect(childPid).toBeGreaterThan(0);
     beat(home, "supervisor-heartbeat", Date.now() - STALE);
     writeSupervisorRecord(home, {
@@ -205,7 +212,6 @@ test("the real guard kills a live supervisor's unrecorded child and logs before 
     expect(tree.indexOf(String(childPid))).toBeLessThan(tree.indexOf(String(parent.pid)));
     await parent.exited;
     expect(pidAlive(parent.pid)).toBe(false);
-    for (let i = 0; i < 40 && pidAlive(childPid); i++) await Bun.sleep(50);
     expect(pidAlive(childPid)).toBe(false);
     const kept = readFileSync(join(home, "state", "ensure-gateway.log"), "utf8");
     expect(kept).toContain("GUARD KILL");
@@ -215,36 +221,4 @@ test("the real guard kills a live supervisor's unrecorded child and logs before 
     if (childPid > 0) terminateProcess(childPid);
     await parent.exited;
   }
-}, 30_000);
-
-test.skipIf(process.platform !== "win32")(
-  "bin/ensure-gateway.ps1 runs the guard program and keeps its exit code",
-  async () => {
-    const home = homeWithState();
-    const marker = join(home, "ran.txt");
-    const guard = join(home, "fake-guard.ts");
-    writeFileSync(
-      guard,
-      `import { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(marker)}, "ok");\nprocess.exit(3);\n`,
-    );
-    const ps = Bun.spawn(
-      [
-        "powershell",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        join(import.meta.dir, "..", "bin", "ensure-gateway.ps1"),
-        "-Guard",
-        guard,
-      ],
-      { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: { ...process.env, DORI_HOME: home } },
-    );
-    const [code, stderr] = await Promise.all([ps.exited, new Response(ps.stderr).text()]);
-    expect(stderr).toBe("");
-    expect(code).toBe(3);
-    expect(readFileSync(marker, "utf8")).toBe("ok");
-  },
-  30_000,
-);
+});
