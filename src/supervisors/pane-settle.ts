@@ -114,9 +114,15 @@ export class PaneLedger {
   mark(id: string, typed: boolean): void {
     if (typed) this.typed.add(id);
     else this.typed.delete(id);
+    // A set written while the store is unreadable would drop every pane this process never scanned.
+    if (this.unreadable) return;
     try {
       this.o.pending?.write([...this.typed]);
     } catch {}
+  }
+  /** True while a line may be pending: typed here, or the store could not say. */
+  mayHavePending(): boolean {
+    return this.typed.size > 0 || this.unreadable;
   }
   async closeRetry(name: string, ref: SessionRef): Promise<boolean> {
     let last: unknown;

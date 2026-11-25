@@ -56,7 +56,9 @@ export function panePendingStore(home: string, warn?: (line: string) => void): P
       try {
         text = readFileSync(path, "utf8");
       } catch (e) {
-        if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+        if ((e as NodeJS.ErrnoException).code === "ENOENT")
+          // No file in an existing state directory is a trustworthy empty set; no state directory is unknown.
+          return existsSync(dir) ? [] : undefined;
         failed("unreadable", e);
         return undefined;
       }

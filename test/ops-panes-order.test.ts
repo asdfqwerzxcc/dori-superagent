@@ -138,3 +138,72 @@ describe("a replaced doubtful pane", () => {
     expect(third).toBeInstanceOf(PaneUnknown);
   });
 });
+
+describe("an unreadable pending store", () => {
+  test("is never replaced with a readable set while a unit is adopted", async () => {
+    const writes: string[][] = [];
+    const pending = {
+      read: () => undefined,
+      write: (ids: readonly string[]) => {
+        writes.push([...ids]);
+      },
+    };
+    const first = placement(() => RUNNING, { windowMs: 0, existing: [pref("p1")], pending });
+    expect(await first.units.place(DUTY)).toEqual({ pid: 400, pane: pref("p1") });
+    expect(writes).toEqual([]);
+    const { adapter, units } = placement((pane) => (pane === "p1" ? RUNNING : STOPPED), {
+      windowMs: 0,
+      existing: [pref("p2")],
+      pending,
+    });
+    expect(await units.place(DUTY)).toEqual({ pid: 400, pane: pref("p1") });
+    expect(adapter.closed).toEqual(["p2"]);
+    expect(adapter.starts.map((s) => s.pane)).toEqual(["p1"]);
+  });
+
+  test("treats readiness as doubt when the store may hold a line", async () => {
+    const pending = { read: () => undefined, write: () => {} };
+    const { units } = placement(() => RUNNING, { windowMs: 0, readyFails: true, pending });
+    const failure: unknown = await units.place(DUTY).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    expect(failure).toBeInstanceOf(PaneUnknown);
+  });
+});
+
+describe("a second running pane with the same title", () => {
+  test("is closed so no duplicate of the unit survives", async () => {
+    const { adapter, units } = placement(() => RUNNING, { windowMs: 0, existing: [pref("p1"), pref("p2")] });
+    expect(await units.place(DUTY)).toEqual({ pid: 400, pane: pref("p1") });
+    expect(adapter.closed).toEqual(["p2"]);
+  });
+});
+
+describe("a hinted hc adoption across a restart", () => {
+  test("keeps the pane in the set and adopts it again without a close", async () => {
+    const writes: string[][] = [];
+    const pending = {
+      read: () => ["p1"],
+      write: (ids: readonly string[]) => {
+        writes.push([...ids]);
+      },
+    };
+    const { units } = placement(() => ({ kind: "unknown", why: "no argv", pid: 958 }), {
+      windowMs: 0,
+      kind: "hc",
+      existing: [pref("p1")],
+      pending,
+    });
+    expect(await units.place(DUTY)).toEqual({ pid: 958, pane: pref("p1") });
+    expect(writes.at(-1)).toEqual(["p1"]);
+    const restarted = placement(() => ({ kind: "unknown", why: "no argv", pid: 958 }), {
+      windowMs: 0,
+      kind: "hc",
+      existing: [pref("p1")],
+      pending: { read: () => writes.at(-1) ?? [], write: () => {} },
+    });
+    expect(await restarted.units.place(DUTY)).toEqual({ pid: 958, pane: pref("p1") });
+    expect(restarted.adapter.closed).toEqual([]);
+  });
+});

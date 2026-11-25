@@ -46,7 +46,7 @@ export class PaneUnits {
       await this.o.adapter.ready();
     } catch (e) {
       // A pending line may still run: readiness failure is doubt, never a reason to start a headless copy beside it.
-      if (this.ledger.size() > 0) throw new PaneUnknown(`cannot ready the runtime: ${oneLine(e)}`);
+      if (this.ledger.mayHavePending()) throw new PaneUnknown(`cannot ready the runtime: ${oneLine(e)}`);
       throw e;
     }
     const now = this.o.now ?? Date.now;
@@ -55,11 +55,11 @@ export class PaneUnits {
     const stopped: SessionRef[] = [];
     const doubtful: SessionRef[] = [];
     const hints: PlacedUnit[] = [];
-    let named: PlacedUnit | undefined;
+    const namedList: PlacedUnit[] = [];
     let unknown: string | undefined;
     for (const ref of await this.scan(unit.name)) {
       const probe = await this.probe(ref, unit);
-      if (probe.kind === "running") named ??= { pid: probe.pid, pane: ref };
+      if (probe.kind === "running") namedList.push({ pid: probe.pid, pane: ref });
       else if (probe.kind === "unknown") {
         const pid = this.hinted(probe, ref);
         if (pid === undefined) {
@@ -72,7 +72,8 @@ export class PaneUnits {
     // hold a pending line: close them all before any pane is chosen, so no later line starts as an untracked copy.
     const protectedPane = (id: string): boolean => this.ledger.protected(id);
     const closed = new Set<string>();
-    const leftovers = named === undefined ? hints.slice(1) : hints;
+    const named = namedList[0];
+    const leftovers = named === undefined ? hints.slice(1) : [...hints, ...namedList.slice(1)];
     for (const ref of [...stopped.filter((r) => protectedPane(r.id)), ...leftovers.map((h) => h.pane)]) {
       if (!(await this.ledger.closeRetry(unit.name, ref))) throw new PaneCloseFailed(`could not close ${ref.id}`);
       closed.add(ref.id);
@@ -81,7 +82,8 @@ export class PaneUnits {
       await this.resolveDoubt(unit, doubtful);
       const placed = named ?? hints[0];
       if (placed === undefined) throw new Error("unreachable");
-      this.ledger.mark(placed.pane.id, false);
+      // A hinted pane stays in the set so a restarted supervisor adopts the unnamed hc unit again instead of closing it.
+      this.ledger.mark(placed.pane.id, named === undefined);
       this.unknownSince.delete(unit.name);
       return placed;
     }
@@ -222,7 +224,7 @@ export class PaneUnits {
     }
     const pid = this.hinted(probe, ref);
     if (pid !== undefined) {
-      this.ledger.mark(ref.id, false);
+      this.ledger.mark(ref.id, true);
       this.unknownSince.delete(unit.name);
       return { placed: { pid, pane: ref }, typed: true };
     }

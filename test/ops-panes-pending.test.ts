@@ -20,7 +20,7 @@ describe("the pending-pane store", () => {
     const dir = home();
     const warns: string[] = [];
     const store = panePendingStore(dir, (line) => warns.push(line));
-    expect(store.read()).toEqual([]);
+    expect(store.read()).toBeUndefined();
     store.write(["w1:p1", "w1:p2"]);
     expect(store.read()).toEqual(["w1:p1", "w1:p2"]);
     store.write([]);
@@ -107,5 +107,12 @@ describe("the pending-pane store", () => {
     expect(warns.some((l) => /panes_pending_write_failed_unreadable/.test(l))).toBe(true);
     expect(store.read()).toBeUndefined();
     chmodSync(file, 0o666);
+  });
+
+  test("a missing state directory reads as unknown, not empty", () => {
+    const dir = home();
+    expect(panePendingStore(dir).read()).toBeUndefined();
+    mkdirSync(join(dir, "state"), { recursive: true });
+    expect(panePendingStore(dir).read()).toEqual([]);
   });
 });

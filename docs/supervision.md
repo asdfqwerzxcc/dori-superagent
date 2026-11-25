@@ -53,9 +53,13 @@ command in its own pane instead of a headless pipe, so `herdr pane list` shows t
   headless copy. The typed panes are persisted in `state/panes-pending.json`, so a `dori restart` in the middle of a
   start window closes that pane instead of typing over the pending line. The file is replaced atomically (temp file
   plus rename) and a failed write is logged; if it cannot be read, every stopped pane is treated as possibly holding a
-  pending line and is closed before reuse, so an unreadable file costs a reopen but never a duplicate line. A failed
-  write replaces the file with `{}` (valid JSON, read as unreadable), and if even that fails it leaves
-  `panes-pending.json.degraded`, which also reads as unreadable, so a restart still fails safe; only when the marker cannot be written either does the stale set remain. The 30 s budget covers the reuse of an existing pane, every `open`, and every line after the first; a pane
+  pending line and is closed before reuse, so an unreadable file costs a reopen but never a duplicate line. While the
+  file is unreadable the supervisor does not write a new set at all (a filtered set would drop panes it never scanned);
+  it stays in close-before-reuse mode until a restart reads a readable file. A failed write replaces the file with
+  `{}` (valid JSON, read as unreadable), and if even that fails it leaves `panes-pending.json.degraded`, which also
+  reads as unreadable, so a restart still fails safe; only when the marker cannot be written either does the stale set
+  remain. A missing state directory is unknown rather than a trusted empty set. An adopted unnamed hc pane stays in the
+  set, so a restarted supervisor adopts the same live unit again instead of closing and recreating it after 10 s. The 30 s budget covers the reuse of an existing pane, every `open`, and every line after the first; a pane
   opened past the deadline is closed without a line being typed. All units share one `dori-ops` workspace even when
   they start at once.
 - **Fallback**: a missing runtime, no runtime on PATH, or a runtime that does not answer at startup logs one
