@@ -10,6 +10,10 @@ import type { Lane, LaneWatch } from "./store-types.ts";
 /** A `working` lane with no new pane output and no file change for this long is demoted to `waiting`. */
 export const WORKING_STALE_MS = 5 * 60_000;
 
+/** An open lane the duty loop watches; a lane being migrated is left alone (no nudge, no lost, no activity stamp). */
+export const watched = (lane: Lane): boolean =>
+  (lane.status === "working" || lane.status === "waiting") && lane.migration !== true;
+
 const SCREEN_LINES = 40;
 const WALK_LIMIT = 4_000;
 const SKIP = new Set([

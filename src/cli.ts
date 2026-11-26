@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { runBundle } from "./bundle-cli.ts";
 import { runBacklog, runDuty, runLoop } from "./cli-loops.ts";
@@ -22,7 +23,7 @@ import { runRole } from "./cli-role.ts";
 import { defaultDeps, type Deps } from "./harness.ts";
 import { ConfigError, hooksSettled } from "./hooks.ts";
 import { send } from "./inbox.ts";
-import { inboxList, releaseHeld, sendToShell } from "./inbox-held.ts";
+import { dropQueued, inboxList, releaseHeld, sendToShell } from "./inbox-held.ts";
 import { Refusal } from "./refusal.ts";
 import { runMigrate } from "./migrate.ts";
 import { refText } from "./refs.ts";
@@ -43,9 +44,13 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
   if (cmd === "board") return runBoard(d, a, x);
   if (cmd === "sop") return runSop(d, a, x);
   switch (cmd) {
-    case "up":
-      await up(d, resolve(one(a, "cwd") ?? process.cwd()), one(a, "retire-old") === "true");
+    case "up": {
+      const cwd = resolve(one(a, "cwd") ?? process.cwd());
+      // Checked before the first session opens: all four sessions would start in it.
+      if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Refusal(`no directory ${cwd}`);
+      await up(d, cwd, one(a, "retire-old") === "true");
       return 0;
+    }
     case "role":
       return runRole(d, a);
     case "start": {
@@ -92,6 +97,14 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
         console.log(
           x === "ack" ? `ACKED ${paneId} ${index}` : `RELEASED ${paneId} ${index}: the next flush delivers it`,
         );
+        return 0;
+      }
+      if (x === "drop") {
+        const all = one(a, "all") === "true";
+        if (all && a.pos[3] !== undefined) throw new Refusal("give either an entry index or --all, not both");
+        const index = all ? Number.NaN : Number(need(a.pos[3], "entry index (see dori inbox list)"));
+        const { paneId, dropped } = dropQueued(d, target, index, all);
+        console.log(all ? `DROPPED ${paneId} ${dropped} queued entries` : `DROPPED ${paneId} ${index}`);
         return 0;
       }
       throw new Refusal(`unknown inbox command ${x}\n\n${USAGE}`);

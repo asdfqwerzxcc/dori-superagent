@@ -1,4 +1,5 @@
 import { bundleGate } from "./bundles.ts";
+import { workflowRefusal } from "./gate-workflow.ts";
 import type { Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
 import type { MergeOutcome } from "./telemetry.ts";
@@ -66,15 +67,26 @@ export async function mergeGate(
 ): Promise<string> {
   const pr = parsePr(prId);
   const sha = await headSha(d, pr);
-  const refused = await gateRefusal(d, pr, sha, opts.bundle);
-  if (refused) {
-    if (!opts.dryRun) d.usage.record({ name: "dori.merge_decided", outcome: refused[0] });
-    throw new Refusal(`MERGE_REFUSED ${refused[1]}`);
+  const release = d.store.lockReceipt(pr.id, sha, d.now());
+  if (!release) {
+    if (!opts.dryRun) d.usage.record({ name: "dori.merge_decided", outcome: "review_in_progress" });
+    throw new Refusal(
+      `MERGE_REFUSED review_in_progress: a review or merge is already in progress at head ${sha.slice(0, 12)}`,
+    );
   }
-  if (opts.dryRun) return `MERGE_OK ${pr.id} head=${sha} (dry run)`;
-  await gh(d, ["pr", "merge", String(pr.number), "--repo", pr.repo, "--squash", "--match-head-commit", sha]);
-  d.usage.record({ name: "dori.merge_decided", outcome: "merged" });
-  return `MERGED ${pr.id} head=${sha}`;
+  try {
+    const refused = await gateRefusal(d, pr, sha, opts.bundle);
+    if (refused) {
+      if (!opts.dryRun) d.usage.record({ name: "dori.merge_decided", outcome: refused[0] });
+      throw new Refusal(`MERGE_REFUSED ${refused[1]}`);
+    }
+    if (opts.dryRun) return `MERGE_OK ${pr.id} head=${sha} (dry run)`;
+    await gh(d, ["pr", "merge", String(pr.number), "--repo", pr.repo, "--squash", "--match-head-commit", sha]);
+    d.usage.record({ name: "dori.merge_decided", outcome: "merged" });
+    return `MERGED ${pr.id} head=${sha}`;
+  } finally {
+    release();
+  }
 }
 
 async function gateRefusal(
@@ -94,7 +106,11 @@ async function gateRefusal(
       return ["review_block", `review at ${sha.slice(0, 12)} is ${receipt.verdict}`];
     }
   }
-  return checksRefusal(d, pr);
+  const checks = await checksRefusal(d, pr);
+  if (checks !== undefined) return checks;
+  // The bundle form was admitted by its own gate; the workflow-run rule belongs to the PR form.
+  if (bundleId !== undefined) return undefined;
+  return workflowRefusal(d, pr.repo, sha);
 }
 
 /** The check dimension alone, shared by the PR gate, the bundle gate and the lane gate. `none` is true only when no

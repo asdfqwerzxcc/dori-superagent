@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync } from "node:fs";
+import { copyFileSync, existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { KEY_RE, reservedKey, type Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
@@ -24,6 +24,9 @@ export function backlogAdd(
   if (!Number.isInteger(priority) || priority < 1 || priority > 9)
     throw new Refusal("--priority must be 1 (first) to 9 (last)");
   if (!existsSync(briefFile)) throw new Refusal(`no brief file ${briefFile}`);
+  // Checked here, not when the hourly loop starts the item hours later in a directory that was never there.
+  const cwd = resolve(opts.cwd ?? process.cwd());
+  if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Refusal(`no directory ${cwd}`);
   const old = d.store.item(id);
   if (old && (old.status === "open" || old.status === "running"))
     throw new Refusal(`item ${id} is already ${old.status}`);
@@ -33,7 +36,7 @@ export function backlogAdd(
     id,
     title: opts.title ?? id,
     brief: d.store.itemBrief(id),
-    cwd: resolve(opts.cwd ?? process.cwd()),
+    cwd,
     priority,
     status: "open",
     attempts: 0,

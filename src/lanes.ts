@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { shq } from "./delivery.ts";
 import { prompt, type Deps } from "./harness.ts";
@@ -44,6 +44,9 @@ export async function startLane(
       ? linkedId
       : undefined;
   const cwd = resolve(opts.cwd ?? process.cwd());
+  // Checked before anything is written or opened: a missing brief was a raw ENOENT, and a missing cwd went on to the runtime.
+  if (!existsSync(briefFile)) throw new Refusal(`no brief file ${briefFile}`);
+  if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Refusal(`no directory ${cwd}`);
   const repo = await resolveLaneRepo(d, cwd);
   const baseSha = repo === undefined ? undefined : await repoHead(d, repo);
   // A repo we found but cannot read a HEAD from (an empty repository) must not turn into a lane that silently works in
@@ -165,6 +168,10 @@ export async function ready(
   evidence: readonly string[],
 ): Promise<SendResult | undefined> {
   if (evidence.length === 0) throw new Refusal("READY needs at least one --evidence link (a PR, a receipt, a file)");
+  // --evidence "$PR_URL" with PR_URL unset would mark the lane ready on an empty link.
+  if (evidence.some((e) => !e.trim())) throw new Refusal("READY --evidence is empty: give a PR, a receipt or a file");
+  // --evidence "$PR_URL" with PR_URL unset would mark the lane ready on an empty link.
+  if (evidence.some((e) => !e.trim())) throw new Refusal("READY --evidence is empty: give a PR, a receipt or a file");
   if (!text.trim()) throw new Refusal("READY needs the final answer text");
   const lane = openLane(d, key);
   const now = d.now();

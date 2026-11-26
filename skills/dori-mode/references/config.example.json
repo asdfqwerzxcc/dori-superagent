@@ -1,5 +1,6 @@
 {
   "runtime": "herdr",
+  "leadRuntime": "herdr",
   "maxLanes": 5,
   "maxStarts": 2,
   "stateDir": "~/.dori/state",
@@ -31,7 +32,9 @@
     "activityPaths": [],
     "gitActivity": true
   },
-  "heavySlots": 1,
+  "heavyMinSlots": 1,
+  "heavyMaxSlots": 4,
+  "heavyJobMemGb": 4,
   "heavyMaxLoad": 80,
   "deadPanePatterns": ["has stopped", "no suitable jobs"],
   "guard": {

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { readJson, writeJson } from "./json-file.ts";
 import type { SopReceipt } from "./sop-types.ts";
@@ -35,6 +35,16 @@ export class Receipts {
 
   receipt(pr: string, sha: string): ReviewReceipt | undefined {
     return readJson<ReviewReceipt>(this.path("receipts", this.prName(pr), sha, "json"));
+  }
+
+  /** Where the receipt for `pr` at `sha` lives, whether or not it was written yet. */
+  receiptPath(pr: string, sha: string): string {
+    return this.path("receipts", this.prName(pr), sha, "json");
+  }
+
+  /** Drops the receipt at this head, so a failed or in-flight review cannot stay merge-eligible. */
+  clear(pr: string, sha: string): void {
+    rmSync(this.receiptPath(pr, sha), { force: true });
   }
 
   saveLane(r: LaneReceipt): void {
