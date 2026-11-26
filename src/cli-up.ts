@@ -5,7 +5,7 @@ import { prompt, type Deps } from "./harness.ts";
 import { reviewLabel } from "./lane-gate.ts";
 import { paneWorktreeMismatch } from "./lane-worktree.ts";
 import { leadRestartBusy } from "./lead-restart-busy.ts";
-import { LEAD_ENV, leadCheck, reviveCommand, reviveLeadInPane } from "./lead-revive.ts";
+import { LEAD_ENV, leadCheck, reviveLeadInPane } from "./lead-revive.ts";
 import { leadStarting, markLeadStarting, clearLeadStarting } from "./lead-starting.ts";
 import { loopArgs, readLoopCaps } from "./loop-caps.ts";
 import { refText } from "./refs.ts";
@@ -98,11 +98,7 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
   }
   // D2: a pane whose TUI exited still exists, and herdr may keep calling it `working`. It is typed into only at a proven
   // empty prompt, once ever, with the snapshot confirmed 300 ms later; anything unproven is replaced below.
-  if (
-    previous !== undefined &&
-    liveness === "shell" &&
-    (await reviveLeadInPane(d, previous, reviveCommand(agent("lead.md"), cwd)))
-  ) {
+  if (previous !== undefined && liveness === "shell" && (await reviveLeadInPane(d, previous, agent("lead.md"), cwd))) {
     const state = await supervise(d, !supervisorAlive(d.store.root));
     console.log(`UP lead revived in ${refText(previous)} (no agent in the pane); units=${units}`);
     showUnitPlacement(d, state, units);

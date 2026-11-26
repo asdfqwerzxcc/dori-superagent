@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { up } from "../src/cli-up.ts";
 import { LEAD_REVIVE, leadRevives, reviveCommand } from "../src/lead-revive.ts";
 import { clearLeadStarting } from "../src/lead-starting.ts";
@@ -90,6 +92,19 @@ describe("doubt is never typed into and never reported as a live lead", () => {
     expect(out).toContain("UP runtime=herdr lead=w1:p2");
     expect(runsOn(w, PANE)).toEqual([]);
     expect(d.store.roles().lead).toEqual(href("w1:p2"));
+    // Three looks, 300 ms apart, before the doubt counts: one failed snapshot is not a dead lead.
+    expect(w.sleeps).toEqual([300, 300]);
+  });
+
+  test("a snapshot that fails once and recovers is alive: the lead is not split", async () => {
+    const { w, d } = worldWith(undefined, PROMPT);
+    let reads = 0;
+    w.treeProvider = async () => (++reads === 1 ? undefined : [shell(), tui()]);
+    const { out } = await runUp(d);
+    expect(out).toContain("UP lead alive");
+    expect(out).not.toContain("UP lead unproven");
+    expect(runsOn(w, PANE)).toEqual([]);
+    expect(d.store.roles().lead).toEqual(href(PANE));
   });
 });
 
@@ -110,6 +125,26 @@ describe("the confirming second snapshot", () => {
     await runUp(d);
     expect(w.sleeps).toEqual([300]);
     expect(runsOn(w, PANE)).toHaveLength(1);
+  });
+
+  test("a draft typed during the 300 ms wait cancels the revive: the screen is read again", async () => {
+    const { w, d } = worldWith([shell()], PROMPT);
+    w.onSleep = () => {
+      w.panes.get(PANE)!.screen = `${PROMPT}rm -rf /root`;
+    };
+    const { out } = await runUp(d);
+    expect(runsOn(w, PANE)).toEqual([]);
+    expect(out).toContain("UP runtime=herdr lead=w1:p2");
+  });
+
+  test("a claim that cannot be written refuses the revive instead of typing", async () => {
+    const { w, d } = worldWith([shell()], PROMPT);
+    mkdirSync(join(d.store.root, "state"), { recursive: true });
+    writeFileSync(join(d.store.root, "state", LEAD_REVIVE), "not a directory");
+    const { out } = await runUp(d);
+    expect(runsOn(w, PANE)).toEqual([]);
+    expect(out).toContain("UP runtime=herdr lead=w1:p2");
+    expect(d.store.roles().lead).toEqual(href("w1:p2"));
   });
 });
 
@@ -133,5 +168,16 @@ describe("the revived command keeps the requested cwd and the lead env", () => {
     expect(command).toContain(process.platform === "win32" ? "Set-Location -LiteralPath '/w'" : "cd '/w'");
     expect(command).toContain("OMO_TASK_DEFAULT_BACKGROUND");
     expect(command).toContain("lead.md");
+  });
+
+  test("the pane's recorded cwd wins over the cwd the caller ran from", async () => {
+    const { w, d } = worldWith([shell()], PROMPT);
+    w.panes.get(PANE)!.cwd = "C:\\work\\lead";
+    await runUp(d);
+    const command = String(runsOn(w, PANE)[0]?.argv[3] ?? "");
+    expect(command).toContain(
+      process.platform === "win32" ? "Set-Location -LiteralPath 'C:\\work\\lead'" : "cd 'C:\\work\\lead'",
+    );
+    expect(command).not.toContain("'/w'");
   });
 });

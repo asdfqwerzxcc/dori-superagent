@@ -40,15 +40,15 @@ export async function paneLiveness(tree: PaneTree, rootPid: number | undefined):
   return nodes.some((node) => node.parent === rootPid) ? "alive" : "exited";
 }
 
-// The prompt shapes a pane's shell leaves as its last line, with nothing typed after the prompt character: PowerShell
-// `PS C:\dir>` and `C:\dir>`, a POSIX `user@host:dir$`, fish `~/dir>`, or a lone prompt character. Anything else on the
-// line (a draft, an output line, a border redrawn over the row) is not an empty prompt.
+// The prompt shapes a pane's shell leaves as its last line, each ending at the prompt character with nothing after it and
+// no second `>` inside: a draft that ends in `>`, a line redrawn over, a Python `...` or a PowerShell PS2 `>>` never
+// matches, so nothing is typed into a partial input. A lone `>` is PowerShell's continuation prompt, not a prompt.
 const PROMPTS: readonly RegExp[] = [
-  /^PS [A-Za-z]:[\\/].*>$/i,
-  /^[A-Za-z]:[\\/].*>$/i,
+  /^PS [A-Za-z]:[\\/][^>]*>$/,
+  /^[A-Za-z]:[\\/][^>]*>$/,
   /^[^@\s]+@[^:\s]+:[^$#]*[$#]$/,
   /^~[\\/][^>]*>$/,
-  /^[$#%>]$/,
+  /^[$#%]$/,
 ];
 
 /**

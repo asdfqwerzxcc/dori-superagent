@@ -155,6 +155,7 @@ describe("ensure-up treats an unproven lead as down", () => {
       tree: async () => undefined,
       up: raise,
       log: () => {},
+      sleep: async () => {},
       report: (_s, line) => lines.push(line),
     });
     expect(doubt).toBe("down");

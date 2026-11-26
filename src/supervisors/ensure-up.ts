@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readJson } from "../json-file.ts";
+import { settleProbe } from "../lead-revive.ts";
 import { leadRestartBusy } from "../lead-restart-busy.ts";
 import { leadStarting, clearLeadStarting } from "../lead-starting.ts";
 import { refFromText } from "../refs.ts";
@@ -38,12 +39,13 @@ export async function leadStatus(
   exec: Exec = spawnExec,
   tree?: PaneTree,
   session: string | undefined = process.env["DORI_HERDR_SESSION"],
+  sleep?: (ms: number) => Promise<void>,
 ): Promise<LeadProbe> {
   const ref = leadRef(home);
   if (ref === undefined) return { status: "absent" };
   const rt =
     ref.runtime === "hc" ? new HcRuntime(exec) : new HerdrRuntime(exec, session, tree === undefined ? {} : { tree });
-  const probe = await rt.probe(ref);
+  const probe = await settleProbe(() => rt.probe(ref), sleep);
   return { status: probe.status, ...(probe.liveness === undefined ? {} : { liveness: probe.liveness }) };
 }
 
@@ -143,7 +145,7 @@ export async function ensureUpCheck(opts: EnsureUpOptions = {}): Promise<EnsureU
     return "alive";
   }
   try {
-    const lead = await leadStatus(home, exec, opts.tree);
+    const lead = await leadStatus(home, exec, opts.tree, undefined, opts.sleep);
     // A lead is alive only when its pane's own tree proves a live process in it. No agent (a shell, or a TUI herdr still
     // calls `working`) and an unreadable snapshot (doubt) are both down: the start marker covers a slow registration.
     const unproven = lead.status === "shell" || lead.liveness === "doubt";
