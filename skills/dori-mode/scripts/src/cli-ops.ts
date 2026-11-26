@@ -1,5 +1,5 @@
 /** dori sync, boot, verify-pr and the host loops: watch, freshness, dead-panes, guard, heavy, can-launch. */
-import { freemem, totalmem } from "node:os";
+import { totalmem } from "node:os";
 import { dirname, join } from "node:path";
 import { bootCheck, envSlackCheck } from "./boot.ts";
 import { type Command, die, every, slackAuth } from "./cli-context.ts";
@@ -78,18 +78,11 @@ const heavy: Command = async ({ rest, config }) => {
     },
     clock: realClock,
     host: async (): Promise<HeavyHost> => {
-      const total = totalmem();
-      if (win32)
-        return {
-          load1: Number.NaN,
-          memFreePct: total > 0 ? (freemem() / total) * 100 : Number.NaN,
-          memTotalGb: total / 1024 ** 3,
-        };
       const s = await sampleLoadMemory(run);
       return {
         load1: s.loadKnown ? s.load1 : Number.NaN,
         memFreePct: s.memKnown ? s.memFreePct : Number.NaN,
-        memTotalGb: total / 1024 ** 3,
+        memTotalGb: totalmem() / 1024 ** 3,
       };
     },
     alive: pidAlive,

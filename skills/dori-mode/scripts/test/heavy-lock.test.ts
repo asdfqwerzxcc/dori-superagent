@@ -6,7 +6,6 @@ import { acquireSlot, type HeavyPolicy, heldSlots, WARMUP_MS, SAMPLE_MAX_AGE_MS 
 import { fakeClock, withState } from "./fakes.ts";
 
 const policy: HeavyPolicy = { minSlots: 1, maxSlots: 4, maxLoad: 10, jobMemGb: 4, memFreeMinPct: 15 };
-const posix = process.platform !== "win32";
 const host = (memFreePct: number, load1 = 2) => ({ load1, memFreePct, memTotalGb: 30 });
 
 let state: ReturnType<typeof withState>;
@@ -44,7 +43,7 @@ test("the admission lock excludes a second holder until the first section ends",
   expect(innerRan).toBe(true);
 });
 
-test.skipIf(!posix)("a lock holder that is killed releases the lock, with no age or pid guess", async () => {
+test("a lock holder that is killed releases the lock, with no age or pid guess", async () => {
   const dir = join(state.dir, "heavy");
   mkdirSync(dir, { recursive: true });
   const holder = Bun.spawn(
