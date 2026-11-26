@@ -293,7 +293,7 @@ cd skills/dori-mode/scripts && bun install && bun test   # Dori mode: 321 tests 
 bun run ci                                        # biome, tsc, knip, the 250-line check, both suites
 ```
 
-The harness tests run against a fake herdr, a fake hc and a fake gh with a clock the tests move; the end-to-end tests start a real herdr server or a real hc core in an isolated session with a fake agent script in place of omo, and each skips itself when its binary is not on PATH. Dori mode's tests run against fake herdr, git and gh and touch nothing real. CI runs the same on Ubuntu and macOS.
+The harness tests run against a fake herdr, a fake hc and a fake gh with a clock the tests move; the end-to-end tests start a real herdr server or a real hc core in an isolated session with a fake agent script in place of omo, and each skips itself when its binary is not on PATH. Dori mode's tests run against fake herdr, git and gh and touch nothing real. CI runs the same on Ubuntu and macOS; it has no Windows job, so the win32-only tests (the heavy lock file and the `dori heavy` spawn in `heavy-win32.test.ts`) skip there and run only on a Windows host, while the POSIX-only tests (mode bits, FIFOs, symlinks, EPERM owners) do the reverse.
 
 ## What this is not
 
