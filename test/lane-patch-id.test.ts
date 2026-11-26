@@ -102,6 +102,7 @@ describe("patch-id lane receipts", () => {
     const { d, repo } = await laneWorld();
     await attest(d);
     repo.head = rebased;
+    repo.ancestor = false;
     repo.patchId = changed;
     await expect(done(d, "fix-login")).rejects.toThrow("no review receipt");
     expect(d.store.lane("fix-login")!.status).toBe("ready");
