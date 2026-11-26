@@ -28,31 +28,56 @@ async function mergeParents(d: Deps, repo: string, sha: string): Promise<string[
 /**
  * The receipt of work this lane already landed, for a tip that has none: a parent of the merge commit that carried the
  * lane (a `git rebase main` after the PR merge moves the lane tip onto that commit), or a receipted tip the main
- * checkout already contains. A squash merge rewrites the sha, so only an ancestry proof counts.
+ * checkout already contains. Every candidate is resolved with laneReceiptFor, so a same-patch BLOCK outranks a CLEAR
+ * exactly as it does at the tip; a refused candidate is returned to be surfaced, never skipped for an older CLEAR.
  */
 async function landedReceipt(
   d: Deps,
   lane: Lane,
   tip: string,
-): Promise<{ readonly receipt: LaneReceipt; readonly via: string } | undefined> {
+): Promise<{ readonly kind: "clear" | "refused"; readonly receipt: LaneReceipt; readonly via: string } | undefined> {
   const repo = lane.repo;
   if (repo === undefined) return undefined;
   const trunk = await gitOut(d, repo, ["rev-parse", "HEAD"]);
   const merges = trunk !== undefined && trunk !== tip ? [tip, trunk] : [tip];
+  const parents: { readonly receipt: LaneReceipt; readonly via: string }[] = [];
   for (const merge of merges) {
     for (const parent of await mergeParents(d, laneRepo(lane), merge)) {
       const receipt = await laneReceiptFor(d, lane, parent);
-      if (receipt?.verdict === "CLEAR")
-        return {
-          receipt,
-          via: `CLEAR receipt lane_${lane.key}@${parent} on the parent of merge commit ${merge}`,
-        };
+      if (receipt === undefined) continue;
+      parents.push({
+        receipt,
+        via:
+          receipt.tip === parent
+            ? `CLEAR receipt lane_${lane.key}@${parent} on the parent of merge commit ${merge}`
+            : `CLEAR receipt lane_${lane.key}@${receipt.tip} covering the parent ${parent} of merge commit ${merge}`,
+      });
     }
   }
+  const refusedParent = parents.find((p) => p.receipt.verdict !== "CLEAR");
+  if (refusedParent !== undefined)
+    return {
+      kind: "refused",
+      receipt: refusedParent.receipt,
+      via: `the lane receipt on the parent of merge commit is lane_${lane.key}@${refusedParent.receipt.tip}`,
+    };
+  const clearParent = parents.find((p) => p.receipt.verdict === "CLEAR");
+  if (clearParent !== undefined) return { kind: "clear", ...clearParent };
   for (const receipt of d.store.receipts.laneReceipts(lane.key)) {
     if (receipt.verdict !== "CLEAR") continue;
     const ancestor = await d.exec("git", ["-C", repo, "merge-base", "--is-ancestor", receipt.tip, trunk ?? "HEAD"]);
-    if (ancestor.code === 0) return { receipt, via: `CLEAR receipt lane_${lane.key}@${receipt.tip} already on main` };
+    if (ancestor.code !== 0) continue;
+    const covering = await laneReceiptFor(d, lane, receipt.tip);
+    if (covering === undefined) continue;
+    if (covering.verdict !== "CLEAR")
+      return {
+        kind: "refused",
+        receipt: covering,
+        via:
+          `the CLEAR receipt lane_${lane.key}@${receipt.tip} already on main is overridden by ` +
+          `lane_${lane.key}@${covering.tip} (${covering.verdict})`,
+      };
+    return { kind: "clear", receipt: covering, via: `CLEAR receipt lane_${lane.key}@${receipt.tip} already on main` };
   }
   return undefined;
 }
@@ -76,7 +101,15 @@ export async function laneGate(d: Deps, lane: Lane): Promise<LaneGate> {
   const receipt = await laneReceiptFor(d, lane, tip);
   // The tip may be the merge commit that landed the lane: the receipt sits on the reviewed commit it merged.
   const landed = receipt === undefined ? await landedReceipt(d, lane, tip) : undefined;
-  if (landed !== undefined) return { ok: true, tip, receipt: landed.receipt, via: landed.via };
+  if (landed?.kind === "clear") return { ok: true, tip, receipt: landed.receipt, via: landed.via };
+  if (landed?.kind === "refused")
+    return {
+      ok: false,
+      reason:
+        `lane ${lane.key} at ${tip.slice(0, 12)} is ${landed.receipt.verdict}: ${landed.via}; ` +
+        `run dori review --lane ${lane.key} to review the current diff, then attest the reviewer verdict ` +
+        `(or dori done --drop ${lane.key} --reason <text>)`,
+    };
   const job = reviewJobFor(d.store.root, lane.key, tip);
   // A queued request is the lead's work now: done says so instead of sending the lead to review it again. A legacy
   // `review_partial` receipt must not hide the request that was queued after it.

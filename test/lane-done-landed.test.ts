@@ -1,97 +1,23 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { main } from "../src/cli.ts";
 import { done } from "../src/lanes.ts";
-import { spawnExec } from "../src/runtime/exec.ts";
-import { Store } from "../src/store.ts";
-import type { Lane } from "../src/store-types.ts";
-import { World, href } from "./fake.ts";
 import { captureIo } from "./inbox-setup.ts";
+import { fixture, git, saveVerdict } from "./lane-done-landed-setup.ts";
 
 setDefaultTimeout(30_000);
 
-const git = async (cwd: string, ...args: string[]): Promise<string> => {
-  const r = await spawnExec("git", ["-C", cwd, ...args]);
-  if (r.code !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`);
-  return r.stdout.trim();
-};
-
-type FixtureOptions = {
-  readonly merge?: boolean;
-  readonly pane?: "working" | "idle" | "gone";
-};
-
-/**
- * A real repository with a READY lane: branch `lane/scenario` at the reviewed tip, a CLEAR receipt there, and (unless
- * `merge: false`) the PR landing as a merge commit on main, exactly the state `dori merge` leaves behind.
- */
-async function fixture(opts: FixtureOptions = {}) {
-  const root = mkdtempSync(join(tmpdir(), "dori-done-landed-"));
-  const repo = join(root, "repo");
-  const home = join(root, "home");
-  mkdirSync(repo, { recursive: true });
-  mkdirSync(home, { recursive: true });
-  await git(repo, "init", "-b", "main");
-  await git(repo, "config", "user.email", "test@example.test");
-  await git(repo, "config", "user.name", "Test");
-  writeFileSync(join(repo, "base.txt"), "base\n");
-  await git(repo, "add", "--", "base.txt");
-  await git(repo, "commit", "-m", "base");
-  const base = await git(repo, "rev-parse", "HEAD");
-  const worktree = join(root, "lane-tree");
-  await git(repo, "worktree", "add", "-b", "lane/scenario", worktree, base);
-  writeFileSync(join(worktree, "work.txt"), "work\n");
-  await git(worktree, "add", "--", "work.txt");
-  await git(worktree, "commit", "-m", "the reviewed work");
-  const tip = await git(worktree, "rev-parse", "HEAD");
-  let merge: string | undefined;
-  if (opts.merge !== false) {
-    await git(repo, "merge", "--no-ff", "-m", "Merge pull request #1 from lane/scenario", "lane/scenario");
-    merge = await git(repo, "rev-parse", "HEAD");
-  }
-  const lane: Lane = {
-    key: "scenario",
-    sessionRef: href("w1:p9"),
-    paneId: "w1:p9",
-    tabId: "",
-    brief: join(home, "brief.md"),
-    cwd: repo,
-    worktree,
-    repo,
-    baseSha: base,
-    tipSha: tip,
-    status: "ready",
-    createdAt: 1,
-    lastActivityAt: 1,
-    nudges: 0,
-    final: { text: "final", evidence: ["https://example.test/pull/1"], at: 1 },
-    log: [{ at: 1, kind: "ready", text: "final" }],
-  };
-  const store = new Store(home);
-  store.saveLane(lane);
-  store.saveLaneReceipt({
-    lane: "scenario",
-    verdict: "CLEAR",
-    base,
-    tip,
-    brief: join(home, "brief.md"),
-    reviewer: "test",
-    at: 1,
-    summary: "reviewed before the merge",
-  });
-  const w = new World();
-  if (opts.pane !== "gone") w.addPane("w1:p9", opts.pane ?? "idle");
-  const d = { ...w.deps(), store, exec: spawnExec, now: () => Date.now() };
-  return { d, store, w, repo, root, worktree, base, tip, merge };
-}
-
 describe("done after a PR landing", () => {
   test("a lane rebased onto the merge commit closes by the receipt on its parent", async () => {
-    const { d, store, worktree, tip, merge } = await fixture({ pane: "gone" });
-    if (merge === undefined) throw new Error("fixture did not merge the lane");
-    // The observed dashboard-kpi-pattern state: `git rebase main` moved the already-merged branch onto the merge commit.
+    const { d, store, worktree, repo, tip } = await fixture({ merge: false, pane: "gone" });
+    // The observed dashboard-kpi-pattern shape: main moved before the PR landed, then `git rebase main` moved the
+    // already-merged branch onto the merge commit, where the lane diff no longer matches the reviewed patch.
+    writeFileSync(join(repo, "before-merge.txt"), "main moved\n");
+    await git(repo, "add", "--", "before-merge.txt");
+    await git(repo, "commit", "-m", "main work before the merge");
+    await git(repo, "merge", "--no-ff", "-m", "Merge pull request #1 from lane/scenario", "lane/scenario");
+    const merge = await git(repo, "rev-parse", "HEAD");
     await git(worktree, "rebase", "main");
     expect(await git(worktree, "rev-parse", "HEAD")).toBe(merge);
 
@@ -140,5 +66,47 @@ describe("done after a PR landing", () => {
     const note = await done(d, "scenario");
     expect(note).toContain(`is already on main (CLEAR receipt lane_scenario@${tip})`);
     expect(store.lane("scenario")!.status).toBe("done");
+  });
+
+  test("a same-patch BLOCK on main still refuses a rebased-after-merge lane", async () => {
+    const { d, store, worktree, repo, base, tip, patchId, contentId } = await fixture({ merge: false, pane: "gone" });
+    if (patchId === undefined) throw new Error("fixture has no patch id");
+    // main moves before the PR lands, so the merge commit's own diff is not the lane's patch and the tip lookup is silent.
+    writeFileSync(join(repo, "before-merge.txt"), "main moved\n");
+    await git(repo, "add", "--", "before-merge.txt");
+    await git(repo, "commit", "-m", "main work before the merge");
+    const tree = await git(repo, "rev-parse", `${tip}^{tree}`);
+    const blocked = await git(repo, "commit-tree", tree, "-p", base, "-m", "the same patch, blocked later");
+    saveVerdict(store, {
+      tip: blocked,
+      base,
+      verdict: "BLOCK",
+      at: 2,
+      patchId,
+      ...(contentId === undefined ? {} : { contentId }),
+    });
+    await git(repo, "merge", "--no-ff", "-m", "Merge pull request #1 from lane/scenario", "lane/scenario");
+    await git(worktree, "rebase", "main");
+
+    await expect(done(d, "scenario")).rejects.toThrow("is BLOCK");
+    expect(store.lane("scenario")!.status).toBe("ready");
+  });
+
+  test("a fallback receipt never publishes a follow-up commit the lane branch holds", async () => {
+    const { d, store, worktree, repo } = await fixture({ merge: false, pane: "gone" });
+    writeFileSync(join(repo, "before-merge.txt"), "main moved\n");
+    await git(repo, "add", "--", "before-merge.txt");
+    await git(repo, "commit", "-m", "main work before the merge");
+    await git(repo, "merge", "--no-ff", "-m", "Merge pull request #1 from lane/scenario", "lane/scenario");
+    const merge = await git(repo, "rev-parse", "HEAD");
+    writeFileSync(join(worktree, "follow-up.txt"), "follow-up\n");
+    await git(worktree, "add", "--", "follow-up.txt");
+    await git(worktree, "commit", "-m", "follow-up main never got");
+    await git(worktree, "checkout", "-q", "--detach", merge);
+
+    await expect(done(d, "scenario")).rejects.toThrow("does not publish commits");
+    expect(store.lane("scenario")!.status).toBe("ready");
+    expect(await git(repo, "rev-parse", "HEAD")).toBe(merge);
+    expect(await git(repo, "rev-parse", "lane/scenario")).not.toBe(merge);
   });
 });
