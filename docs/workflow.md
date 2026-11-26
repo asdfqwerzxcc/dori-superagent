@@ -38,11 +38,18 @@ Lee: "이게 나의 정형적인 워크플로우가 될 거야. 어떠한 프로
 
 ### 불변조건 우선 (D3+)
 
-레인 브리프가 `DIFFICULTY: D3|D4`를 선언하거나 `## Invariants` 절을 가지면 불변조건 우선으로 작업한다. 문구의 단일 소스는 `prompts/lane-footer.md`의 "Invariants (D3+)"이고, 같은 문장을 여기에도 둔다:
+불변조건이 필요한 변경은 `DIFFICULTY: D3|D4`, `## Invariants` 절, 또는 상위 카테고리(`deep-high`, `ultrabrain`, `architect`)가 트리거한다. 의무는 모델·카테고리에 따라 둘로 갈린다. 문구의 단일 소스는 `prompts/lane-footer.md`의 "Invariants (D3+)"이고, 같은 문장을 여기에도 둔다:
 
-> When the brief declares `DIFFICULTY: D3|D4` or carries an `## Invariants` section, this lane works invariants-first: (a) list each invariant with its failure mode; (b) add one test per invariant and capture the failing output on the pre-fix code; (c) fix only what those tests demand; (d) report per invariant the test name and the before/after output.
+> Changes that need invariants are triggered by `DIFFICULTY: D3|D4`, an `## Invariants` section, or a high category (`deep-high`, `ultrabrain`, `architect`). The obligations depend on the model or category:
+>
+> - **flash/default on D3+** (a `DIFFICULTY: D3|D4` brief or an `## Invariants` section, with no high category named): (a) list each invariant with its failure mode; (b) add one test per invariant and capture the failing output on the pre-fix code; (c) fix only what those tests demand; (d) report per invariant the test name and the before/after output.
+> - **deep-high / ultrabrain / architect** (even when the brief is D3+): no procedure is enforced; invariants and their evidence are expected deliverables. Document each invariant and cover it with a test. The gate checks that outcome only and does not block for a missed step.
 
-리뷰 게이트는 이 증거가 없는 D3+ 변경을 HIGH로 보고 `VERDICT: BLOCK`한다(`prompts/review.md`, `prompts/review-lane.md`).
+리뷰 게이트는 flash/default D3+에서 실패-선행 증거가 없으면 HIGH로 보고 `VERDICT: BLOCK`하고, 상위 카테고리는 결과만 검사한다(불변조건 문서화 + 각각 테스트 커버, 과정 미준수로 BLOCK하지 않음). `prompts/review.md`와 `prompts/review-lane.md`가 같은 미러를 갖는다.
+
+### 호스트 전역 프로세스 킬 금지
+
+호스트의 모든 인스턴스를 끝내는 종료는 금지한다: `taskkill /IM`, `pkill`, `kill -9`는 금지이고, 종료는 신원(pid + OS start)이 확인된 대상만 한다. 2026-11-26에 한 레인이 `taskkill //F //IM bun.exe`로 리드·duty·모든 레인을 죽였다.
 
 ### 천장 (기본값, 보수적)
 
