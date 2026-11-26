@@ -129,7 +129,13 @@
 
 - 조사·탐색은 `explore` 서브에이전트가 하고 리드는 결과만 판단하며(한 줄 확인·결정적 읽기는 예외), 긴 작업은 `run_in_background: true`로 돌려 리드 턴을 짧게 끊고 턴 사이에 `dori inbox list lead`로 큐를 확인하며, 인바운드가 늦으면 `dori status`의 게이트웨이·슈퍼바이저 줄과 리드 인박스부터 본다.
 
-## 8. Windows: 레인과 리뷰어는 창을 열지 않는다 (2026-11-24)
+## 8. 리드 TUI가 죽어도 herdr는 `working`이라고 말한다 (2026-11-26)
+
+- 2026-11-26 10:11:55Z에 한 레인이 호스트의 `bun.exe`를 모두 죽였고, 리드 프로세스(가동 35.3시간)가 사라졌는데도 `herdr pane get wZ:p1`은 계속 `agent:"pi", agent_status:"working"`을 돌려줬다. 그 말을 믿은 `ensure-up`과 `dori up`은 1.5시간 동안 "lead alive"만 출력했고, 인박스는 죽은 pane에 메시지를 타이핑해 그 텍스트가 셸 명령으로 실행되게 했다.
+- 이제 herdr 프로브는 상태 단어를 믿기 전에 pane의 프로세스 정체성을 OS 스냅샷으로 확인한다(`src/runtime/pane-liveness.ts`): `pane process-info`의 `shell_pid`가 셸이고 자식 프로세스가 하나도 없으면 pane 안에서는 아무것도 돌 수 없으므로, 그 pane은 `shell`(down)로 읽고 `atPrompt`를 남긴다. 스냅샷을 못 읽거나 root가 셸이 아니면 의심(doubt)으로 남겨 살아 있는 리드를 되살리지 않는다.
+- `ensure-up`은 그 `shell`을 down으로 보고 `dori up`을 부르고, `dori up`은 `atPrompt`가 증명된 pane에만 같은 pane에서 리드 명령을 다시 타이핑한다(역할 `roles.json`의 ref 유지, start grace 기록). pane이 사라졌으면(`gone`) 예전처럼 새 리드를 열고, pane에서 아직 무언가 돌고 있으면 타이핑하지 않고 새 리드로 교체한다.
+
+## 9. Windows: 레인과 리뷰어는 창을 열지 않는다 (2026-11-24)
 
 - 레인·리뷰어·게이트·QA는 Windows에서 콘솔 프로세스(bun, 게이트, 테스트, QA)를 `detached`, PowerShell
   `Start-Process`, `CREATE_NEW_CONSOLE`로 띄우지 않는다. 부모 콘솔을 상속하거나 `windowsHide: true`/
