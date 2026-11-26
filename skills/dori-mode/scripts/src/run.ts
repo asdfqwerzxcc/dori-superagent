@@ -3,6 +3,7 @@ import { HcRuntime } from "../../../../src/runtime/hc/index.ts";
 import { HerdrRuntime } from "../../../../src/runtime/herdr/index.ts";
 import { OmoHostRuntime } from "../../../../src/runtime/omo-host/index.ts";
 import { Runtimes } from "../../../../src/runtime/registry.ts";
+import type { PaneTree } from "../../../../src/runtime/pane-liveness.ts";
 import { type RuntimeChoice, readRuntimeChoice } from "../../../../src/runtime/select.ts";
 import type { RuntimeKind, SessionRuntime } from "../../../../src/runtime/types.ts";
 import { configPath, type DoriConfig } from "./config.ts";
@@ -102,13 +103,19 @@ export const runtimesFor = (
   env: Env,
   runner: Runner = run,
   clock: Clock = realClock,
+  paneTree?: PaneTree,
 ): ChosenRuntimes => {
   const exec: Exec = async (cmd, argv) => {
     const r = await runner([cmd, ...argv]);
     return { code: r.code, stdout: r.out, stderr: r.err };
   };
   const make: Record<RuntimeKind, () => SessionRuntime> = {
-    herdr: () => new HerdrRuntime(exec, env["DORI_HERDR_SESSION"], { env, sleep: clock.sleep }),
+    herdr: () =>
+      new HerdrRuntime(exec, env["DORI_HERDR_SESSION"], {
+        env,
+        sleep: clock.sleep,
+        ...(paneTree === undefined ? {} : { tree: paneTree }),
+      }),
     hc: () => new HcRuntime(exec, { env, sleep: clock.sleep }),
     "omo-host": () => new OmoHostRuntime(exec, { env }),
   };
@@ -128,11 +135,12 @@ export const runtimesOf = (deps: {
   readonly config: Pick<DoriConfig, "runtime" | "laneRuntime" | "leadRuntime">;
   readonly rts?: ChosenRuntimes;
   readonly env?: Env;
+  readonly paneTree?: PaneTree;
 }): ChosenRuntimes => {
   if (deps.rts) return deps.rts;
   let rts = built.get(deps);
   if (!rts) {
-    rts = runtimesFor(deps.config, deps.env ?? process.env, deps.run, deps.clock);
+    rts = runtimesFor(deps.config, deps.env ?? process.env, deps.run, deps.clock, deps.paneTree);
     built.set(deps, rts);
   }
   return rts;

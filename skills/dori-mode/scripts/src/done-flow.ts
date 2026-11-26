@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { type DoriConfig, fill } from "./config.ts";
 import { AGENT_SESSION_KINDS, type SessionRef } from "../../../../src/runtime/types.ts";
 import { type Lane, type Registry, sessionOf, statusOf, withStatus } from "./registry.ts";
+import type { PaneTree } from "../../../../src/runtime/pane-liveness.ts";
 import { type ChosenRuntimes, type Clock, iso, type Runner, runtimesOf } from "./run.ts";
 import { sendVerified } from "./sessions.ts";
 import { checkDone, type SignalIo } from "./signals.ts";
@@ -21,6 +22,8 @@ export type FlowDeps = {
   readonly rts?: ChosenRuntimes;
   /** The environment the runtimes are chosen from and run with; process.env when absent. */
   readonly env?: Readonly<Record<string, string | undefined>>;
+  /** The process tree the herdr probe proves pane liveness with; the real one when absent. */
+  readonly paneTree?: PaneTree;
 };
 
 const signalIo = (deps: FlowDeps, lane: Lane): SignalIo => ({

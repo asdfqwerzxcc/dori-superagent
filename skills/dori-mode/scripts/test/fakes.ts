@@ -3,6 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { type DoriConfig, defaultConfig } from "../src/config.ts";
+import type { PaneTree } from "../../../../src/runtime/pane-liveness.ts";
+
+/** The fake herdr reports shell_pid 100 for every pane: a root that is not a shell is a live front for the probe. */
+export const fakePaneTree: PaneTree = async () => [{ pid: 100, exe: "bun" }];
 import type { FlowDeps } from "../src/done-flow.ts";
 import { Registry } from "../src/registry.ts";
 import type { Clock, Ran, Runner } from "../src/run.ts";
@@ -142,7 +146,15 @@ export const depsFor = (w: World, clock: Clock, stateDir: string, patch: Partial
     runtime: "herdr",
     ...patch,
   };
-  return { run: fakeRunner(w), clock, registry: new Registry(stateDir), config, exists: () => true, env: {} };
+  return {
+    run: fakeRunner(w),
+    clock,
+    registry: new Registry(stateDir),
+    config,
+    exists: () => true,
+    env: {},
+    paneTree: fakePaneTree,
+  };
 };
 
 export const sent = (w: World): string[] =>
