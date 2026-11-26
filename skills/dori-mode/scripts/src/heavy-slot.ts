@@ -11,6 +11,8 @@ export type HeavyPolicy = {
   readonly jobMemGb: number;
   /** Free memory, in percent of total, that must remain after reserving a new job (the HOST_GUARD threshold). */
   readonly memFreeMinPct: number;
+  /** No dynamic admission: win32 has neither flock(2) nor a load/memory probe, so the floor runs as a fixed count. */
+  readonly staticSlots?: boolean;
 };
 
 export type HeavyHost = { readonly load1: number; readonly memFreePct: number; readonly memTotalGb: number };
@@ -127,6 +129,13 @@ const claim = (deps: SlotDeps, slot: string, label: string, stamp: string): stri
   return slot;
 };
 
+/** The win32 fallback: nothing above the floor is justified without a lock or a reading, so the floor is fixed. */
+const staticDecision = (p: HeavyPolicy, running: number): HeavyDecision => ({
+  limit: p.minSlots,
+  admit: running < p.minSlots,
+  reason: `limit ${p.minSlots} static slots, running ${running}: win32 has no flock(2) or load/memory probe, so heavyMinSlots is the fixed count`,
+});
+
 export const SAMPLE_MAX_AGE_MS = 1_000;
 const SAMPLE_TRIES = 3;
 // The decision on a fresh sample. Its age is measured once, on monotonic time from before the first reading (load)
@@ -137,6 +146,7 @@ export const decideNow = async (
   deps: Pick<SlotDeps, "policy" | "host" | "clock" | "elapsedMs">,
   held: readonly HeldSlot[],
 ): Promise<HeavyDecision> => {
+  if (deps.policy.staticSlots === true) return staticDecision(deps.policy, held.length);
   const elapsed = deps.elapsedMs ?? (() => performance.now());
   // The wall clock (warm-up) is read before the sample: after the age check only arithmetic runs.
   const warming = warmingCount(held, deps.clock.now());

@@ -15,6 +15,7 @@ import { withState } from "./fakes.ts";
 
 const policy: HeavyPolicy = { minSlots: 1, maxSlots: 4, maxLoad: 10, jobMemGb: 4, memFreeMinPct: 15 };
 const asRoot = process.getuid?.() === 0;
+const posix = process.platform !== "win32";
 
 let state: ReturnType<typeof withState>;
 beforeEach(() => {
@@ -79,11 +80,11 @@ test("a sample that stays slow still lets the floor run, decided on unknown read
   expect(logs[0]).toContain("(floor)");
 });
 
-test.skipIf(asRoot)("a process of another user (EPERM) is alive, not dead", () => {
+test.skipIf(asRoot || !posix)("a process of another user (EPERM) is alive, not dead", () => {
   expect(pidAlive(1)).toBe(true);
 });
 
-test.skipIf(asRoot)("an owner file that exists but cannot be read keeps its slot held, however old", () => {
+test.skipIf(asRoot || !posix)("an owner file that exists but cannot be read keeps its slot held, however old", () => {
   const dir = join(state.dir, "heavy");
   const slot = holder(dir, 1, 999_999);
   const old = new Date(Date.now() - 10 * 60_000);
@@ -98,7 +99,7 @@ test.skipIf(asRoot)("an owner file that exists but cannot be read keeps its slot
   }
 });
 
-test.skipIf(asRoot)("a slot directory that cannot be listed stops admission with a clear error", async () => {
+test.skipIf(asRoot || !posix)("a slot directory that cannot be listed stops admission with a clear error", async () => {
   const dir = join(state.dir, "heavy");
   holder(dir, 1, process.pid);
   chmodSync(dir, 0o000);

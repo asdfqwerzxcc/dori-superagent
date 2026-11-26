@@ -1,5 +1,5 @@
 /** dori sync, boot, verify-pr and the host loops: watch, freshness, dead-panes, guard, heavy, can-launch. */
-import { totalmem } from "node:os";
+import { freemem, totalmem } from "node:os";
 import { dirname, join } from "node:path";
 import { bootCheck, envSlackCheck } from "./boot.ts";
 import { type Command, die, every, slackAuth } from "./cli-context.ts";
@@ -65,6 +65,7 @@ const verifyPrCommand: Command = async ({ key, positionals, opt, config }) => {
 };
 
 const heavy: Command = async ({ rest, config }) => {
+  const win32 = process.platform === "win32";
   const deps: SlotDeps = {
     dir: `${config.stateDir}/heavy`,
     policy: {
@@ -73,14 +74,22 @@ const heavy: Command = async ({ rest, config }) => {
       maxLoad: config.heavyMaxLoad,
       jobMemGb: config.heavyJobMemGb,
       memFreeMinPct: config.guard.memFreeMinPct,
+      ...(win32 ? { staticSlots: true } : {}),
     },
     clock: realClock,
     host: async (): Promise<HeavyHost> => {
+      const total = totalmem();
+      if (win32)
+        return {
+          load1: Number.NaN,
+          memFreePct: total > 0 ? (freemem() / total) * 100 : Number.NaN,
+          memTotalGb: total / 1024 ** 3,
+        };
       const s = await sampleLoadMemory(run);
       return {
         load1: s.loadKnown ? s.load1 : Number.NaN,
         memFreePct: s.memKnown ? s.memFreePct : Number.NaN,
-        memTotalGb: totalmem() / 1024 ** 3,
+        memTotalGb: total / 1024 ** 3,
       };
     },
     alive: pidAlive,
