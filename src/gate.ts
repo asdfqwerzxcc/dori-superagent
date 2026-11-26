@@ -111,9 +111,10 @@ async function gateRefusal(
 }
 
 /** The check and workflow-run dimensions together, shared by every merge path: the PR gate, the bundle gate and the lane
- * gate. `none` is true only when no check ran (`gh` reported no checks, or every check was skipped) and the repository
- * has no workflows; any other uncertain answer is a refusal. A green check list alone is not green while a
- * `pull_request` workflow at the exact head is queued, waiting for approval or cancelled. */
+ * gate. `none` is true only when no check ran (`gh` reported no checks, or every check was skipped), the repository
+ * has no workflows, and no `pull_request` run at the exact head is outside green; any other uncertain answer is a
+ * refusal. A green check list alone is not green while a `pull_request` workflow at the exact head is queued, waiting
+ * for approval or cancelled. */
 export type CheckGate = { readonly none: boolean; readonly refusal?: [MergeOutcome, string] };
 
 const checkRefusal = (why: string): CheckGate => ({ none: false, refusal: ["checks_red", why] });
@@ -162,14 +163,13 @@ export async function checkGate(
   const r = await d.exec("gh", ["pr", "checks", String(pr.number), "--repo", pr.repo, "--json", "name,bucket"]);
   const stdout = r.stdout.trim();
   const stderr = r.stderr.trim();
-  if (r.code === 1 && stdout === "" && NO_CHECKS_RE.test(stderr)) {
-    const wf = await workflowCount(d, pr.repo);
-    if (wf.refusal !== undefined) return checkRefusal(wf.refusal[1]);
-    if (wf.count === 0) return { none: true };
-    return checkRefusal(
-      `no checks reported but ${pr.repo} has ${wf.count} workflow(s); checks may not have registered`,
+  if (r.code === 1 && stdout === "" && NO_CHECKS_RE.test(stderr))
+    return noChecksGate(
+      d,
+      pr,
+      sha,
+      (n) => `no checks reported but ${pr.repo} has ${n} workflow(s); checks may not have registered`,
     );
-  }
   if (r.code !== 0) return checkRefusal(`gh pr checks failed (exit ${r.code}): ${stderr || stdout || "no output"}`);
   if (stderr !== "") return checkRefusal(`gh pr checks wrote to stderr: ${stderr}`);
   let raw: unknown;
@@ -181,14 +181,32 @@ export async function checkGate(
   if (!Array.isArray(raw) || !raw.every(isCheck)) return checkRefusal("gh pr checks printed an unreadable check list");
   const checks = raw as Check[];
   if (checks.length === 0) return checkRefusal("gh pr checks returned an empty list without the no-checks reason");
-  if (checks.every((c) => c.bucket === "skipping")) {
-    const wf = await workflowCount(d, pr.repo);
-    if (wf.refusal !== undefined) return checkRefusal(wf.refusal[1]);
-    if (wf.count === 0) return { none: true };
-    return checkRefusal(`all ${checks.length} checks are skipped; no check ran`);
-  }
+  if (checks.every((c) => c.bucket === "skipping"))
+    return noChecksGate(
+      d,
+      pr,
+      sha,
+      (n) => `all ${checks.length} checks are skipped; no check ran, and ${pr.repo} has ${n} workflow(s)`,
+    );
   const bad = checks.filter((c) => c.bucket !== "pass" && c.bucket !== "skipping");
   if (bad.length > 0) return checkRefusal(`checks not green: ${bad.map((c) => `${c.name}=${c.bucket}`).join(", ")}`);
   const runs = await workflowRefusal(d, pr.repo, sha);
   return runs === undefined ? { none: false } : { none: false, refusal: runs };
 }
+
+// No check ran, so `none` is only for a repository with no workflow at all: the runs at the head are read here too, or a
+// workflow whose run never registered (a deleted workflow still has its run) would merge on an empty check list.
+const noChecksGate = async (
+  d: Deps,
+  pr: { readonly repo: string; readonly number: number },
+  sha: string,
+  refusal: (count: number) => string,
+): Promise<CheckGate> => {
+  const wf = await workflowCount(d, pr.repo);
+  if (wf.refusal !== undefined) return checkRefusal(wf.refusal[1]);
+  const runs = await workflowRefusal(d, pr.repo, sha);
+  if (runs !== undefined) return { none: false, refusal: runs };
+  if (wf.count === undefined) return checkRefusal(`workflow count for ${pr.repo} is unknown`);
+  if (wf.count === 0) return { none: true };
+  return checkRefusal(refusal(wf.count));
+};

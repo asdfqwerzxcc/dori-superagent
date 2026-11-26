@@ -29,6 +29,9 @@ describe("merge --bundle", () => {
       if (argv[1] === "checks") return Array.isArray(checks) ? { code: 0, stdout: JSON.stringify(checks) } : checks;
       if (argv[0] === "api" && argv[1]?.endsWith("/actions/workflows")) return { code: 0, stdout: `${workflows}\n` };
       if (argv[0] === "api" && argv[1]?.includes("/actions/runs?")) {
+        const query = new URLSearchParams(argv[1].split("?")[1] ?? "");
+        if (query.get("head_sha") !== head || query.get("event") !== "pull_request")
+          return { code: 1, stdout: "", stderr: `unexpected runs query: ${argv[1]}` };
         if (runs === "fail") return { code: 1, stdout: "", stderr: "HTTP 403: Resource not accessible by integration" };
         const list =
           runs === "none" || workflows === 0
