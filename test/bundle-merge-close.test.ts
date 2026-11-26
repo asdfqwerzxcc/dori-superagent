@@ -16,16 +16,29 @@ describe("merge --bundle", () => {
 
   type GhResult = { readonly code: number; readonly stdout: string; readonly stderr?: string };
   const noChecks: GhResult = { code: 1, stdout: "", stderr: "no checks reported on the 'main' branch" };
+  type Runs = { readonly status: string; readonly conclusion: string | null } | "fail" | "none";
 
   function gh(
     w: ReturnType<typeof setup>["w"],
     checks: unknown[] | GhResult = [{ name: "test", bucket: "pass" }],
     workflows = 1,
+    runs: Runs = { status: "completed", conclusion: "success" },
   ) {
     w.gh = (argv) => {
       if (argv[1] === "view") return { code: 0, stdout: JSON.stringify({ headRefOid: head }) };
       if (argv[1] === "checks") return Array.isArray(checks) ? { code: 0, stdout: JSON.stringify(checks) } : checks;
       if (argv[0] === "api" && argv[1]?.endsWith("/actions/workflows")) return { code: 0, stdout: `${workflows}\n` };
+      if (argv[0] === "api" && argv[1]?.includes("/actions/runs?")) {
+        const query = new URLSearchParams(argv[1].split("?")[1] ?? "");
+        if (query.get("head_sha") !== head || query.get("event") !== "pull_request")
+          return { code: 1, stdout: "", stderr: `unexpected runs query: ${argv[1]}` };
+        if (runs === "fail") return { code: 1, stdout: "", stderr: "HTTP 403: Resource not accessible by integration" };
+        const list =
+          runs === "none" || workflows === 0
+            ? []
+            : [{ id: 1, workflow_id: 10, name: "ci", head_sha: head, event: "pull_request", ...runs }];
+        return { code: 0, stdout: JSON.stringify({ total_count: list.length, workflow_runs: list }) };
+      }
       if (argv[1] === "merge") return { code: 0, stdout: "" };
       return { code: 1, stdout: "" };
     };
@@ -78,6 +91,19 @@ describe("merge --bundle", () => {
     gh(w, noChecks, 1);
     await expect(mergeGate(d, "o/r#7", { bundle: "b1" })).rejects.toThrow("1 workflow");
     expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(false);
+  });
+
+  test("refuses a bundle merge on every pull_request workflow answer that is not green", async () => {
+    for (const [runs, why] of [
+      [{ status: "queued", conclusion: null }, "ci=queued"],
+      [{ status: "completed", conclusion: "action_required" }, "ci=action_required"],
+      ["fail", "could not be read: HTTP 403"],
+    ] as const) {
+      const { w, d } = await membersBundle();
+      gh(w, [{ name: "test", bucket: "pass" }], 1, runs);
+      await expect(mergeGate(d, "o/r#7", { bundle: "b1" })).rejects.toThrow(why);
+      expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(false);
+    }
   });
 });
 

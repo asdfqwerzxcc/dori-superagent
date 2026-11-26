@@ -9,7 +9,9 @@ import { prompt, type Deps } from "./harness.ts";
 import { loadHooks, loadReviewSettings, substitute } from "./hooks.ts";
 import { laneRepo } from "./lane-repo.ts";
 import { savedDiffBase } from "./lane-review-binding.ts";
+import { Refusal } from "./refusal.ts";
 import type { ExecOptions } from "./runtime/exec.ts";
+import { scanVerdicts } from "./verdict.ts";
 import { CEILING_VARS } from "./worker-limits.ts";
 
 /** Windows caps one CreateProcess command line near 32,767 chars; leave room for the executable and its flags. */
@@ -107,110 +109,118 @@ export async function review(
   opts: ReviewOptions = {},
 ): Promise<{ verdict: "CLEAR" | "BLOCK"; sha: string }> {
   const pr = parsePr(prId);
-  // hooks.reviewCommand replaces the built-in reviewer; it must print a VERDICT line like the built-in one.
-  const hook = loadHooks(d.store.root).reviewCommand;
   const sha = await headSha(d, pr);
-  opts.onHead?.(sha);
-  const view = JSON.parse(
-    await gh(d, ["pr", "view", String(pr.number), "--repo", pr.repo, "--json", "title,body,headRefName"]),
-  );
-  const lane = await laneReview(d, view, sha);
-  const diff = lane === undefined ? await gh(d, ["pr", "diff", String(pr.number), "--repo", pr.repo]) : "";
-  const vars = {
-    pr: pr.id,
-    repo: pr.repo,
-    number: String(pr.number),
-    sha,
-    title: `${String(view.title ?? "")}\n\n${String(view.body ?? "")}`.trim(),
-    diff: lane?.diff ?? diff,
-    ...CEILING_VARS,
-    ...(lane === undefined
-      ? {}
-      : {
-          key: lane.key,
-          base: lane.base,
-          tip: sha,
-          brief: lane.brief,
-          diffPath: lane.diffPath,
-          checkout: lane.checkout,
-        }),
-  };
-  const text = prompt(lane === undefined ? "review.md" : "review-lane.md", vars);
-  const callbacks =
-    opts.onOutput === undefined
-      ? undefined
-      : {
-          onStdout: (chunk: string) => opts.onOutput?.({ stream: "stdout", chunk }),
-          onStderr: (chunk: string) => opts.onOutput?.({ stream: "stderr", chunk }),
-        };
-  const execOptions = (stdin?: string): ExecOptions | undefined =>
-    callbacks === undefined && stdin === undefined
-      ? undefined
-      : { ...(callbacks ?? {}), ...(stdin === undefined ? {} : { stdin }) };
-  let cmd: string;
-  let argv: readonly string[];
-  let stdin: string | undefined;
-  if (hook !== undefined) {
-    const parts = substitute(hook, { ...vars, text });
-    const length = argvLength(parts);
-    if (length > HOOK_ARGV_LIMIT)
-      throw new Error(
-        `hooks.reviewCommand argv is ${length} chars (limit ${HOOK_ARGV_LIMIT}); shorten the hook template instead of ` +
-          `putting {text} or {diff} in argv`,
-      );
-    const [hookCmd, ...hookArgv] = parts;
-    cmd = hookCmd ?? d.agentCmd;
-    argv = hookArgv;
-  } else {
-    // `-` makes omo prepend stdin to the prompt, so a large diff never has to fit in the OS argv.
-    cmd = d.agentCmd;
-    argv = ["-p", "--no-session", "-nt", ...(model ? ["--model", model] : []), "-"];
-    stdin = text;
-  }
-  const res = await d.exec(cmd, argv, execOptions(stdin));
-  const first = [...res.stdout.matchAll(/^VERDICT:\s*(CLEAR|BLOCK)\b/gm)].at(-1);
-  // A reviewer that cannot answer is a provider problem, not a verdict: retry once on the configured fallback so a
-  // disabled or saturated primary never turns into a silent "no receipt" failure.
-  const fallback = hook === undefined ? loadReviewSettings(d.store.root).fallbackModel : undefined;
-  const retry =
-    first === undefined && fallback !== undefined && fallback !== model
-      ? await d
-          .exec(d.agentCmd, ["-p", "--no-session", "--model", fallback, "-"], execOptions(text))
-          .catch(() => undefined)
-      : undefined;
-  const answered = retry ?? res;
-  const out = retry ? `${res.stdout}\n${retry.stdout}` : res.stdout;
-  const verdicts = [...answered.stdout.matchAll(/^VERDICT:\s*(CLEAR|BLOCK)\b/gm)];
-  const last = verdicts.at(-1);
-  if (!last) {
-    const name = `${pr.id.replaceAll("/", "__").replace("#", "_")}@${sha}-${randomUUID()}.noverdict.txt`;
-    const diagnostic = join(d.store.root, "receipts", name);
-    writeFileSync(diagnostic, out.split(/\r?\n/).slice(-200).join("\n"), { flag: "wx", mode: 0o600 });
-    const reason =
-      answered.code === 0
-        ? "reviewer printed no VERDICT line"
-        : `reviewer exited ${answered.code}: ${answered.stderr.trim() || "no VERDICT line in its output"}`;
-    throw new Error(`${reason}; no receipt written; reviewer output saved to ${diagnostic}`);
-  }
-  if (answered.code !== 0) throw new Error(`reviewer exited ${answered.code}: ${answered.stderr.trim()}`);
-  const verdict = last[1] as "CLEAR" | "BLOCK";
-  const full = answered.stdout;
-  const reviewPath = reviewTextPath(d.store.root, pr.id, sha);
+  const release = d.store.lockReceipt(pr.id, sha, d.now());
+  if (!release) throw new Refusal(`a review or merge is already in progress at head ${sha.slice(0, 12)}`);
   try {
-    mkdirSync(join(d.store.root, "receipts"), { recursive: true });
-    writeFileSync(reviewPath, capReviewText(full), { mode: 0o600 });
-  } catch (e) {
-    const why = e instanceof Error ? e.message : String(e);
-    process.stderr.write(`dori: could not save the full reviewer output to ${reviewPath} (${why})\n`);
+    // Clear first: an in-flight, interrupted or failed attempt at this head must never stay merge-eligible.
+    d.store.clearReceipt(pr.id, sha);
+    // hooks.reviewCommand replaces the built-in reviewer; it must print a VERDICT line like the built-in one.
+    const hook = loadHooks(d.store.root).reviewCommand;
+    opts.onHead?.(sha);
+    const view = JSON.parse(
+      await gh(d, ["pr", "view", String(pr.number), "--repo", pr.repo, "--json", "title,body,headRefName"]),
+    );
+    const lane = await laneReview(d, view, sha);
+    const diff = lane === undefined ? await gh(d, ["pr", "diff", String(pr.number), "--repo", pr.repo]) : "";
+    const vars = {
+      pr: pr.id,
+      repo: pr.repo,
+      number: String(pr.number),
+      sha,
+      title: `${String(view.title ?? "")}\n\n${String(view.body ?? "")}`.trim(),
+      diff: lane?.diff ?? diff,
+      ...CEILING_VARS,
+      ...(lane === undefined
+        ? {}
+        : {
+            key: lane.key,
+            base: lane.base,
+            tip: sha,
+            brief: lane.brief,
+            diffPath: lane.diffPath,
+            checkout: lane.checkout,
+          }),
+    };
+    const text = prompt(lane === undefined ? "review.md" : "review-lane.md", vars);
+    const callbacks =
+      opts.onOutput === undefined
+        ? undefined
+        : {
+            onStdout: (chunk: string) => opts.onOutput?.({ stream: "stdout", chunk }),
+            onStderr: (chunk: string) => opts.onOutput?.({ stream: "stderr", chunk }),
+          };
+    const execOptions = (stdin?: string): ExecOptions | undefined =>
+      callbacks === undefined && stdin === undefined
+        ? undefined
+        : { ...(callbacks ?? {}), ...(stdin === undefined ? {} : { stdin }) };
+    let cmd: string;
+    let argv: readonly string[];
+    let stdin: string | undefined;
+    if (hook !== undefined) {
+      const parts = substitute(hook, { ...vars, text });
+      const length = argvLength(parts);
+      if (length > HOOK_ARGV_LIMIT)
+        throw new Error(
+          `hooks.reviewCommand argv is ${length} chars (limit ${HOOK_ARGV_LIMIT}); shorten the hook template instead of ` +
+            `putting {text} or {diff} in argv`,
+        );
+      const [hookCmd, ...hookArgv] = parts;
+      cmd = hookCmd ?? d.agentCmd;
+      argv = hookArgv;
+    } else {
+      // `-` makes omo prepend stdin to the prompt, so a large diff never has to fit in the OS argv.
+      cmd = d.agentCmd;
+      argv = ["-p", "--no-session", "-nt", ...(model ? ["--model", model] : []), "-"];
+      stdin = text;
+    }
+    const res = await d.exec(cmd, argv, execOptions(stdin));
+    const first = scanVerdicts(res.stdout);
+    // A reviewer that cannot answer is a provider problem, not a verdict: retry once on the configured fallback so a
+    // disabled or saturated primary never turns into a silent "no receipt" failure.
+    const fallback = hook === undefined ? loadReviewSettings(d.store.root).fallbackModel : undefined;
+    const retry =
+      first.kind === "none" && fallback !== undefined && fallback !== model
+        ? await d
+            .exec(d.agentCmd, ["-p", "--no-session", "--model", fallback, "-"], execOptions(text))
+            .catch(() => undefined)
+        : undefined;
+    const answered = retry ?? res;
+    const out = retry ? `${res.stdout}\n${retry.stdout}` : res.stdout;
+    const scan = scanVerdicts(answered.stdout);
+    if (answered.code !== 0 || scan.kind !== "verdict") {
+      const name = `${pr.id.replaceAll("/", "__").replace("#", "_")}@${sha}-${randomUUID()}.noverdict.txt`;
+      const diagnostic = join(d.store.root, "receipts", name);
+      writeFileSync(diagnostic, out.split(/\r?\n/).slice(-200).join("\n"), { flag: "wx", mode: 0o600 });
+      const reason =
+        answered.code !== 0
+          ? `reviewer exited ${answered.code}${answered.stderr.trim() ? `: ${answered.stderr.trim()}` : ""}`
+          : scan.kind === "ambiguous"
+            ? `reviewer printed conflicting verdicts (${scan.values.join(" and ")})`
+            : "reviewer printed no VERDICT line";
+      throw new Error(`${reason}; no receipt written; reviewer output saved to ${diagnostic}`);
+    }
+    const verdict = scan.verdict;
+    const full = answered.stdout;
+    const reviewPath = reviewTextPath(d.store.root, pr.id, sha);
+    try {
+      mkdirSync(join(d.store.root, "receipts"), { recursive: true });
+      writeFileSync(reviewPath, capReviewText(full), { mode: 0o600 });
+    } catch (e) {
+      const why = e instanceof Error ? e.message : String(e);
+      process.stderr.write(`dori: could not save the full reviewer output to ${reviewPath} (${why})\n`);
+    }
+    d.store.saveReceipt({
+      pr: pr.id,
+      sha,
+      verdict,
+      model: hook ? "hook" : retry ? `${fallback} (fallback)` : (model ?? "default"),
+      at: d.now(),
+      summary: summarizeReview(full),
+    });
+    d.usage.record({ name: "dori.review_completed", verdict });
+    return { verdict, sha };
+  } finally {
+    release();
   }
-  d.store.saveReceipt({
-    pr: pr.id,
-    sha,
-    verdict,
-    model: hook ? "hook" : retry ? `${fallback} (fallback)` : (model ?? "default"),
-    at: d.now(),
-    summary: summarizeReview(full),
-  });
-  d.usage.record({ name: "dori.review_completed", verdict });
-  return { verdict, sha };
 }

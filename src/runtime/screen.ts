@@ -7,6 +7,8 @@ export const SCREEN_LINES = 30;
 const BORDER = /─{10,}\s*$/;
 const EMPTY_INPUT = /^❯\s*$/;
 const BUSY = /esc to interrupt|[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/;
+/** A running child task's row under the input box, led by its braille spinner; it does not push the box up (#263). */
+const CHILD_ROW = /^\s*[\u2800-\u28FF] /;
 const TURN = /esc to interrupt/i;
 const WAITING_CHILDREN = /\bwaiting_children\b/;
 
@@ -17,6 +19,7 @@ const WAITING_CHILDREN = /\bwaiting_children\b/;
  */
 const FOOTER: readonly RegExp[] = [
   /^\s*Tip\b/,
+  /^\(OmO\)/,
   /\b\d+[smhd]\s+ago\b/,
   /\(\s*\d+h\s+\d+m\s*\)/,
   /\b(?:watching|monitors?)\b/i,
@@ -39,16 +42,18 @@ function composerLines(screen: string): { readonly lines: readonly string[]; rea
 
 /**
  * True only when an omo screen positively shows its idle input at the bottom: an empty `❯` line between borders, with
- * nothing below the bottom border but redrawn footer lines. A spinner, `esc to interrupt`, a draft, or any unknown line
- * below the box is not idle. Stopgap for #62/#178: both runtimes report an omo with live monitors as `working`.
+ * nothing below the bottom border but redrawn footer lines and running child-task rows. A spinner or `esc to interrupt`
+ * above the box, a draft, a dialog, or any unknown line below it is not idle. Stopgap for #62/#178: both runtimes
+ * report an omo with live monitors as `working`.
  */
 export function omoScreenIdle(screen: string): boolean {
-  if (screen.includes("esc to interrupt") || BUSY.test(screen)) return false;
+  if (screen.includes("esc to interrupt")) return false;
   const { lines, input } = composerLines(screen);
   if (input < 1 || input + 1 >= lines.length) return false;
   if (!EMPTY_INPUT.test(lines[input] ?? "")) return false;
   if (!BORDER.test(lines[input - 1] ?? "") || !BORDER.test(lines[input + 1] ?? "")) return false;
-  return lines.slice(input + 2).every((line) => line === "" || redrawn(line));
+  if (lines.slice(0, input).some((line) => BUSY.test(line))) return false;
+  return lines.slice(input + 2).every((line) => line === "" || redrawn(line) || CHILD_ROW.test(line));
 }
 
 /** What the bottom of an omo screen says about taking a message now; `why` is the one-line reason the inbox logs. */

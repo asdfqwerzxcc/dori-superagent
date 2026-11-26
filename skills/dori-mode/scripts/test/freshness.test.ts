@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { freshnessTick, anchoredReportLine } from "../src/freshness.ts";
+import { anchoredReportLine, freshnessTick } from "../src/freshness.ts";
 import { depsFor, fakeClock, newWorld, withState } from "./fakes.ts";
 
 // Rendered rows in the shapes real panes show: an instruction, a prompt, argv, and a wrapped report.

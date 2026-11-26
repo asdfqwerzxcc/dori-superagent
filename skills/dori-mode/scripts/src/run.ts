@@ -1,7 +1,9 @@
 import type { Exec } from "../../../../src/runtime/exec.ts";
 import { HcRuntime } from "../../../../src/runtime/hc/index.ts";
 import { HerdrRuntime } from "../../../../src/runtime/herdr/index.ts";
+import { OmoHostRuntime } from "../../../../src/runtime/omo-host/index.ts";
 import { Runtimes } from "../../../../src/runtime/registry.ts";
+import type { PaneTree } from "../../../../src/runtime/pane-liveness.ts";
 import { type RuntimeChoice, readRuntimeChoice } from "../../../../src/runtime/select.ts";
 import type { RuntimeKind, SessionRuntime } from "../../../../src/runtime/types.ts";
 import { configPath, type DoriConfig } from "./config.ts";
@@ -51,7 +53,14 @@ export class ChosenRuntimes extends Runtimes {
   readonly choice: RuntimeChoice | undefined;
   readonly failure: Error | undefined;
 
-  constructor(pick: () => RuntimeChoice, make: (kind: RuntimeKind) => SessionRuntime) {
+  constructor(
+    pick: () => RuntimeChoice,
+    make: (kind: RuntimeKind) => SessionRuntime,
+    private readonly placement: {
+      readonly lane?: RuntimeKind | undefined;
+      readonly lead?: RuntimeKind | undefined;
+    } = {},
+  ) {
     let choice: RuntimeChoice | undefined;
     let failure: Error | undefined;
     try {
@@ -69,6 +78,16 @@ export class ChosenRuntimes extends Runtimes {
     if (this.failure) throw this.failure;
     return super.default;
   }
+
+  /** Where new lanes open: the config's `laneRuntime`, else the selected (default) runtime. */
+  get lane(): SessionRuntime {
+    return this.placement.lane === undefined ? this.default : this.for({ runtime: this.placement.lane, id: "" });
+  }
+
+  /** Where the lead session lives: the config's `leadRuntime`, else the selected (default) runtime. */
+  get lead(): SessionRuntime {
+    return this.placement.lead === undefined ? this.default : this.for({ runtime: this.placement.lead, id: "" });
+  }
 }
 
 /** `DORI_RUNTIME` > the config's `runtime` > the root's detection (inside hc, inside herdr, hc on PATH, else herdr). */
@@ -80,22 +99,30 @@ export const runtimeChoice = (config: Pick<DoriConfig, "runtime">, env: Env): Ru
 
 /** Every runtime behind the skill's Runner, so tests swap the binaries for a recorder; sleeps go through the clock. */
 export const runtimesFor = (
-  config: Pick<DoriConfig, "runtime">,
+  config: Pick<DoriConfig, "runtime" | "laneRuntime" | "leadRuntime">,
   env: Env,
   runner: Runner = run,
   clock: Clock = realClock,
+  paneTree?: PaneTree,
 ): ChosenRuntimes => {
   const exec: Exec = async (cmd, argv) => {
     const r = await runner([cmd, ...argv]);
     return { code: r.code, stdout: r.out, stderr: r.err };
   };
   const make: Record<RuntimeKind, () => SessionRuntime> = {
-    herdr: () => new HerdrRuntime(exec, env["DORI_HERDR_SESSION"], { env, sleep: clock.sleep }),
+    herdr: () =>
+      new HerdrRuntime(exec, env["DORI_HERDR_SESSION"], {
+        env,
+        sleep: clock.sleep,
+        ...(paneTree === undefined ? {} : { tree: paneTree }),
+      }),
     hc: () => new HcRuntime(exec, { env, sleep: clock.sleep }),
+    "omo-host": () => new OmoHostRuntime(exec, { env }),
   };
   return new ChosenRuntimes(
     () => runtimeChoice(config, env),
     (kind) => make[kind](),
+    { lane: config.laneRuntime, lead: config.leadRuntime },
   );
 };
 
@@ -105,14 +132,15 @@ const built = new WeakMap<object, ChosenRuntimes>();
 export const runtimesOf = (deps: {
   readonly run: Runner;
   readonly clock: Clock;
-  readonly config: Pick<DoriConfig, "runtime">;
+  readonly config: Pick<DoriConfig, "runtime" | "laneRuntime" | "leadRuntime">;
   readonly rts?: ChosenRuntimes;
   readonly env?: Env;
+  readonly paneTree?: PaneTree;
 }): ChosenRuntimes => {
   if (deps.rts) return deps.rts;
   let rts = built.get(deps);
   if (!rts) {
-    rts = runtimesFor(deps.config, deps.env ?? process.env, deps.run, deps.clock);
+    rts = runtimesFor(deps.config, deps.env ?? process.env, deps.run, deps.clock, deps.paneTree);
     built.set(deps, rts);
   }
   return rts;

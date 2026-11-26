@@ -13,6 +13,8 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori inbox list <pane|role|key>             queued entries: index, state (queued|typed|held), sender, time, first 60 chars
   dori inbox ack <pane|role|key> <index>      drop a held entry: it did reach the pane
   dori inbox resend <pane|role|key> <index>   release a held entry: the next flush delivers it
+  dori inbox drop <pane|role|key> <index>     throw away a queued entry: it never reached the pane and never will
+                  [--all]                     throw away every queued entry of the inbox; held and typed entries stay
   dori duty [--once] [--interval SECONDS]     flush inboxes, nudge idle lanes, escalate, detect lost lanes
   dori duty stop [--text WHY] | resume | status   kill switch
   dori loop [--once] [--interval S] [--max-lanes N] [--max-starts N] [--max-load L] [--force]
@@ -71,7 +73,9 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori merge <lane-key|lane/key> [--dry-run]  default gate: CLEAR lane receipt at the head -> push lane/<key> to the
                                               lane repo's own remote (fork when present, else origin) -> PR against
                                               main -> checks green (or none) -> merge commit -> delete the remote branch
-  dori merge <owner/repo#N> [--dry-run]       PR form: CLEAR receipt at that head + green checks when configured -> squash merge
+  dori merge <owner/repo#N> [--dry-run]       PR form: CLEAR receipt at that head + green checks and pull_request
+                                              workflow runs when configured -> squash merge (refused while workflow
+                                              status cannot be verified)
   dori merge <owner/repo#N> --bundle <id>     explicit bundle gate: every recorded member CLEAR at its sha + green
                                               checks when configured -> squash merge
   dori bundle open <id> --title T [--issue N] [--repo owner/name]
@@ -199,9 +203,12 @@ export function parse(argv: readonly string[]): Args {
       pos.push(a);
       continue;
     }
-    const name = a.slice(2);
+    // --interval=60 is --interval 60; read whole, it would be a flag nobody reads that swallows the next argument.
+    const eq = a.indexOf("=");
+    const name = eq < 0 ? a.slice(2) : a.slice(2, eq);
+    if (eq >= 0 && BOOLEAN_FLAGS.has(name)) throw new Refusal(`--${name} takes no value`);
     // A value flag at the very end (--text $MSG with MSG unset) has no value; reading it as "true" would send that word.
-    const value = BOOLEAN_FLAGS.has(name) ? "true" : argv[++i];
+    const value = eq >= 0 ? a.slice(eq + 1) : BOOLEAN_FLAGS.has(name) ? "true" : argv[++i];
     if (value === undefined) throw new Refusal(`--${name} needs a value`);
     flags.set(name, [...(flags.get(name) ?? []), value]);
   }

@@ -1,4 +1,5 @@
 import { bundleGate } from "./bundles.ts";
+import { workflowRefusal } from "./gate-workflow.ts";
 import type { Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
 import type { MergeOutcome } from "./telemetry.ts";
@@ -57,7 +58,7 @@ type Check = { name: string; bucket: string };
  * Merge only when the review dimension is satisfied and every configured check passed. The review dimension is a CLEAR
  * receipt at the exact current head, or with `--bundle` every recorded member still CLEAR at the sha it was admitted on.
  * `checks=none` requires gh's no-checks answer and a repository with no workflows; pending, failed, skipped-only,
- * unreadable or failed gh calls refuse.
+ * unreadable or failed gh calls refuse, and both forms read the pull_request runs at the head the same way.
  */
 export async function mergeGate(
   d: Deps,
@@ -66,15 +67,26 @@ export async function mergeGate(
 ): Promise<string> {
   const pr = parsePr(prId);
   const sha = await headSha(d, pr);
-  const refused = await gateRefusal(d, pr, sha, opts.bundle);
-  if (refused) {
-    if (!opts.dryRun) d.usage.record({ name: "dori.merge_decided", outcome: refused[0] });
-    throw new Refusal(`MERGE_REFUSED ${refused[1]}`);
+  const release = d.store.lockReceipt(pr.id, sha, d.now());
+  if (!release) {
+    if (!opts.dryRun) d.usage.record({ name: "dori.merge_decided", outcome: "review_in_progress" });
+    throw new Refusal(
+      `MERGE_REFUSED review_in_progress: a review or merge is already in progress at head ${sha.slice(0, 12)}`,
+    );
   }
-  if (opts.dryRun) return `MERGE_OK ${pr.id} head=${sha} (dry run)`;
-  await gh(d, ["pr", "merge", String(pr.number), "--repo", pr.repo, "--squash", "--match-head-commit", sha]);
-  d.usage.record({ name: "dori.merge_decided", outcome: "merged" });
-  return `MERGED ${pr.id} head=${sha}`;
+  try {
+    const refused = await gateRefusal(d, pr, sha, opts.bundle);
+    if (refused) {
+      if (!opts.dryRun) d.usage.record({ name: "dori.merge_decided", outcome: refused[0] });
+      throw new Refusal(`MERGE_REFUSED ${refused[1]}`);
+    }
+    if (opts.dryRun) return `MERGE_OK ${pr.id} head=${sha} (dry run)`;
+    await gh(d, ["pr", "merge", String(pr.number), "--repo", pr.repo, "--squash", "--match-head-commit", sha]);
+    d.usage.record({ name: "dori.merge_decided", outcome: "merged" });
+    return `MERGED ${pr.id} head=${sha}`;
+  } finally {
+    release();
+  }
 }
 
 async function gateRefusal(
@@ -94,12 +106,15 @@ async function gateRefusal(
       return ["review_block", `review at ${sha.slice(0, 12)} is ${receipt.verdict}`];
     }
   }
-  return checksRefusal(d, pr);
+  const checks = await checkGate(d, pr, sha);
+  return checks.refusal;
 }
 
-/** The check dimension alone, shared by the PR gate, the bundle gate and the lane gate. `none` is true only when no
- * check ran (`gh` reported no checks, or every check was skipped) and the repository has no workflows; any other
- * uncertain answer is a refusal. */
+/** The check and workflow-run dimensions together, shared by every merge path: the PR gate, the bundle gate and the lane
+ * gate. `none` is true only when no check ran (`gh` reported no checks, or every check was skipped), the repository
+ * has no workflows, and no `pull_request` run at the exact head is outside green; any other uncertain answer is a
+ * refusal. A green check list alone is not green while a `pull_request` workflow at the exact head is queued, waiting
+ * for approval or cancelled. */
 export type CheckGate = { readonly none: boolean; readonly refusal?: [MergeOutcome, string] };
 
 const checkRefusal = (why: string): CheckGate => ({ none: false, refusal: ["checks_red", why] });
@@ -140,18 +155,21 @@ async function workflowCount(
   return { count };
 }
 
-export async function checkGate(d: Deps, pr: { readonly repo: string; readonly number: number }): Promise<CheckGate> {
+export async function checkGate(
+  d: Deps,
+  pr: { readonly repo: string; readonly number: number },
+  sha: string,
+): Promise<CheckGate> {
   const r = await d.exec("gh", ["pr", "checks", String(pr.number), "--repo", pr.repo, "--json", "name,bucket"]);
   const stdout = r.stdout.trim();
   const stderr = r.stderr.trim();
-  if (r.code === 1 && stdout === "" && NO_CHECKS_RE.test(stderr)) {
-    const wf = await workflowCount(d, pr.repo);
-    if (wf.refusal !== undefined) return checkRefusal(wf.refusal[1]);
-    if (wf.count === 0) return { none: true };
-    return checkRefusal(
-      `no checks reported but ${pr.repo} has ${wf.count} workflow(s); checks may not have registered`,
+  if (r.code === 1 && stdout === "" && NO_CHECKS_RE.test(stderr))
+    return noChecksGate(
+      d,
+      pr,
+      sha,
+      (n) => `no checks reported but ${pr.repo} has ${n} workflow(s); checks may not have registered`,
     );
-  }
   if (r.code !== 0) return checkRefusal(`gh pr checks failed (exit ${r.code}): ${stderr || stdout || "no output"}`);
   if (stderr !== "") return checkRefusal(`gh pr checks wrote to stderr: ${stderr}`);
   let raw: unknown;
@@ -163,21 +181,32 @@ export async function checkGate(d: Deps, pr: { readonly repo: string; readonly n
   if (!Array.isArray(raw) || !raw.every(isCheck)) return checkRefusal("gh pr checks printed an unreadable check list");
   const checks = raw as Check[];
   if (checks.length === 0) return checkRefusal("gh pr checks returned an empty list without the no-checks reason");
-  if (checks.every((c) => c.bucket === "skipping")) {
-    const wf = await workflowCount(d, pr.repo);
-    if (wf.refusal !== undefined) return checkRefusal(wf.refusal[1]);
-    if (wf.count === 0) return { none: true };
-    return checkRefusal(`all ${checks.length} checks are skipped; no check ran`);
-  }
+  if (checks.every((c) => c.bucket === "skipping"))
+    return noChecksGate(
+      d,
+      pr,
+      sha,
+      (n) => `all ${checks.length} checks are skipped; no check ran, and ${pr.repo} has ${n} workflow(s)`,
+    );
   const bad = checks.filter((c) => c.bucket !== "pass" && c.bucket !== "skipping");
   if (bad.length > 0) return checkRefusal(`checks not green: ${bad.map((c) => `${c.name}=${c.bucket}`).join(", ")}`);
-  return { none: false };
+  const runs = await workflowRefusal(d, pr.repo, sha);
+  return runs === undefined ? { none: false } : { none: false, refusal: runs };
 }
 
-/** The refusal form shared by the PR and bundle gates. */
-export async function checksRefusal(
+// No check ran, so `none` is only for a repository with no workflow at all: the runs at the head are read here too, or a
+// workflow whose run never registered (a deleted workflow still has its run) would merge on an empty check list.
+const noChecksGate = async (
   d: Deps,
   pr: { readonly repo: string; readonly number: number },
-): Promise<[MergeOutcome, string] | undefined> {
-  return (await checkGate(d, pr)).refusal;
-}
+  sha: string,
+  refusal: (count: number) => string,
+): Promise<CheckGate> => {
+  const wf = await workflowCount(d, pr.repo);
+  if (wf.refusal !== undefined) return checkRefusal(wf.refusal[1]);
+  const runs = await workflowRefusal(d, pr.repo, sha);
+  if (runs !== undefined) return { none: false, refusal: runs };
+  if (wf.count === undefined) return checkRefusal(`workflow count for ${pr.repo} is unknown`);
+  if (wf.count === 0) return { none: true };
+  return checkRefusal(refusal(wf.count));
+};

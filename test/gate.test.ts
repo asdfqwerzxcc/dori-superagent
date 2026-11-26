@@ -13,16 +13,26 @@ const posixModes = process.platform !== "win32";
 describe("review + merge gate", () => {
   const head = "a".repeat(40);
   type GhResult = { readonly code: number; readonly stdout: string; readonly stderr?: string };
+  type Runs = { workflow_runs?: unknown[]; total_count?: number } | { fail: string } | { body: string };
   const noChecks: GhResult = { code: 1, stdout: "", stderr: "no checks reported on the 'main' branch" };
   const green: GhResult = { code: 0, stdout: JSON.stringify([{ name: "test", bucket: "pass" }]) };
 
-  function gh(w: World, checks: unknown[] | GhResult = green, workflows: number | GhResult = 1) {
+  function gh(w: World, checks: unknown[] | GhResult = green, workflows: number | GhResult = 1, runs: Runs = {}) {
     w.gh = (argv) => {
       if (argv[1] === "view") return { code: 0, stdout: JSON.stringify({ headRefOid: head, title: "t", body: "b" }) };
       if (argv[1] === "diff") return { code: 0, stdout: "diff --git a/x b/x\n+line\n" };
       if (argv[1] === "checks") return Array.isArray(checks) ? { code: 0, stdout: JSON.stringify(checks) } : checks;
       if (argv[0] === "api" && argv[1]?.endsWith("/actions/workflows"))
         return typeof workflows === "number" ? { code: 0, stdout: `${workflows}\n` } : workflows;
+      if (argv[0] === "api") {
+        if ("fail" in runs) return { code: 1, stdout: "", stderr: runs.fail };
+        if ("body" in runs) return { code: 0, stdout: runs.body };
+        const list = runs.workflow_runs ?? [];
+        return {
+          code: 0,
+          stdout: JSON.stringify({ total_count: runs.total_count ?? list.length, workflow_runs: list }),
+        };
+      }
       if (argv[1] === "merge") return { code: 0, stdout: "" };
       return { code: 1, stdout: "" };
     };

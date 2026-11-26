@@ -1,11 +1,13 @@
 import { existsSync } from "node:fs";
 
 import { type DoriConfig, fill } from "./config.ts";
-import type { SessionRef } from "../../../../src/runtime/types.ts";
+import { AGENT_SESSION_KINDS, type SessionRef } from "../../../../src/runtime/types.ts";
 import { type Lane, type Registry, sessionOf, statusOf, withStatus } from "./registry.ts";
+import type { PaneTree } from "../../../../src/runtime/pane-liveness.ts";
 import { type ChosenRuntimes, type Clock, iso, type Runner, runtimesOf } from "./run.ts";
 import { sendVerified } from "./sessions.ts";
 import { checkDone, type SignalIo } from "./signals.ts";
+import { laneProcesses, stopLeftovers } from "./lane-processes.ts";
 import { Supervision } from "./supervision.ts";
 import { Lessons, type LessonInput } from "./lessons.ts";
 
@@ -20,6 +22,8 @@ export type FlowDeps = {
   readonly rts?: ChosenRuntimes;
   /** The environment the runtimes are chosen from and run with; process.env when absent. */
   readonly env?: Readonly<Record<string, string | undefined>>;
+  /** The process tree the herdr probe proves pane liveness with; the real one when absent. */
+  readonly paneTree?: PaneTree;
 };
 
 const signalIo = (deps: FlowDeps, lane: Lane): SignalIo => ({
@@ -138,7 +142,12 @@ export const closeLane = async (
     cleanup.push(r.code === 0 ? "thread marked done" : `thread hook failed: ${r.err.slice(0, 160)}`);
   }
   const ref = sessionOf(lane);
-  if (ref) cleanup.push(await closeSession(deps, ref));
+  if (ref) {
+    const procs = await laneProcesses(runtimesOf(deps), deps.run, ref);
+    const closed = await closeSession(deps, ref);
+    cleanup.push(closed);
+    if (!closed.endsWith("not closed")) cleanup.push(await stopLeftovers(deps.run, procs));
+  }
   const root = lane.cwd ?? deps.config.defaultCwd;
   for (const wt of (await discoverWorktrees(lane, deps.run, [deps.config.defaultCwd])).filter(exists)) {
     const r = await deps.run(["git", "-C", root, "worktree", "remove", wt]);
@@ -147,6 +156,9 @@ export const closeLane = async (
   const at = iso(deps.clock);
   const receipt = { checks, note, cleanup };
   await deps.registry.write(withStatus(lane, "closed", note, at, { closedAt: at, receipt }));
+  // A host session is resumed by any read that names it, so one read between its close and this write (a launch's
+  // startup check) brings it back: close it once more now that every reader sees the lane closed.
+  if (ref && AGENT_SESSION_KINDS.has(ref.runtime)) await closeSession(deps, ref);
   if (lesson) {
     try {
       const added = new Lessons(deps.config.stateDir).add({ ...lesson, lane: lane.key, cwd: root }, deps.clock.now());

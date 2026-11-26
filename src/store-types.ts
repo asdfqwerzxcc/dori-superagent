@@ -34,12 +34,15 @@ export type Lane = {
   nudges: number;
   /** Set when the duty loop demoted this lane for inactivity, so it keeps the nudge/escalation path. */
   demotedAt?: number;
+  /** A pane stuck in `blocked` or `error`: when that stall was first seen, and whether the lead has been told. */
+  blockedSince?: number;
+  blockedAlerted?: boolean;
   final?: { text: string; evidence: string[]; at: number };
   /** The last pane output and checkout signature the duty loop saw, for demoting a stale `working` record. */
   watch?: LaneWatch;
   log: {
     at: number;
-    kind: "start" | "report" | "ready" | "nudge" | "demoted" | "done" | "lost" | "dropped";
+    kind: "start" | "report" | "ready" | "nudge" | "stuck" | "demoted" | "done" | "lost" | "dropped";
     text: string;
   }[];
 };
@@ -65,6 +68,9 @@ export type DeliveryAttempt = {
 
 /** A flush lock from another host (or an unreadable one) older than this is taken over; on this host only a dead pid frees it (#108). */
 export const INBOX_LOCK_STALE_MS = 60_000;
+
+/** A review or merge lock from another host (or an unreadable one) older than this is taken over; a live pid on this host keeps it. */
+export const HEAD_LOCK_STALE_MS = 60 * 60_000;
 
 export type QueuedMessage = { at: number; from: string; text: string; attempt?: DeliveryAttempt };
 

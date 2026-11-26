@@ -1,8 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, linkSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { platform } from "node:os";
 import { join } from "node:path";
 
+import { replaceFile } from "./atomic-replace.ts";
 import { isOn, OS_TYPE, otlpLogs, rejectedRecords } from "./telemetry-otlp.ts";
 
 // Anonymous usage counts, sent the way omo sends its own: OTLP/HTTP JSON logs to the omo collector.
@@ -11,34 +12,29 @@ import { isOn, OS_TYPE, otlpLogs, rejectedRecords } from "./telemetry-otlp.ts";
 
 const HOUR_MS = 3_600_000;
 
-// Windows refuses to replace a file another process has open for reading (EPERM/EBUSY). The reader closes it within
-// a moment, so a bounded synchronous retry turns that sharing violation back into the atomic rename it should be.
-const REPLACE_RETRY_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
-const REPLACE_ATTEMPTS = 20;
-const PAUSE = new Int32Array(new SharedArrayBuffer(4));
-
-function replaceFile(from: string, to: string): void {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      renameSync(from, to);
-      return;
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
-      if (attempt === REPLACE_ATTEMPTS || code === undefined || !REPLACE_RETRY_CODES.has(code)) throw e;
-      Atomics.wait(PAUSE, 0, 0, 1);
-    }
-  }
-}
-
 export type MergeOutcome =
   | "merged"
   | "no_receipt"
   | "review_block"
   | "bundle_members"
+  | "review_in_progress"
   | "no_checks"
   | "checks_red"
-  | "checks_all_skipped";
-export type DutyCounts = { ticks: number; flushed: number; nudges: number; escalations: number; lost: number };
+  | "checks_all_skipped"
+  | "workflow_pending"
+  | "workflow_status_unknown";
+
+/**
+ * The counters a duty summary carries. The list is the type, so a counter cannot be added to one and not the other.
+ */
+const DUTY_KEYS = ["ticks", "flushed", "nudges", "escalations", "lost", "stuck"] as const;
+export type DutyCounts = { [K in (typeof DUTY_KEYS)[number]]: number };
+
+/** Every counter at zero: a stored bucket from an older version is completed from this before it is summed into. */
+const ZERO: DutyCounts = { ticks: 0, flushed: 0, nudges: 0, escalations: 0, lost: 0, stuck: 0 };
+
+/** A counter read back from a stored bucket: absent before it existed, and `null` if a broken build ever stored NaN. */
+const counter = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
 export type TelemetryEvent =
   | { name: "dori.installed" }
@@ -76,7 +72,8 @@ type State = {
   noticeShown?: boolean;
   installedSent?: boolean;
   lastActiveDay?: string;
-  duty?: DutyCounts & { since: number };
+  /** Partial, because a bucket written before a counter existed has no key for it: read it through `counter()`. */
+  duty?: Partial<DutyCounts> & { since: number };
 };
 
 const fetchSender: Sender = async (url, body, headers) => {
@@ -177,8 +174,11 @@ export class Telemetry implements Usage {
     this.enqueue(async () => {
       const state = this.load();
       const now = this.now();
-      const acc = state.duty ?? { ticks: 0, flushed: 0, nudges: 0, escalations: 0, lost: 0, since: now };
-      for (const k of ["ticks", "flushed", "nudges", "escalations", "lost"] as const) acc[k] += counts[k];
+      // A bucket written before a counter existed has no key for it, and `??` would not fill the gap: the object is
+      // not nullish. Every counter is normalized before summing, so an upgrade neither drops the first sum nor emits
+      // `intValue: "NaN"`.
+      const acc = { ...ZERO, since: state.duty?.since ?? now };
+      for (const k of DUTY_KEYS) acc[k] = counter(state.duty?.[k]) + counter(counts[k]);
       if (now - acc.since < HOUR_MS) {
         state.duty = acc;
         this.save(state);

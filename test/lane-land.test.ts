@@ -60,10 +60,23 @@ describe("lane landing", () => {
     laneGh(w, {
       checks: { code: 1, stdout: "", stderr: "no checks reported on the 'main' branch" },
       workflows: 0,
+      runs: "none",
     });
     const lines = await mergeLane(d, "alpha");
     expect(lines.at(-1)).toContain("checks=none");
     expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(true);
+  });
+
+  test("no checks and no workflow count still refuses a run that is not green", async () => {
+    const { w, d } = laneFixture();
+    receiptAt(d, tipA);
+    laneGh(w, {
+      checks: { code: 1, stdout: "", stderr: "no checks reported" },
+      workflows: 0,
+      runs: { status: "queued", conclusion: null },
+    });
+    await expect(mergeLane(d, "alpha")).rejects.toThrow("ci=queued");
+    expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(false);
   });
 
   test("refuses when the repo has workflows but no checks registered", async () => {
@@ -83,6 +96,20 @@ describe("lane landing", () => {
     });
     await expect(mergeLane(d, "alpha")).rejects.toThrow("(empty or whitespace)");
     expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(false);
+  });
+
+  test("refuses a lane landing on every pull_request workflow answer that is not green", async () => {
+    for (const [runs, why] of [
+      [{ status: "queued", conclusion: null }, "ci=queued"],
+      [{ status: "completed", conclusion: "action_required" }, "ci=action_required"],
+      ["fail", "could not be read: HTTP 403"],
+    ] as const) {
+      const { w, d } = laneFixture();
+      receiptAt(d, tipA);
+      laneGh(w, { runs });
+      await expect(mergeLane(d, "alpha")).rejects.toThrow(why);
+      expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(false);
+    }
   });
 
   test("refuses a gh pr checks failure with its message", async () => {

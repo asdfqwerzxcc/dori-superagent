@@ -12,13 +12,20 @@ import {
   writeQueue,
 } from "./inbox-files.ts";
 import { writeJson, readJson } from "./json-file.ts";
-import { takeInboxLock } from "./inbox-lock.ts";
+import { takeInboxLock, takeLock } from "./inbox-lock.ts";
 import { Receipts } from "./receipts.ts";
 import { refFromText, refText, sameSession } from "./refs.ts";
 import { Refusal } from "./refusal.ts";
 import type { SessionRef } from "./runtime/types.ts";
 import { StoreRecords } from "./store-records.ts";
-import type { Lane, LaneReceipt, QueuedMessage, ReviewReceipt, Role } from "./store-types.ts";
+import {
+  HEAD_LOCK_STALE_MS,
+  type Lane,
+  type LaneReceipt,
+  type QueuedMessage,
+  type ReviewReceipt,
+  type Role,
+} from "./store-types.ts";
 
 export type { HostLoad } from "./store-types.ts";
 
@@ -165,6 +172,16 @@ export class Store extends StoreRecords {
 
   saveReceipt(r: ReviewReceipt): void {
     this.receipts.save(r);
+  }
+
+  /** A failed review at this head must not leave an earlier receipt that the merge gate would still trust. */
+  clearReceipt(pr: string, sha: string): void {
+    this.receipts.clear(pr, sha);
+  }
+
+  /** One review or merge at a time per (pr, sha); a held lock is a live attempt the gate must not ignore. */
+  lockReceipt(pr: string, sha: string, now: number): (() => void) | undefined {
+    return takeLock(`${this.receipts.receiptPath(pr, sha)}.lock`, now, HEAD_LOCK_STALE_MS);
   }
 
   receipt(pr: string, sha: string): ReviewReceipt | undefined {
