@@ -288,12 +288,12 @@ Every record also carries the service name and version, the install hash, a CI f
 ## Tests and development
 
 ```sh
-bun test ./test/                                  # the harness: 386 tests across 42 files, no model calls
-cd skills/dori-mode/scripts && bun install && bun test   # Dori mode: 321 tests across 44 files
+bun test ./test/                                  # the harness: 1209 tests across 148 files, no model calls
+cd skills/dori-mode/scripts && bun install && bun test   # Dori mode: 486 tests across 70 files
 bun run ci                                        # biome, tsc, knip, the 250-line check, both suites
 ```
 
-The harness tests run against a fake herdr, a fake hc and a fake gh with a clock the tests move; the end-to-end tests start a real herdr server or a real hc core in an isolated session with a fake agent script in place of omo, and each skips itself when its binary is not on PATH. Dori mode's tests run against fake herdr, git and gh and touch nothing real. CI runs the same on Ubuntu and macOS; it has no Windows job, so the win32-only tests (the heavy lock file and the `dori heavy` spawn in `heavy-win32.test.ts`) skip there and run only on a Windows host, while the POSIX-only tests (mode bits, FIFOs, symlinks, EPERM owners) do the reverse.
+The harness tests run against a fake herdr, a fake hc and a fake gh with a clock the tests move; the end-to-end tests start a real herdr server or a real hc core in an isolated session with a fake agent script in place of omo, and each skips itself when its binary is not on PATH. Dori mode's tests run against fake herdr, git and gh and touch nothing real. CI runs Ubuntu and macOS only: the win32-only heavy tests (the lock file and the `dori heavy` spawn in `heavy-win32.test.ts`) skip there and are run on a Windows host, and the POSIX-only tests (mode bits, FIFOs, symlinks, EPERM owners) skip on Windows.
 
 ## What this is not
 
