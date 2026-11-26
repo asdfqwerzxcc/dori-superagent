@@ -1,4 +1,5 @@
 import { expect } from "bun:test";
+import type { ProcNode } from "../src/process-tree.ts";
 import type { Exec, ExecResult } from "../src/runtime/exec.ts";
 import { HerdrRuntime } from "../src/runtime/herdr/index.ts";
 import type { SessionRef } from "../src/runtime/types.ts";
@@ -22,7 +23,12 @@ export const ref = (id: string, group?: string, container?: string): SessionRef 
   ...(group !== undefined ? { group } : {}),
   ...(container !== undefined ? { container } : {}),
 });
-export const omoFront = { process_info: { foreground_processes: [{ name: "omo", argv: ["omo"] }] } };
+export const omoFront = { process_info: { shell_pid: 100, foreground_processes: [{ name: "omo", argv: ["omo"] }] } };
+/** The probe's snapshot for that pane: shell 100 with one live agent child. */
+export const liveTree = async (): Promise<readonly ProcNode[]> => [
+  { pid: 100, exe: "powershell.exe" },
+  { pid: 101, parent: 100, exe: "omo.exe" },
+];
 // The World recorder from test/fake.ts, with the paste settle recorded instead of slept.
 export function world() {
   const w = new World();

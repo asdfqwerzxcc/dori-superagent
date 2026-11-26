@@ -15,11 +15,16 @@ import {
 } from "../src/supervisors/ensure-up.ts";
 import { ensureUpOff } from "../src/supervisors.ts";
 
-/** No process snapshot: the D2 death proof is doubt here, so herdr's own status word decides. */
-const NO_TREE = async () => undefined;
+/** Read by the probe (D2): shell 100 with one live agent child, matching the fixture's process-info (pid 101). */
+const LIVE_TREE = async () => [
+  { pid: 100, exe: "powershell.exe" },
+  { pid: 101, parent: 100, exe: "omo.exe" },
+];
 /** One tick with the doubt tree and no log, so each case below states only what it is about. */
-const check = (opts: Omit<EnsureUpOptions, "tree" | "log">) => ensureUpCheck({ ...opts, tree: NO_TREE, log: () => {} });
-const loopOnce = (opts: Omit<EnsureUpOptions, "tree" | "once">) => runEnsureUp({ ...opts, tree: NO_TREE, once: true });
+const check = (opts: Omit<EnsureUpOptions, "tree" | "log">) =>
+  ensureUpCheck({ ...opts, tree: LIVE_TREE, log: () => {} });
+const loopOnce = (opts: Omit<EnsureUpOptions, "tree" | "once">) =>
+  runEnsureUp({ ...opts, tree: LIVE_TREE, once: true });
 
 const homeWithState = (): string => {
   const home = mkdtempSync(join(tmpdir(), "dori-ensure-"));
@@ -82,10 +87,10 @@ describe("ensure-up decisions", () => {
   test("the registered lead's own pane decides: one live lead is up, a gone pane or no role is down", async () => {
     const home = homeWithLead("w9:p1");
     expect(leadRef(home)).toEqual({ runtime: "herdr", id: "w9:p1" });
-    expect(await leadStatus(home, LEAD, NO_TREE)).toBe("idle");
-    expect(await leadStatus(home, LEAD_SHELL, NO_TREE)).toBe("shell");
-    expect(await leadStatus(home, LEAD_GONE, NO_TREE)).toBe("gone");
-    expect(await leadStatus(homeWithState(), LEAD, NO_TREE)).toBe("absent");
+    expect(await leadStatus(home, LEAD, LIVE_TREE)).toEqual({ status: "idle", liveness: "alive" });
+    expect(await leadStatus(home, LEAD_SHELL, LIVE_TREE)).toEqual({ status: "shell", liveness: "alive" });
+    expect(await leadStatus(home, LEAD_GONE, LIVE_TREE)).toEqual({ status: "gone" });
+    expect(await leadStatus(homeWithState(), LEAD, LIVE_TREE)).toEqual({ status: "absent" });
   });
 
   test("a lead pane that is only a shell is down and runs dori up once", async () => {

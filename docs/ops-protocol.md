@@ -133,7 +133,7 @@
 
 - 2026-11-26 10:11:55Z에 한 레인이 호스트의 `bun.exe`를 모두 죽였고, 리드 프로세스(가동 35.3시간)가 사라졌는데도 `herdr pane get wZ:p1`은 계속 `agent:"pi", agent_status:"working"`을 돌려줬다. 그 말을 믿은 `ensure-up`과 `dori up`은 1.5시간 동안 "lead alive"만 출력했고, 인박스는 죽은 pane에 메시지를 타이핑해 그 텍스트가 셸 명령으로 실행되게 했다.
 - 이제 herdr 프로브는 상태 단어를 믿기 전에 pane의 프로세스 정체성을 OS 스냅샷으로 확인한다(`src/runtime/pane-liveness.ts`): `pane process-info`의 `shell_pid`가 셸이고 자식 프로세스가 하나도 없으면 pane 안에서는 아무것도 돌 수 없으므로, 그 pane은 `shell`(down)로 읽고 `atPrompt`를 남긴다. 스냅샷을 못 읽거나 root가 셸이 아니면 의심(doubt)으로 남겨 살아 있는 리드를 되살리지 않는다.
-- `ensure-up`은 그 `shell`을 down으로 보고 `dori up`을 부르고, `dori up`은 `atPrompt`가 증명된 pane에만 같은 pane에서 리드 명령을 다시 타이핑한다(역할 `roles.json`의 ref 유지, start grace 기록). pane이 사라졌으면(`gone`) 예전처럼 새 리드를 열고, pane에서 아직 무언가 돌고 있으면 타이핑하지 않고 새 리드로 교체한다.
+- `ensure-up`은 그 `shell`을 down으로 보고 `dori up`을 부르고, `dori up`은 증명된 pane에만 같은 pane에서 리드 명령을 다시 타이핑한다(역할 `roles.json`의 ref 유지, start grace 기록): pane의 트리가 자식 없는 셸이고 **화면 맨 아래 줄이 빈 프롬프트**이며(드래프트·덮어그려진 줄·읽기 실패는 거부) 300ms 뒤 두 번째 스냅샷도 같은 결론일 때만이다. 같은 pane 재타이핑은 pane당 1회뿐이고(`state/lead-revive.json`), 두 번째부터는 새 리드를 연다. 스냅샷을 못 읽는 의심(doubt)도 살아 있다고 보지 않고 새 리드를 열며, 재기동 명령은 요청한 cwd와 `OMO_TASK_DEFAULT_BACKGROUND=1`을 명시해 pane의 현재 위치에 끌려가지 않는다. pane이 사라졌으면(`gone`) 예전처럼 새 리드를 열고, pane에서 아직 무언가 돌고 있으면 타이핑하지 않고 새 리드로 교체한다.
 
 ## 9. Windows: 레인과 리뷰어는 창을 열지 않는다 (2026-11-24)
 

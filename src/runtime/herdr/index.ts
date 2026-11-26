@@ -78,11 +78,11 @@ export class HerdrRuntime implements SessionRuntime {
   }
 
   submitTyped(ref: SessionRef, into: AgentIdentity): Promise<SubmitResult> {
-    return submitTyped(this.cli, ref.id, into);
+    return submitTyped(this.cli, ref.id, into, this.tree);
   }
 
   typeIntoShell(ref: SessionRef, text: string): Promise<boolean> {
-    return typeIntoShell(this.cli, ref.id, text);
+    return typeIntoShell(this.cli, ref.id, text, this.tree);
   }
 
   keys(ref: SessionRef, pressed: readonly Key[]): Promise<void> {

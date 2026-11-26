@@ -5,6 +5,7 @@ import { prompt, type Deps } from "./harness.ts";
 import { reviewLabel } from "./lane-gate.ts";
 import { paneWorktreeMismatch } from "./lane-worktree.ts";
 import { leadRestartBusy } from "./lead-restart-busy.ts";
+import { LEAD_ENV, leadCheck, reviveCommand, reviveLeadInPane } from "./lead-revive.ts";
 import { leadStarting, markLeadStarting, clearLeadStarting } from "./lead-starting.ts";
 import { loopArgs, readLoopCaps } from "./loop-caps.ts";
 import { refText } from "./refs.ts";
@@ -33,25 +34,10 @@ const STARTUP_WINDOW_MS = 30_000;
  * `run_in_background` defaults to true while an explicit false still blocks; engines that predate it ignore the
  * variable. Duty and the loops keep the engine default, so only the pane that talks to the human is affected.
  */
-const LEAD_ENV = { OMO_TASK_DEFAULT_BACKGROUND: "1" } as const;
-
 const supervise = (d: Deps, startMissing: boolean): Promise<SupervisedState> =>
   d.supervise !== undefined
     ? d.supervise(d.store.root, { startMissing })
     : superviseHome(d.store.root, { startMissing });
-
-/** A registered lead is replaced when its pane is gone OR is only a shell: a bare shell holds no conversation. A probe
- * that fails is doubt, and doubt must not add a second lead. `atPrompt` is the D2 proof that nothing runs in the pane. */
-type LeadCheck = { readonly liveness: "alive" | "unverified" | "gone" | "shell"; readonly atPrompt: boolean };
-
-const leadCheck = async (d: Deps, ref: SessionRef): Promise<LeadCheck> => {
-  try {
-    const { status, atPrompt } = await d.runtimes.for(ref).probe(ref);
-    return { liveness: status === "gone" || status === "shell" ? status : "alive", atPrompt: atPrompt === true };
-  } catch {
-    return { liveness: "unverified", atPrompt: false };
-  }
-};
 
 function renderPrompt(d: Deps, name: string): string {
   const dir = join(d.store.root, "prompts");
@@ -110,22 +96,21 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
     console.log(`UP lead starting (attempts=${start.attempts}); not opening another lead`);
     return;
   }
-  // D2: a pane whose TUI exited still exists, and herdr may keep calling it `working`. When the pane's own process tree
-  // proves it sits at a bare prompt, the lead starts again in that pane: the human keeps the view and roles.json keeps
-  // the ref. A shell still running something (or an unreadable tree) is not typed into: a new lead replaces it below.
-  if (previous !== undefined && liveness === "shell" && check?.atPrompt === true) {
-    markLeadStarting(d.store.root);
-    try {
-      await d.runtimes.for(previous).start(previous, agent("lead.md"));
-    } catch (e) {
-      clearLeadStarting(d.store.root);
-      throw e;
-    }
+  // D2: a pane whose TUI exited still exists, and herdr may keep calling it `working`. It is typed into only at a proven
+  // empty prompt, once ever, with the snapshot confirmed 300 ms later; anything unproven is replaced below.
+  if (
+    previous !== undefined &&
+    liveness === "shell" &&
+    (await reviveLeadInPane(d, previous, reviveCommand(agent("lead.md"), cwd)))
+  ) {
     const state = await supervise(d, !supervisorAlive(d.store.root));
     console.log(`UP lead revived in ${refText(previous)} (no agent in the pane); units=${units}`);
     showUnitPlacement(d, state, units);
     return;
   }
+  // Doubt (an unreadable snapshot) is never typed into either, and never reported as a live lead: the incident's own
+  // steady state was exactly that doubt, so it opens a new lead like a proven dead one.
+  if (liveness === "doubt") console.log("UP lead unproven (its pane's process tree is unreadable); opening a new lead");
   const caps = readLoopCaps(d.store.root);
   const rt = d.runtimes.default;
   const env = { DORI_HOME: d.store.root };

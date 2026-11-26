@@ -30,6 +30,8 @@ export type Deps = {
   readonly doriCmd: string;
   readonly host: () => HostLoad;
   readonly usage: Usage;
+  /** Waits at least `ms`; a fake Deps replaces it, so a re-check never really sleeps in tests. */
+  readonly sleep?: (ms: number) => Promise<void>;
   /** Starts the supervisors that are missing (`dori up`) or only reads their health; a fake Deps replaces it. */
   readonly supervise?: (home: string, opts?: { readonly startMissing?: boolean }) => Promise<SupervisedState>;
 };
@@ -61,6 +63,7 @@ export const defaultDeps = (): Deps => {
     exec: spawnExec,
     now: Date.now,
     agentCmd: process.env["DORI_AGENT_CMD"] ?? "omo",
+    sleep: (ms) => Bun.sleep(ms),
     doriCmd: process.env["DORI_CMD"] ?? `DORI_HOME=${shq(home)} bun ${shq(CLI)}`,
     host: () => ({ load1: loadavg()[0] ?? 0, cores: cpus().length, memFreePct: memFreePct(), memFreeMb: memFreeMb() }),
     usage: new Telemetry(home),

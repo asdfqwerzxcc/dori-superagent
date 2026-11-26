@@ -1,5 +1,5 @@
 import { interactiveShellInFront } from "../foreground.ts";
-import { paneTree, type PaneTree, tuiExited } from "../pane-liveness.ts";
+import { paneLiveness, paneTree, type PaneTree } from "../pane-liveness.ts";
 import { omoScreenIdle, SCREEN_LINES } from "../screen.ts";
 import type { AgentStatus, ForegroundProcess, Probe } from "../types.ts";
 import { type HerdrCli, reasonOf, ToolError } from "./exec.ts";
@@ -103,8 +103,8 @@ export async function probe(cli: HerdrCli, paneId: string, opts: ProbeOptions = 
   const front = await foreground(cli, paneId, opts.onFail ?? AS_DOUBT);
   // D2: herdr keeps the last status word after the TUI exits. A pane root with no child at all holds no agent, so its
   // word is stale: the pane is as down as a bare shell, and its screen is never read for a turn.
-  const atPrompt = await tuiExited(opts.tree ?? paneTree, front.rootPid);
-  const exited = atPrompt && status !== "shell";
+  const liveness = await paneLiveness(opts.tree ?? paneTree, front.rootPid);
+  const exited = liveness === "exited" && status !== "shell";
   let seen: AgentStatus = status;
   if (exited) seen = "shell";
   else if ((opts.screenCheck ?? true) && status === "working" && (await screenShowsIdle(cli, paneId))) seen = "idle";
@@ -112,7 +112,7 @@ export async function probe(cli: HerdrCli, paneId: string, opts: ProbeOptions = 
   return {
     status: seen,
     ...(name !== undefined ? { agent: name } : {}),
-    ...(atPrompt ? { atPrompt } : {}),
+    liveness,
     ...(front.pgid !== undefined ? { pgid: front.pgid } : {}),
     ...(front.rootPid !== undefined ? { rootPid: front.rootPid } : {}),
     ...(title !== undefined ? { title } : {}),

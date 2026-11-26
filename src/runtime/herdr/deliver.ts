@@ -1,14 +1,13 @@
 import type { AgentIdentity, DeliverOutcome, Key, SubmitResult } from "../types.ts";
-import type { PaneTree } from "../pane-liveness.ts";
+import { emptyPrompt, type PaneTree } from "../pane-liveness.ts";
+import { SCREEN_LINES } from "../screen.ts";
 import { type HerdrCli, reasonOf, ToolError } from "./exec.ts";
-import { foreground, paneAgent, probe } from "./probe.ts";
+import { probe } from "./probe.ts";
 
 /** The terminal needs a moment to finish a bracketed paste before an Enter is read as a submit. */
 export const PASTE_SETTLE_MS = 400;
 /** How often the Enter that submits typed fallback text is tried before the delivery is reported as failed. */
 export const ENTER_ATTEMPTS = 3;
-/** Screen lines read after an accepted prompt, enough to see the prompt line the pane ends on. */
-const SCREEN_LINES_FOR_DELIVERY = 12;
 
 export type Sleep = (ms: number) => Promise<void>;
 
@@ -60,7 +59,9 @@ export async function deliver(
     process.stderr.write(`dori: herdr pane get failed for ${paneId} (${reasonOf(e)}); ${HOLDING}\n`);
     return { kind: "not-ready", status: "unknown" };
   }
-  if (first.status === "gone" || first.shellInFront) return NO_AGENT;
+  // D2: typing needs the pane's own process tree to prove a live process in it. A stale `working`, a childless shell
+  // and an unreadable snapshot all type nothing; the message stays queued for a later tick.
+  if (first.status === "gone" || first.shellInFront || first.liveness !== "alive") return NO_AGENT;
   try {
     await cli.call(["agent", "prompt", paneId, text]);
     // herdr accepts a prompt for a pane whose agent it still believes in, and types it into whatever is in front.
@@ -68,7 +69,7 @@ export async function deliver(
     // shell prompt has no agent, so the text may have run as a command and must not be sent again as is (#89).
     if (process.env["DORI_VERIFY_PROMPT"] === "1") {
       try {
-        if (showsBarePrompt(await cli.read(paneId, SCREEN_LINES_FOR_DELIVERY))) {
+        if (showsBarePrompt(await cli.read(paneId, SCREEN_LINES))) {
           return {
             kind: "ambiguous",
             detail: "herdr agent prompt left a bare shell prompt in the pane",
@@ -88,11 +89,14 @@ export async function deliver(
     if (!(e instanceof ToolError) || !/agent_not_ready/.test(e.result.stderr || e.result.stdout))
       return ambiguous("agent prompt", e);
     // agent_not_ready also covers an agent that exited and left a shell in front: typing would run the text there.
-    // Re-read right before typing (#66): only a pane that still has an agent gets keystrokes.
-    const { status, agent } = await paneAgent(cli, paneId);
-    if (status === "shell" || status === "gone") return NO_AGENT;
-    const front = await foreground(cli, paneId, HOLDING);
-    if (front.shell) return NO_AGENT;
+    // Re-read right before typing (#66, D2): only a pane whose own tree proves a live process gets keystrokes.
+    const again = await probe(cli, paneId, {
+      screenCheck: false,
+      onFail: HOLDING,
+      ...(tree === undefined ? {} : { tree }),
+    });
+    if (again.status === "shell" || again.status === "gone" || again.shellInFront) return NO_AGENT;
+    if (again.liveness !== "alive") return NO_AGENT;
     // A multi-line paste swallows the Enter that follows it, so type the message as one line.
     // A failed send-text may still have typed some or all of it: ambiguous as well.
     try {
@@ -103,7 +107,7 @@ export async function deliver(
     await sleep(PASTE_SETTLE_MS);
     const missed = await pressEnter(cli, paneId);
     return missed
-      ? { kind: "typed", into: identity(agent, front.pgid), failure: missed.failure }
+      ? { kind: "typed", into: identity(again.agent, again.pgid), failure: missed.failure }
       : { kind: "delivered" };
   }
 }
@@ -115,15 +119,21 @@ export async function deliver(
  * still reported but a shell is in front (suspended with Ctrl+Z, #66/#69), or the lookup failed. Throws herdr's
  * error when every Enter failed.
  */
-export async function submitTyped(cli: HerdrCli, paneId: string, typedInto: AgentIdentity): Promise<SubmitResult> {
-  const { status, agent } = await paneAgent(cli, paneId);
-  if (status === "gone") return "wait";
-  if (status === "shell") return "changed";
+export async function submitTyped(
+  cli: HerdrCli,
+  paneId: string,
+  typedInto: AgentIdentity,
+  tree?: PaneTree,
+): Promise<SubmitResult> {
   // submitTyped holds the Enter of an earlier delivery, so a failed lookup is reported as holding that delivery.
-  const front = await foreground(cli, paneId, HOLDING);
-  if (front.shell) return "wait";
-  if (typedInto.agent !== undefined && agent !== typedInto.agent) return "changed";
-  if (typedInto.pgid !== undefined && front.pgid !== typedInto.pgid) return "changed";
+  const p = await probe(cli, paneId, { screenCheck: false, onFail: HOLDING, ...(tree === undefined ? {} : { tree }) });
+  if (p.status === "gone") return "wait";
+  if (p.status === "shell") return "changed";
+  if (p.shellInFront) return "wait";
+  // D2: an unreadable snapshot cannot prove the agent is still there, and Enter at a dead shell's prompt runs its line.
+  if (p.liveness !== "alive") return "wait";
+  if (typedInto.agent !== undefined && p.agent !== typedInto.agent) return "changed";
+  if (typedInto.pgid !== undefined && p.pgid !== typedInto.pgid) return "changed";
   const missed = await pressEnter(cli, paneId);
   if (missed) throw missed.failure;
   return "submitted";
@@ -142,11 +152,20 @@ async function pressEnter(cli: HerdrCli, paneId: string): Promise<{ readonly fai
 }
 
 /**
- * The operator's explicit `dori send --to-shell`: types text + Enter into a pane that has no agent. The status is
- * re-read right before typing; if an agent is there now, nothing is typed and false is returned.
+ * The operator's explicit `dori send --to-shell`: types text + Enter into a pane that has no agent, and only at the
+ * same proof `dori up` needs — the pane's tree shows a childless shell and its last screen line is an empty prompt.
+ * Anything else (a live child, a draft, a prompt redrawn over, an unreadable snapshot or screen) types nothing.
  */
-export async function typeIntoShell(cli: HerdrCli, paneId: string, text: string): Promise<boolean> {
-  if ((await paneAgent(cli, paneId)).status !== "shell") return false;
+export async function typeIntoShell(cli: HerdrCli, paneId: string, text: string, tree?: PaneTree): Promise<boolean> {
+  const p = await probe(cli, paneId, { screenCheck: false, onFail: HOLDING, ...(tree === undefined ? {} : { tree }) });
+  if (p.status !== "shell" || p.liveness !== "exited") return false;
+  let screen: string;
+  try {
+    screen = await cli.read(paneId, SCREEN_LINES);
+  } catch {
+    return false;
+  }
+  if (!emptyPrompt(screen)) return false;
   await cli.call(["pane", "send-text", paneId, text]);
   await cli.call(["pane", "send-keys", paneId, "enter"]);
   return true;

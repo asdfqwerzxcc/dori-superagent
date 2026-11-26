@@ -157,7 +157,9 @@ describe("an agent suspended with Ctrl+Z: herdr still says idle, but the shell i
 describe("--to-shell: the operator's explicit, per-message opt-in", () => {
   test("types exactly this message + Enter into a bare shell, never the queued ones", async () => {
     const { w, d } = setup();
+    w.tree = [{ pid: 100, exe: "powershell.exe" }];
     const shell = w.addPane("w1:p7", "shell");
+    shell.screen = "PS C:\\Users\\USER> ";
     await send(d, "w1:p7", "queued from a lane", "lane-a");
     const r = await captureStdout(() => main(["send", "w1:p7", "--to-shell", "--text", "ls -la"], d));
     expect(r.code).toBe(0);
