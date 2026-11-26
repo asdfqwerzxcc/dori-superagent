@@ -35,24 +35,27 @@ export function leadRevives(home: string, pane: string): number {
 
 /**
  * Claims the one revive of `pane`, or returns false when it is already claimed or the record cannot be written — a
- * failed record must refuse the typing, never fall back to it. The marker is written to a temp name and renamed into
- * place, so a reader never sees half a record and a crash cannot leave a broken claim.
+ * failed record must refuse the typing, never fall back to it. The claim itself is an exclusive create (`wx`), so two
+ * concurrent revives cannot both win: the loser sees EEXIST and opens a new lead instead. The record is then published
+ * from a temp name by rename, so a reader never sees half a line; if that write fails the claim is released and the
+ * revive refused.
  */
 export function claimLeadRevive(home: string, pane: string, now: number = Date.now()): boolean {
   const final = markerOf(home, pane);
   const tmp = `${final}.${process.pid}.tmp`;
+  let claimed = false;
   try {
     mkdirSync(join(stateDir(home), LEAD_REVIVE), { recursive: true });
+    writeFileSync(final, "", { flag: "wx" });
+    claimed = true;
     writeFileSync(tmp, JSON.stringify({ pane, at: now, pid: process.pid }), { flag: "wx" });
-    if (existsSync(final)) return false;
     renameSync(tmp, final);
     return true;
   } catch {
+    if (claimed) rmSync(final, { force: true });
     return false;
   } finally {
-    try {
-      rmSync(tmp, { force: true });
-    } catch {}
+    rmSync(tmp, { force: true });
   }
 }
 
