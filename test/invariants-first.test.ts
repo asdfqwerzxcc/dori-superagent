@@ -30,7 +30,10 @@ const MIRROR_TAIL =
   "behaviour, hardened): `VERDICT: BLOCK`.";
 
 const REVIEW_TRIGGER =
-  "(`DIFFICULTY: D3|D4` in the brief or PR body, or an `## Invariants` section, with no high category named)";
+  "(`DIFFICULTY: D3|D4` in the PR body, or an `## Invariants` section, with no high category named)";
+
+const DOC_BLOCK =
+  "리뷰 게이트는 flash/default D3+에서 실패-선행 증거가 없으면 HIGH로 보고 `VERDICT: BLOCK`하고, 상위 카테고리는 결과만 검사한다";
 
 const LANE_TRIGGER =
   "(`DIFFICULTY: D3|D4` in the lane brief, or an `## Invariants` section, with no high category named)";
@@ -90,7 +93,7 @@ describe("invariants-first rule (D3+)", () => {
     expect(doc).toContain(TRIGGER);
     expect(doc).toContain(FLASH);
     expect(doc).toContain(HIGH);
-    expect(doc).toContain("`VERDICT: BLOCK`");
+    expect(doc).toContain(DOC_BLOCK);
     expect(doc).toContain("### 호스트 전역 프로세스 킬 금지");
     expect(doc).toContain("`taskkill /IM`");
     expect(doc).toContain("`pkill`");
