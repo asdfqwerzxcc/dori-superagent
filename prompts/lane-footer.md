@@ -14,6 +14,10 @@ A brief (or a subagent kickoff) states exactly these five things. The harness re
 
 The brief's bar is the whole bar: add no extra check, gate, review round or deliverable above the harness gate. When the brief leaves a choice open, take the simplest reversible one and name it in the READY answer. A problem the base already has gets one line in the report; fixing it is a new brief, not this lane.
 
+### Invariants (D3+)
+
+When the brief declares `DIFFICULTY: D3|D4` or carries an `## Invariants` section, this lane works invariants-first: (a) list each invariant with its failure mode; (b) add one test per invariant and capture the failing output on the pre-fix code; (c) fix only what those tests demand; (d) report per invariant the test name and the before/after output.
+
 1. Set a goal first: restate the deliverable and the observable condition that ends this lane.
 2. Work until that condition holds. Do not stop to ask permission for reversible steps the brief already covers.
 3. Never talk to the human directly. Every fact meant for them goes to the lead.

@@ -36,6 +36,14 @@ Lee: "이게 나의 정형적인 워크플로우가 될 거야. 어떠한 프로
 
 모든 레인/서브에이전트 브리프는 다섯 항목을 담는다: **목표**, **입력**, **산출물**, **정지 조건**, **금지(파일 범위)**. 정의와 레인에 주입되는 문구의 단일 소스는 `prompts/lane-footer.md`의 "The brief contract"다. 브리프의 기준이 전부다 — 레인이 브리프 위에 게이트·리뷰 라운드·추가 산출물을 얹지 않는다(하네스 리뷰 게이트와 명시적 `MODE:`는 예외). 기존에 있던 문제는 보고에 한 줄로 남기고 이 레인에서 고치지 않는다.
 
+### 불변조건 우선 (D3+)
+
+레인 브리프가 `DIFFICULTY: D3|D4`를 선언하거나 `## Invariants` 절을 가지면 불변조건 우선으로 작업한다. 문구의 단일 소스는 `prompts/lane-footer.md`의 "Invariants (D3+)"이고, 같은 문장을 여기에도 둔다:
+
+> When the brief declares `DIFFICULTY: D3|D4` or carries an `## Invariants` section, this lane works invariants-first: (a) list each invariant with its failure mode; (b) add one test per invariant and capture the failing output on the pre-fix code; (c) fix only what those tests demand; (d) report per invariant the test name and the before/after output.
+
+리뷰 게이트는 이 증거가 없는 D3+ 변경을 HIGH로 보고 `VERDICT: BLOCK`한다(`prompts/review.md`, `prompts/review-lane.md`).
+
 ### 천장 (기본값, 보수적)
 
 | 실행 | 시간 | 토큰 | 천장에서 |
