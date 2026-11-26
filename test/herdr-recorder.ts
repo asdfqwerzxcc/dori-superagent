@@ -27,6 +27,6 @@ export const omoFront = { process_info: { foreground_processes: [{ name: "omo", 
 export function world() {
   const w = new World();
   const sleeps: number[] = [];
-  const rt = new HerdrRuntime(w.exec, "", { env: {}, sleep: async (ms) => void sleeps.push(ms) });
+  const rt = new HerdrRuntime(w.exec, "", { env: {}, sleep: async (ms) => void sleeps.push(ms), tree: w.treeProvider });
   return { w, rt, sleeps, herdr: () => w.calls.filter((c) => c.cmd === "herdr").map((c) => c.argv) };
 }

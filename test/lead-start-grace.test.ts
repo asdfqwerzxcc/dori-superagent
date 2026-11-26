@@ -5,6 +5,9 @@ import { ensureUpCheck } from "../src/supervisors/ensure-up.ts";
 import { World, href } from "./fake.ts";
 import { captureIo } from "./inbox-setup.ts";
 
+/** No process snapshot: the D2 death proof is doubt here, so herdr's own status word decides. */
+const NO_TREE = async () => undefined;
+
 describe("lead start grace", () => {
   test("ensure-up: two shell ticks do not raise two leads", async () => {
     const w = new World();
@@ -18,12 +21,12 @@ describe("lead start grace", () => {
       markLeadStarting(home);
       return { code: 0, detail: "" };
     };
-    expect(await ensureUpCheck({ home, exec: d.exec, up: upOnce, log: () => {} })).toBe("down");
+    expect(await ensureUpCheck({ home, exec: d.exec, tree: NO_TREE, up: upOnce, log: () => {} })).toBe("down");
     expect(calls).toBe(1);
-    expect(await ensureUpCheck({ home, exec: d.exec, up: upOnce, log: () => {} })).toBe("alive");
+    expect(await ensureUpCheck({ home, exec: d.exec, tree: NO_TREE, up: upOnce, log: () => {} })).toBe("alive");
     expect(calls).toBe(1);
     clearLeadStarting(home);
-    expect(await ensureUpCheck({ home, exec: d.exec, up: upOnce, log: () => {} })).toBe("down");
+    expect(await ensureUpCheck({ home, exec: d.exec, tree: NO_TREE, up: upOnce, log: () => {} })).toBe("down");
     expect(calls).toBe(2);
   });
 
@@ -84,6 +87,7 @@ describe("lead start grace", () => {
     const alive = await ensureUpCheck({
       home: d.store.root,
       exec: d.exec,
+      tree: NO_TREE,
       up: async () => ({ code: 0, detail: "" }),
       log: () => {},
     });
@@ -94,6 +98,7 @@ describe("lead start grace", () => {
     const down = await ensureUpCheck({
       home: d.store.root,
       exec: d.exec,
+      tree: NO_TREE,
       up: async () => {
         calls += 1;
         await captureIo(async () => {

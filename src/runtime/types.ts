@@ -9,10 +9,11 @@ export type SessionRef = {
 export type AgentStatus = "idle" | "working" | "blocked" | "error" | "done" | "unknown" | "shell" | "gone";
 export type AgentIdentity = { readonly agent?: string; readonly pgid?: number };
 export type ForegroundProcess = { readonly name: string; readonly argv: readonly string[]; readonly pid?: number };
-/** One snapshot: status, identity, foreground and discovery data together (submitTyped compares all of them; deliver re-reads them). `rootPid`: the session's root process (herdr process_info.shell_pid, hc terminal pid). */
+/** One snapshot: status, identity, foreground and discovery data together (submitTyped compares all of them; deliver re-reads them). `rootPid`: the session's root process (herdr process_info.shell_pid, hc terminal pid). `atPrompt`: the runtime's own process tree proves the pane is a shell with no child, so nothing can be running in it (D2). */
 export type Probe = {
   readonly status: AgentStatus;
   readonly agent?: string;
+  readonly atPrompt?: boolean;
   readonly pgid?: number;
   readonly rootPid?: number;
   readonly turn?: number;

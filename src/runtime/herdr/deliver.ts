@@ -1,4 +1,5 @@
 import type { AgentIdentity, DeliverOutcome, Key, SubmitResult } from "../types.ts";
+import type { PaneTree } from "../pane-liveness.ts";
 import { type HerdrCli, reasonOf, ToolError } from "./exec.ts";
 import { foreground, paneAgent, probe } from "./probe.ts";
 
@@ -41,14 +42,20 @@ const showsBarePrompt = (screen: string): boolean => {
  * (#66). `ambiguous`: the message may already be in the pane (#89) and must not be sent again as is. `typed`: the text
  * is in the agent's input and only the Enter that submits it is missing (#108 identity in `into`).
  */
-export async function deliver(cli: HerdrCli, paneId: string, text: string, sleep: Sleep): Promise<DeliverOutcome> {
+export async function deliver(
+  cli: HerdrCli,
+  paneId: string,
+  text: string,
+  sleep: Sleep,
+  tree?: PaneTree,
+): Promise<DeliverOutcome> {
   // Probe first (#66): a gone pane or a shell in front gets nothing, whatever herdr's status word says. herdr types
   // whatever the status is (the caller decided), so the #62 screen read is skipped here.
   // A pane get that fails for any reason but not-found (a server that is down, a timeout) types nothing: the status is
   // unknown, so the caller keeps the message queued instead of seeing herdr's raw error.
   let first: Awaited<ReturnType<typeof probe>>;
   try {
-    first = await probe(cli, paneId, false, HOLDING);
+    first = await probe(cli, paneId, { screenCheck: false, onFail: HOLDING, ...(tree === undefined ? {} : { tree }) });
   } catch (e) {
     process.stderr.write(`dori: herdr pane get failed for ${paneId} (${reasonOf(e)}); ${HOLDING}\n`);
     return { kind: "not-ready", status: "unknown" };

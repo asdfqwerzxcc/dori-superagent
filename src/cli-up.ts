@@ -41,15 +41,15 @@ const supervise = (d: Deps, startMissing: boolean): Promise<SupervisedState> =>
     : superviseHome(d.store.root, { startMissing });
 
 /** A registered lead is replaced when its pane is gone OR is only a shell: a bare shell holds no conversation. A probe
- * that fails is doubt, and doubt must not add a second lead. */
-type LeadLiveness = "alive" | "unverified" | "gone";
+ * that fails is doubt, and doubt must not add a second lead. `atPrompt` is the D2 proof that nothing runs in the pane. */
+type LeadCheck = { readonly liveness: "alive" | "unverified" | "gone" | "shell"; readonly atPrompt: boolean };
 
-const leadLiveness = async (d: Deps, ref: SessionRef): Promise<LeadLiveness> => {
+const leadCheck = async (d: Deps, ref: SessionRef): Promise<LeadCheck> => {
   try {
-    const { status } = await d.runtimes.for(ref).probe(ref);
-    return status === "gone" || status === "shell" ? "gone" : "alive";
+    const { status, atPrompt } = await d.runtimes.for(ref).probe(ref);
+    return { liveness: status === "gone" || status === "shell" ? status : "alive", atPrompt: atPrompt === true };
   } catch {
-    return "unverified";
+    return { liveness: "unverified", atPrompt: false };
   }
 };
 
@@ -92,17 +92,17 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
     return;
   }
   const units = unitMode(d.store.root);
+  const agent = (name: string) => `${d.agentCmd} --append-system-prompt ${shq(renderPrompt(d, name))}`;
   // A live lead owns the human conversation: opening a second workspace and duty would split it and orphan this one.
-  if (!retireOld && previous !== undefined) {
-    const liveness = await leadLiveness(d, previous);
-    if (liveness !== "gone") {
-      if (liveness === "alive") clearLeadStarting(d.store.root);
-      // A dead supervisor is the one thing this path must start; an alive one is left exactly as it is.
-      const state = await supervise(d, !supervisorAlive(d.store.root));
-      console.log(`UP lead ${liveness}; ensuring units only (lead=${refText(previous)}) units=${units}`);
-      showUnitPlacement(d, state, units);
-      return;
-    }
+  const check = !retireOld && previous !== undefined ? await leadCheck(d, previous) : undefined;
+  const liveness = check?.liveness;
+  if (previous !== undefined && (liveness === "alive" || liveness === "unverified")) {
+    if (liveness === "alive") clearLeadStarting(d.store.root);
+    // A dead supervisor is the one thing this path must start; an alive one is left exactly as it is.
+    const state = await supervise(d, !supervisorAlive(d.store.root));
+    console.log(`UP lead ${liveness}; ensuring units only (lead=${refText(previous)}) units=${units}`);
+    showUnitPlacement(d, state, units);
+    return;
   }
   const start = leadStarting(d.store.root);
   if (!retireOld && start.starting) {
@@ -110,10 +110,25 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
     console.log(`UP lead starting (attempts=${start.attempts}); not opening another lead`);
     return;
   }
+  // D2: a pane whose TUI exited still exists, and herdr may keep calling it `working`. When the pane's own process tree
+  // proves it sits at a bare prompt, the lead starts again in that pane: the human keeps the view and roles.json keeps
+  // the ref. A shell still running something (or an unreadable tree) is not typed into: a new lead replaces it below.
+  if (previous !== undefined && liveness === "shell" && check?.atPrompt === true) {
+    markLeadStarting(d.store.root);
+    try {
+      await d.runtimes.for(previous).start(previous, agent("lead.md"));
+    } catch (e) {
+      clearLeadStarting(d.store.root);
+      throw e;
+    }
+    const state = await supervise(d, !supervisorAlive(d.store.root));
+    console.log(`UP lead revived in ${refText(previous)} (no agent in the pane); units=${units}`);
+    showUnitPlacement(d, state, units);
+    return;
+  }
   const caps = readLoopCaps(d.store.root);
   const rt = d.runtimes.default;
   const env = { DORI_HOME: d.store.root };
-  const agent = (name: string) => `${d.agentCmd} --append-system-prompt ${shq(renderPrompt(d, name))}`;
   markLeadStarting(d.store.root);
   // herdr ignores the group of a workspace-root session and reports the new workspace as the lead ref's group.
   let lead: SessionRef;

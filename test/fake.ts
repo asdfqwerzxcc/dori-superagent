@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Deps } from "../src/harness.ts";
+import type { ProcNode } from "../src/process-tree.ts";
 import type { Exec, ExecOptions } from "../src/runtime/exec.ts";
 import { HcRuntime } from "../src/runtime/hc/index.ts";
 import { HerdrRuntime } from "../src/runtime/herdr/index.ts";
@@ -46,6 +47,10 @@ export class World {
   private gets = new Map<string, number>();
   /** `pane process-info` fails (exit 1) for every pane */
   processInfoFails = false;
+  /** The OS process tree a herdr probe reads to prove a TUI alive or exited; undefined is an unreadable snapshot (doubt). */
+  tree: ProcNode[] | undefined = undefined;
+  /** The provider the probe takes; it reads `tree` at call time, so a test can switch it inside one case. */
+  treeProvider = async (): Promise<readonly ProcNode[] | undefined> => this.tree;
   /** a command named `slow-hook` awaits this before answering (a hook that hangs) */
   hang: Promise<void> | undefined;
   /** called when a hanging `slow-hook` is killed; the killed hook then exits 143 */
@@ -201,7 +206,9 @@ export class World {
     return {
       store: new Store(mkdtempSync(join(tmpdir(), "dori-test-"))),
       runtimes: new Runtimes(kind, (k) =>
-        k === "hc" ? new HcRuntime(this.exec, { ...quiet, log: () => {} }) : new HerdrRuntime(this.exec, "", quiet),
+        k === "hc"
+          ? new HcRuntime(this.exec, { ...quiet, log: () => {} })
+          : new HerdrRuntime(this.exec, "", { ...quiet, tree: this.treeProvider }),
       ),
       choice: () => ({ kind, source: "config" }),
       exec: this.exec,

@@ -6,6 +6,7 @@ import type { Exec } from "../src/runtime/exec.ts";
 import { clearLeadRestartBusy, markLeadRestartBusy } from "../src/lead-restart-busy.ts";
 import {
   ensureUpCheck,
+  type EnsureUpOptions,
   ensureUpStopped,
   leadRef,
   leadStatus,
@@ -13,6 +14,12 @@ import {
   type EnsureUpState,
 } from "../src/supervisors/ensure-up.ts";
 import { ensureUpOff } from "../src/supervisors.ts";
+
+/** No process snapshot: the D2 death proof is doubt here, so herdr's own status word decides. */
+const NO_TREE = async () => undefined;
+/** One tick with the doubt tree and no log, so each case below states only what it is about. */
+const check = (opts: Omit<EnsureUpOptions, "tree" | "log">) => ensureUpCheck({ ...opts, tree: NO_TREE, log: () => {} });
+const loopOnce = (opts: Omit<EnsureUpOptions, "tree" | "once">) => runEnsureUp({ ...opts, tree: NO_TREE, once: true });
 
 const homeWithState = (): string => {
   const home = mkdtempSync(join(tmpdir(), "dori-ensure-"));
@@ -75,24 +82,23 @@ describe("ensure-up decisions", () => {
   test("the registered lead's own pane decides: one live lead is up, a gone pane or no role is down", async () => {
     const home = homeWithLead("w9:p1");
     expect(leadRef(home)).toEqual({ runtime: "herdr", id: "w9:p1" });
-    expect(await leadStatus(home, LEAD)).toBe("idle");
-    expect(await leadStatus(home, LEAD_SHELL)).toBe("shell");
-    expect(await leadStatus(home, LEAD_GONE)).toBe("gone");
-    expect(await leadStatus(homeWithState(), LEAD)).toBe("absent");
+    expect(await leadStatus(home, LEAD, NO_TREE)).toBe("idle");
+    expect(await leadStatus(home, LEAD_SHELL, NO_TREE)).toBe("shell");
+    expect(await leadStatus(home, LEAD_GONE, NO_TREE)).toBe("gone");
+    expect(await leadStatus(homeWithState(), LEAD, NO_TREE)).toBe("absent");
   });
 
   test("a lead pane that is only a shell is down and runs dori up once", async () => {
     const home = homeWithLead("w9:p1");
     let calls = 0;
     const states: EnsureUpState[] = [];
-    const state = await ensureUpCheck({
+    const state = await check({
       home,
       exec: LEAD_SHELL,
       up: async () => {
         calls += 1;
         return { code: 0, detail: "UP runtime=herdr lead=w9:p2" };
       },
-      log: () => {},
       report: (s) => states.push(s),
     });
     expect(state).toBe("down");
@@ -105,28 +111,26 @@ describe("ensure-up decisions", () => {
     const busy = markLeadRestartBusy(home, "w9:p1");
     let calls = 0;
     const states: EnsureUpState[] = [];
-    const state = await ensureUpCheck({
+    const state = await check({
       home,
       exec: LEAD_SHELL,
       up: async () => {
         calls += 1;
         return { code: 0, detail: "" };
       },
-      log: () => {},
       report: (s) => states.push(s),
     });
     expect(state).toBe("alive");
     expect(calls).toBe(0);
     expect(states).toEqual(["alive"]);
     clearLeadRestartBusy(home, busy);
-    const after = await ensureUpCheck({
+    const after = await check({
       home,
       exec: LEAD_SHELL,
       up: async () => {
         calls += 1;
         return { code: 0, detail: "" };
       },
-      log: () => {},
     });
     expect(after).toBe("down");
     expect(calls).toBe(1);
@@ -136,14 +140,13 @@ describe("ensure-up decisions", () => {
     const home = homeWithLead("w9:p1");
     let calls = 0;
     const states: EnsureUpState[] = [];
-    const state = await ensureUpCheck({
+    const state = await check({
       home,
       exec: LEAD,
       up: async () => {
         calls += 1;
         return { code: 0, detail: "UP runtime=herdr lead=w9:p2" };
       },
-      log: () => {},
       report: (s) => states.push(s),
     });
     expect(state).toBe("alive");
@@ -154,14 +157,13 @@ describe("ensure-up decisions", () => {
   test("a gone lead pane is down and runs dori up once", async () => {
     const home = homeWithLead("w9:p1");
     let calls = 0;
-    const state = await ensureUpCheck({
+    const state = await check({
       home,
       exec: LEAD_GONE,
       up: async () => {
         calls += 1;
         return { code: 0, detail: "UP runtime=herdr lead=w9:p2" };
       },
-      log: () => {},
     });
     expect(state).toBe("down");
     expect(calls).toBe(1);
@@ -170,15 +172,13 @@ describe("ensure-up decisions", () => {
   test("a down home runs dori up once and leaves a record plus a heartbeat", async () => {
     const home = homeWithState();
     let calls = 0;
-    const code = await runEnsureUp({
+    const code = await loopOnce({
       home,
-      once: true,
       exec: LEAD_GONE,
       up: async () => {
         calls += 1;
         return { code: 0, detail: "UP runtime=herdr lead=w9:p1" };
       },
-      log: () => {},
     });
     expect(code).toBe(0);
     expect(calls).toBe(1);
@@ -191,30 +191,26 @@ describe("ensure-up decisions", () => {
   test("a live lead, or ensure-up.off, never runs dori up", async () => {
     const home = homeWithLead("w9:p1");
     let calls = 0;
-    await runEnsureUp({
+    await loopOnce({
       home,
-      once: true,
       exec: LEAD,
       up: async () => {
         calls += 1;
         return { code: 0, detail: "" };
       },
-      log: () => {},
     });
     expect(calls).toBe(0);
     const stopped = homeWithState();
     writeFileSync(join(stopped, "state", "ensure-up.off"), "");
     expect(ensureUpStopped(stopped)).toBe(true);
     expect(ensureUpOff(stopped)).toBe(true);
-    await runEnsureUp({
+    await loopOnce({
       home: stopped,
-      once: true,
       exec: LEAD_GONE,
       up: async () => {
         calls += 1;
         return { code: 0, detail: "" };
       },
-      log: () => {},
     });
     expect(calls).toBe(0);
   });
@@ -224,9 +220,8 @@ describe("ensure-up decisions", () => {
     writeFileSync(join(home, "state", "ensure-up.lock"), JSON.stringify({ pid: process.ppid, at: Date.now() }));
     let calls = 0;
     const lines: string[] = [];
-    await runEnsureUp({
+    await loopOnce({
       home,
-      once: true,
       exec: LEAD_GONE,
       up: async () => {
         calls += 1;
