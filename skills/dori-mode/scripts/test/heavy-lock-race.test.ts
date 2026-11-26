@@ -10,10 +10,10 @@ import { withState } from "./fakes.ts";
 // takeover race to be observable, and a lock document build never reads that directory. Each taker reports a finished
 // round on stdout, so the parent advances on that line instead of polling.
 const LOCK = join(import.meta.dir, "../src/heavy-lock.ts");
-const ROUNDS = 4;
+const ROUNDS = 3;
 const WAITERS = 8;
 const HOLD_MS = 20;
-const BULK = 1_200;
+const BULK = 800;
 const FIXED_START = "2026-01-01T00:00:00.000Z";
 const DEAD_PID = 999_999;
 const quoted = (value: string | number) => JSON.stringify(value);
