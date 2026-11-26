@@ -43,6 +43,13 @@ export function leadRevives(home: string, pane: string): number {
 export function claimLeadRevive(home: string, pane: string, now: number = Date.now()): boolean {
   const final = markerOf(home, pane);
   const tmp = `${final}.${process.pid}.tmp`;
+  const drop = (path: string): void => {
+    try {
+      rmSync(path, { force: true });
+    } catch {
+      // A cleanup that fails must not turn a refused claim into a thrown one; the caller opens a new lead either way.
+    }
+  };
   let claimed = false;
   try {
     mkdirSync(join(stateDir(home), LEAD_REVIVE), { recursive: true });
@@ -52,10 +59,10 @@ export function claimLeadRevive(home: string, pane: string, now: number = Date.n
     renameSync(tmp, final);
     return true;
   } catch {
-    if (claimed) rmSync(final, { force: true });
+    if (claimed) drop(final);
     return false;
   } finally {
-    rmSync(tmp, { force: true });
+    drop(tmp);
   }
 }
 
