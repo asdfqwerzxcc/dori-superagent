@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { withState } from "./fakes.ts";
 
@@ -7,17 +7,18 @@ import { withState } from "./fakes.ts";
 // at the same instant, ROUNDS times. Each section brackets itself in the log; a second taker inside the first one's
 // section writes IN before OUT, which is the double entry a directory lock allowed when two takers removed the same
 // stale lock. The legacy directory carries bulk entries: they make one recursive delete last long enough for the
-// takeover race to be observable, and a lock document build never reads that directory at all.
+// takeover race to be observable, and a lock document build never reads that directory. Each taker reports a finished
+// round on stdout, so the parent advances on that line instead of polling.
 const LOCK = join(import.meta.dir, "../src/heavy-lock.ts");
-const ROUNDS = 6;
-const WAITERS = 6;
+const ROUNDS = 4;
+const WAITERS = 8;
 const HOLD_MS = 20;
 const BULK = 1_200;
 const FIXED_START = "2026-01-01T00:00:00.000Z";
 const DEAD_PID = 999_999;
 const quoted = (value: string | number) => JSON.stringify(value);
 
-const waiterScript = (dir: string, log: string, done: string): string => `
+const waiterScript = (dir: string, log: string): string => `
   const { underLock } = await import(${quoted(LOCK)});
   const { appendFileSync, existsSync } = await import("node:fs");
   const go = (round) => ${quoted(join(dir, "go-"))} + round;
@@ -28,7 +29,7 @@ const waiterScript = (dir: string, log: string, done: string): string => `
       await Bun.sleep(${HOLD_MS});
       appendFileSync(${quoted(log)}, "OUT\\n");
     }, () => undefined, () => ${quoted(FIXED_START)});
-    appendFileSync(${quoted(done)}, round + "\\n");
+    console.log("done");
   }
 `;
 
@@ -48,36 +49,60 @@ beforeEach(() => {
 });
 afterEach(() => state.done());
 
-const count = (path: string): number =>
-  existsSync(path) ? readFileSync(path, "utf8").trim().split(/\r?\n/).length : 0;
-
 test("takers racing one dead holder's lock never enter together", async () => {
   const dir = join(state.dir, "heavy");
   const log = join(state.dir, "turns.log");
-  const done = join(state.dir, "done.log");
   mkdirSync(dir, { recursive: true });
   writeFileSync(log, "");
-  writeFileSync(done, "");
   const waiters = Array.from({ length: WAITERS }, () =>
-    Bun.spawn([process.execPath, "-e", waiterScript(dir, log, done)], {
+    Bun.spawn([process.execPath, "-e", waiterScript(dir, log)], {
       stdout: "pipe",
       stderr: "pipe",
       windowsHide: true,
     }),
   );
+  const finished = new Array<number>(WAITERS).fill(0);
+  let failure: string | undefined;
+  const listeners = new Set<() => void>();
+  const advance = () => {
+    for (const listener of listeners) listener();
+  };
+  const until = (ready: () => boolean) =>
+    new Promise<void>((resolve) => {
+      const check = () => {
+        if (!ready()) return;
+        listeners.delete(check);
+        resolve();
+      };
+      listeners.add(check);
+      check();
+    });
+  waiters.forEach((waiter, index) => {
+    void (async () => {
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for await (const chunk of waiter.stdout) {
+        buffer += decoder.decode(chunk as Uint8Array);
+        for (let at = buffer.indexOf("\n"); at >= 0; at = buffer.indexOf("\n")) {
+          buffer = buffer.slice(at + 1);
+          if (finished[index] !== undefined) finished[index] = (finished[index] ?? 0) + 1;
+          advance();
+        }
+      }
+    })();
+    void waiter.exited.then(async (code) => {
+      if (code === 0) return;
+      failure = `waiter ${index} exited ${code}: ${await new Response(waiter.stderr).text()}`;
+      advance();
+    });
+  });
   for (let round = 0; round < ROUNDS; round++) {
     seed(dir, round);
     writeFileSync(join(dir, `go-${round}`), "");
-    for (let waited = 0; count(done) < (round + 1) * WAITERS && waited < 2_000; waited++) {
-      const dead = waiters.findIndex((w) => (w.exitCode !== null && w.exitCode !== 0) || w.signalCode !== null);
-      if (dead !== -1)
-        throw new Error(
-          `waiter ${dead} died in round ${round} (exit ${waiters[dead]?.exitCode}/signal ${waiters[dead]?.signalCode}):\n${await new Response(waiters[dead]?.stderr).text()}\nlog so far:\n${readFileSync(log, "utf8")}`,
-        );
-      await Bun.sleep(25);
-    }
+    await until(() => failure !== undefined || finished.every((done) => done > round));
+    if (failure !== undefined) throw new Error(`${failure}\nlog so far:\n${readFileSync(log, "utf8")}`);
   }
   expect(await Promise.all(waiters.map((w) => w.exited))).toEqual(Array(WAITERS).fill(0));
   const expected = Array.from({ length: ROUNDS * WAITERS * 2 }, (_, i) => (i % 2 === 0 ? "IN" : "OUT"));
   expect(readFileSync(log, "utf8").trim().split(/\r?\n/)).toEqual(expected);
-}, 120_000);
+});
