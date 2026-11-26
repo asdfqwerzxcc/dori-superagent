@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { HeavyAdmissionError } from "./heavy-admission.ts";
+import { type LockProbe, processStart } from "./heavy-start.ts";
 
 export const LOCK_FILE = ".lock";
 /** A lock whose owner record cannot be read is abandoned after this: the holder writes the record right after it
@@ -13,42 +14,8 @@ const BREAK_STALE_MS = 10_000;
 /** How long a probed start time stands for an unchanged record before it is probed again, so pid reuse is caught. */
 const PROBE_TTL_MS = 2_000;
 const LOCK_POLL_MS = 50;
-
-// A probe binary that cannot be started is an unknown start time, never an exception out of the lock: unknown refuses.
-const spawnStart = (argv: string[]) => {
-  try {
-    return Bun.spawnSync(argv, { windowsHide: true, stdout: "pipe", stderr: "pipe" });
-  } catch {
-    return undefined;
-  }
-};
-
-/** The OS start time of a process, normalized to ISO, or undefined when the probe cannot answer. A reused pid starts
- * at a different time, which is how a lock left by an exited holder is told from one still held. */
-export const processStart = (pid: number): string | undefined => {
-  if (!Number.isInteger(pid) || pid <= 0) return undefined;
-  const win32 = process.platform === "win32";
-  const argv = win32
-    ? [
-        "powershell",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`,
-      ]
-    : ["ps", "-o", "lstart=", "-p", String(pid)];
-  const r = spawnStart(argv);
-  if (r === undefined || r.exitCode !== 0) return undefined;
-  const ms = Date.parse(
-    r.stdout
-      .toString()
-      .trim()
-      .replace(/(\.\d{3})\d+/, "$1"),
-  );
-  return Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
-};
-
-export type LockProbe = (pid: number) => string | undefined;
+/** Consecutive transient path answers (EPERM/EBUSY while another process replaces the lock) before admission refuses. */
+const TRANSIENT_LIMIT = 200;
 
 type LockRecord = { readonly pid: number; readonly start: string; readonly nonce: string };
 
@@ -85,7 +52,8 @@ const livenessOf = (pid: number): Liveness => {
 const refuse = (why: string): HeavyAdmissionError => new HeavyAdmissionError(why);
 
 // Windows answers a handle taken while another process deletes or replaces the same file with EPERM/EBUSY. That is a
-// race on the path, not evidence about the holder: the caller waits and looks again.
+// race on the path, not evidence about the holder: the caller waits and looks again, and only a bounded run of those
+// answers refuses.
 const transient = (e: unknown): boolean => {
   const code = (e as { code?: string } | null)?.code;
   return code === "EPERM" || code === "EBUSY";
@@ -93,14 +61,15 @@ const transient = (e: unknown): boolean => {
 
 type SeenLock = { readonly raw: string; readonly record: LockRecord | null; readonly mtimeMs: number };
 
-const seenLock = (lock: string): SeenLock | undefined => {
+const seenLock = (lock: string): SeenLock | "gone" | "busy" => {
   let raw: string;
   let mtimeMs: number;
   try {
     raw = readFileSync(lock, "utf8");
     mtimeMs = statSync(lock).mtimeMs;
   } catch (e) {
-    if ((e as { code?: string } | null)?.code === "ENOENT" || transient(e)) return undefined;
+    if ((e as { code?: string } | null)?.code === "ENOENT") return "gone";
+    if (transient(e)) return "busy";
     throw refuse(`cannot read the heavy lock ${lock}: ${e instanceof Error ? e.message : String(e)}`);
   }
   return { raw, record: recordOf(raw), mtimeMs };
@@ -134,34 +103,40 @@ const abandoned = (
 
 /** How a lock left behind by a dead holder is taken: only the winner of the breaker file removes it, and only after it
  * re-reads the same bytes, so no takeover can remove a lock another process acquired after it looked. */
-const breakLock = (lock: string, expectedRaw: string): boolean => {
+const breakLock = (lock: string, expectedRaw: string): "broke" | "retry" | "busy" => {
   const breaker = `${lock}.break`;
   let fd: number;
   try {
     fd = openSync(breaker, "wx");
   } catch (e) {
-    if ((e as { code?: string } | null)?.code !== "EEXIST" && !transient(e)) throw e;
-    try {
-      if (Date.now() - statSync(breaker).mtimeMs > BREAK_STALE_MS) rmSync(breaker, { force: true });
-    } catch {
-      return false;
+    if ((e as { code?: string } | null)?.code === "EEXIST") {
+      try {
+        if (Date.now() - statSync(breaker).mtimeMs > BREAK_STALE_MS) rmSync(breaker, { force: true });
+      } catch {
+        return "busy";
+      }
+      return "retry";
     }
-    return false;
+    if (transient(e)) return "busy";
+    throw e;
   }
   try {
     let raw: string | undefined;
     try {
       raw = readFileSync(lock, "utf8");
     } catch (e) {
-      if ((e as { code?: string } | null)?.code !== "ENOENT" && !transient(e)) throw e;
+      if ((e as { code?: string } | null)?.code === "ENOENT") return "broke";
+      if (transient(e)) return "busy";
+      throw e;
     }
-    if (raw !== expectedRaw) return true;
+    if (raw !== expectedRaw) return "broke";
     try {
       rmSync(lock, { force: true });
-    } catch {
-      return false;
+    } catch (e) {
+      if (transient(e)) return "busy";
+      throw e;
     }
-    return true;
+    return "broke";
   } finally {
     closeSync(fd);
     try {
@@ -172,13 +147,13 @@ const breakLock = (lock: string, expectedRaw: string): boolean => {
   }
 };
 
-const createLock = (lock: string): number | undefined => {
+const createLock = (lock: string): number | "held" | "busy" => {
   try {
     return openSync(lock, "wx");
   } catch (e) {
-    if ((e as { code?: string } | null)?.code !== "EEXIST" && !transient(e))
-      throw refuse(`cannot create the heavy lock ${lock}: ${e instanceof Error ? e.message : String(e)}`);
-    return undefined;
+    if ((e as { code?: string } | null)?.code === "EEXIST") return "held";
+    if (transient(e)) return "busy";
+    throw refuse(`cannot create the heavy lock ${lock}: ${e instanceof Error ? e.message : String(e)}`);
   }
 };
 
@@ -202,10 +177,12 @@ export const underFileLock = async <T>(
   dir: string,
   section: () => T | Promise<T>,
   probe: LockProbe = processStart,
+  attemptLimit: number = TRANSIENT_LIMIT,
 ): Promise<T> => {
   mkdirSync(dir, { recursive: true });
   const lock = join(dir, LOCK_FILE);
   const nonce = randomUUID();
+  let busy = 0;
   let observed = "";
   let probedAt = 0;
   let probedStart: string | undefined;
@@ -218,17 +195,17 @@ export const underFileLock = async <T>(
     return probedStart;
   };
   for (;;) {
-    const fd = createLock(lock);
-    if (fd !== undefined) {
+    const created = createLock(lock);
+    if (typeof created === "number") {
       try {
         const own = probe(process.pid);
         if (own === undefined)
           throw refuse(
             `cannot read this process's start time, so the heavy lock ${lock} could not prove its holder; refusing admission rather than holding a lock no waiter can verify`,
           );
-        writeSync(fd, JSON.stringify({ pid: process.pid, start: own, nonce }));
+        writeSync(created, JSON.stringify({ pid: process.pid, start: own, nonce }));
       } catch (e) {
-        closeSync(fd);
+        closeSync(created);
         rmSync(lock, { force: true });
         throw e;
       }
@@ -236,11 +213,19 @@ export const underFileLock = async <T>(
         return await section();
       } finally {
         releaseLock(lock, nonce);
-        closeSync(fd);
+        closeSync(created);
       }
     }
     const seen = seenLock(lock);
-    if (seen !== undefined && abandoned(seen, lock, startOf) && breakLock(lock, seen.raw)) continue;
+    const broken = typeof seen === "object" && abandoned(seen, lock, startOf) ? breakLock(lock, seen.raw) : "retry";
+    if (created === "busy" || seen === "busy" || broken === "busy") {
+      busy++;
+      if (busy >= attemptLimit)
+        throw refuse(
+          `the heavy lock ${lock} answered a transient path error (EPERM/EBUSY) ${attemptLimit} times over about ${((attemptLimit * LOCK_POLL_MS) / 1_000).toFixed(2)} s; refusing admission rather than waiting forever while another process keeps replacing that path`,
+        );
+    } else busy = 0;
+    if (broken === "broke") continue;
     await Bun.sleep(LOCK_POLL_MS);
   }
 };

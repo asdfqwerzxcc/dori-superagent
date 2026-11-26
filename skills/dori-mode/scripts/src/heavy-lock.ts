@@ -2,10 +2,12 @@ import { dlopen, FFIType } from "bun:ffi";
 import { closeSync, openSync } from "node:fs";
 import { join } from "node:path";
 import { HeavyAdmissionError } from "./heavy-admission.ts";
-import { LOCK_FILE, type LockProbe, processStart, underFileLock } from "./heavy-file-lock.ts";
+import { LOCK_FILE, underFileLock } from "./heavy-file-lock.ts";
+import { type LockProbe, processStart } from "./heavy-start.ts";
 
 export { HeavyAdmissionError } from "./heavy-admission.ts";
-export { LOCK_STALE_MS, type LockProbe, processStart, underFileLock } from "./heavy-file-lock.ts";
+export { LOCK_STALE_MS, underFileLock } from "./heavy-file-lock.ts";
+export { type LockProbe, processStart } from "./heavy-start.ts";
 
 const LOCK_POLL_MS = 50;
 // Same values in glibc <sys/file.h> and xnu <sys/fcntl.h>.

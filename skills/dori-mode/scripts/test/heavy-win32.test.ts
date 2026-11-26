@@ -197,3 +197,31 @@ test.skipIf(!win32)("dori heavy runs the command on win32 instead of dying at fl
   expect(status.stdout.toString()).toContain("HEAVY OPEN limit 1 static slots");
   expect(status.exitCode).toBe(0);
 });
+
+test.skipIf(!win32)("a lock path another process holds without sharing refuses after a bounded retry", async () => {
+  const dir = join(state.dir, "heavy");
+  mkdirSync(dir, { recursive: true });
+  const lock = join(dir, ".lock");
+  const holder = Bun.spawn(
+    [
+      "powershell",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `$s = [System.IO.File]::Open('${lock.replaceAll("'", "''")}', 'OpenOrCreate', 'ReadWrite', 'None'); Write-Output 'HELD'; Start-Sleep -Seconds 20; $s.Close()`,
+    ],
+    { stdout: "pipe", stderr: "pipe", windowsHide: true },
+  );
+  const reader = holder.stdout.getReader();
+  let seen = "";
+  while (!seen.includes("HELD")) {
+    const { value, done } = await reader.read();
+    if (done) throw new Error(`holder exited before holding the file: ${seen}`);
+    seen += new TextDecoder().decode(value);
+  }
+  await expect(underFileLock(dir, () => "entered", processStart, 3)).rejects.toThrow(
+    "answered a transient path error (EPERM/EBUSY) 3 times",
+  );
+  holder.kill(9);
+  await holder.exited;
+});
