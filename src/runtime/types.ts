@@ -1,3 +1,5 @@
+import type { PaneLiveness } from "./pane-liveness.ts";
+
 /** Runtimes whose sessions are terminals: the only ones that may host the lead, duty or loops (`runtime`). */
 export type TerminalKind = "herdr" | "hc";
 /** `omo-host`: an agent session inside omo's shared engine host (one process per machine); only lanes open there. */
@@ -7,6 +9,7 @@ export type RuntimeKind = TerminalKind | "omo-host";
  * first prompt instead of typing a shell command, and a session carries no env (the lane's env rides in its commands).
  */
 export const AGENT_SESSION_KINDS: ReadonlySet<RuntimeKind> = new Set(["omo-host"]);
+
 /** One session as its runtime addresses it. `group`: the herdr workspace id or the hc dori.group label. `container`: the herdr tab id (absent on hc). */
 export type SessionRef = {
   readonly runtime: RuntimeKind;
@@ -17,10 +20,11 @@ export type SessionRef = {
 export type AgentStatus = "idle" | "working" | "blocked" | "error" | "done" | "unknown" | "shell" | "gone";
 export type AgentIdentity = { readonly agent?: string; readonly pgid?: number };
 export type ForegroundProcess = { readonly name: string; readonly argv: readonly string[]; readonly pid?: number };
-/** One snapshot: status, identity, foreground and discovery data together (submitTyped compares all of them; deliver re-reads them). `rootPid`: the session's root process (herdr process_info.shell_pid, hc terminal pid). */
+/** One snapshot: status, identity, foreground and discovery data together (submitTyped compares all of them; deliver re-reads them). `rootPid`: the session's root process (herdr process_info.shell_pid, hc terminal pid). `liveness`: the runtime's own process-tree verdict (D2, herdr only); only `alive` lets text be typed. */
 export type Probe = {
   readonly status: AgentStatus;
   readonly agent?: string;
+  readonly liveness?: PaneLiveness;
   readonly pgid?: number;
   readonly rootPid?: number;
   readonly turn?: number;

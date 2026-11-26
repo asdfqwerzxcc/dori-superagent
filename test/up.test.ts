@@ -80,7 +80,7 @@ describe("dori up", () => {
     expect(w.superviseCalls).toEqual([{ startMissing: false }]);
   });
 
-  test("a registered lead that is only a shell is replaced by a new lead", async () => {
+  test("a shell pane the process tree cannot prove is replaced by a new lead", async () => {
     const w = new World();
     w.addPane("w1:p1", "shell");
     const d = w.deps();

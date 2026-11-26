@@ -1,4 +1,5 @@
 import { interactiveShellInFront } from "../foreground.ts";
+import { paneLiveness, paneTree, type PaneTree } from "../pane-liveness.ts";
 import { omoScreenIdle, SCREEN_LINES } from "../screen.ts";
 import type { AgentStatus, ForegroundProcess, Probe } from "../types.ts";
 import { type HerdrCli, reasonOf, ToolError } from "./exec.ts";
@@ -83,25 +84,40 @@ async function screenShowsIdle(cli: HerdrCli, paneId: string): Promise<boolean> 
   }
 }
 
+export type ProbeOptions = {
+  /** Skip the #62 screen read, for callers that act the same whether the agent is idle or working. */
+  readonly screenCheck?: boolean;
+  /** Ends the stderr line of a failed process-info lookup (see foreground). */
+  readonly onFail?: string;
+  /** The OS process snapshot the D2 death proof reads; production takes the real one. */
+  readonly tree?: PaneTree;
+};
+
 /**
- * One snapshot of a pane: herdr's status (with the #62 screen check), the agent, its foreground, title and cwd.
- * `screenCheck: false` skips the #62 screen read, for callers that act the same whether the agent is idle or working.
- * `onFail` ends the stderr line of a failed process-info lookup (see foreground).
+ * One snapshot of a pane: herdr's status (with the #62 screen check and the D2 death proof), the agent, its foreground,
+ * title and cwd.
  */
-export async function probe(cli: HerdrCli, paneId: string, screenCheck = true, onFail = AS_DOUBT): Promise<Probe> {
+export async function probe(cli: HerdrCli, paneId: string, opts: ProbeOptions = {}): Promise<Probe> {
   const { status, agent, title, cwd } = await paneAgent(cli, paneId);
   if (status === "gone") return { status, shellInFront: true };
-  const seen: AgentStatus =
-    screenCheck && status === "working" && (await screenShowsIdle(cli, paneId)) ? "idle" : status;
-  const front = await foreground(cli, paneId, onFail);
+  const front = await foreground(cli, paneId, opts.onFail ?? AS_DOUBT);
+  // D2: herdr keeps the last status word after the TUI exits. A pane root with no child at all holds no agent, so its
+  // word is stale: the pane is as down as a bare shell, and its screen is never read for a turn.
+  const liveness = await paneLiveness(opts.tree ?? paneTree, front.rootPid);
+  const exited = liveness === "exited" && status !== "shell";
+  let seen: AgentStatus = status;
+  if (exited) seen = "shell";
+  else if ((opts.screenCheck ?? true) && status === "working" && (await screenShowsIdle(cli, paneId))) seen = "idle";
+  const name = exited ? undefined : agent;
   return {
     status: seen,
-    ...(agent !== undefined ? { agent } : {}),
+    ...(name !== undefined ? { agent: name } : {}),
+    liveness,
     ...(front.pgid !== undefined ? { pgid: front.pgid } : {}),
     ...(front.rootPid !== undefined ? { rootPid: front.rootPid } : {}),
     ...(title !== undefined ? { title } : {}),
     ...(cwd !== undefined ? { cwd } : {}),
-    shellInFront: front.shell,
+    shellInFront: front.shell || exited,
     ...(front.processes ? { foreground: front.processes } : {}),
   };
 }

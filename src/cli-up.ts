@@ -5,6 +5,7 @@ import { prompt, type Deps } from "./harness.ts";
 import { reviewLabel } from "./lane-gate.ts";
 import { paneWorktreeMismatch } from "./lane-worktree.ts";
 import { leadRestartBusy } from "./lead-restart-busy.ts";
+import { LEAD_ENV, leadCheck, reviveLeadInPane } from "./lead-revive.ts";
 import { leadStarting, markLeadStarting, clearLeadStarting } from "./lead-starting.ts";
 import { loopArgs, readLoopCaps } from "./loop-caps.ts";
 import { refText } from "./refs.ts";
@@ -33,25 +34,10 @@ const STARTUP_WINDOW_MS = 30_000;
  * `run_in_background` defaults to true while an explicit false still blocks; engines that predate it ignore the
  * variable. Duty and the loops keep the engine default, so only the pane that talks to the human is affected.
  */
-const LEAD_ENV = { OMO_TASK_DEFAULT_BACKGROUND: "1" } as const;
-
 const supervise = (d: Deps, startMissing: boolean): Promise<SupervisedState> =>
   d.supervise !== undefined
     ? d.supervise(d.store.root, { startMissing })
     : superviseHome(d.store.root, { startMissing });
-
-/** A registered lead is replaced when its pane is gone OR is only a shell: a bare shell holds no conversation. A probe
- * that fails is doubt, and doubt must not add a second lead. */
-type LeadLiveness = "alive" | "unverified" | "gone";
-
-const leadLiveness = async (d: Deps, ref: SessionRef): Promise<LeadLiveness> => {
-  try {
-    const { status } = await d.runtimes.for(ref).probe(ref);
-    return status === "gone" || status === "shell" ? "gone" : "alive";
-  } catch {
-    return "unverified";
-  }
-};
 
 function renderPrompt(d: Deps, name: string): string {
   const dir = join(d.store.root, "prompts");
@@ -92,17 +78,17 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
     return;
   }
   const units = unitMode(d.store.root);
+  const agent = (name: string) => `${d.agentCmd} --append-system-prompt ${shq(renderPrompt(d, name))}`;
   // A live lead owns the human conversation: opening a second workspace and duty would split it and orphan this one.
-  if (!retireOld && previous !== undefined) {
-    const liveness = await leadLiveness(d, previous);
-    if (liveness !== "gone") {
-      if (liveness === "alive") clearLeadStarting(d.store.root);
-      // A dead supervisor is the one thing this path must start; an alive one is left exactly as it is.
-      const state = await supervise(d, !supervisorAlive(d.store.root));
-      console.log(`UP lead ${liveness}; ensuring units only (lead=${refText(previous)}) units=${units}`);
-      showUnitPlacement(d, state, units);
-      return;
-    }
+  const check = !retireOld && previous !== undefined ? await leadCheck(d, previous) : undefined;
+  const liveness = check?.liveness;
+  if (previous !== undefined && (liveness === "alive" || liveness === "unverified")) {
+    if (liveness === "alive") clearLeadStarting(d.store.root);
+    // A dead supervisor is the one thing this path must start; an alive one is left exactly as it is.
+    const state = await supervise(d, !supervisorAlive(d.store.root));
+    console.log(`UP lead ${liveness}; ensuring units only (lead=${refText(previous)}) units=${units}`);
+    showUnitPlacement(d, state, units);
+    return;
   }
   const start = leadStarting(d.store.root);
   if (!retireOld && start.starting) {
@@ -110,10 +96,20 @@ export async function up(d: Deps, cwd: string, retireOld = false): Promise<void>
     console.log(`UP lead starting (attempts=${start.attempts}); not opening another lead`);
     return;
   }
+  // D2: a pane whose TUI exited still exists, and herdr may keep calling it `working`. It is typed into only at a proven
+  // empty prompt, once ever, with the snapshot confirmed 300 ms later; anything unproven is replaced below.
+  if (previous !== undefined && liveness === "shell" && (await reviveLeadInPane(d, previous, agent("lead.md"), cwd))) {
+    const state = await supervise(d, !supervisorAlive(d.store.root));
+    console.log(`UP lead revived in ${refText(previous)} (no agent in the pane); units=${units}`);
+    showUnitPlacement(d, state, units);
+    return;
+  }
+  // Doubt (an unreadable snapshot) is never typed into either, and never reported as a live lead: the incident's own
+  // steady state was exactly that doubt, so it opens a new lead like a proven dead one.
+  if (liveness === "doubt") console.log("UP lead unproven (its pane's process tree is unreadable); opening a new lead");
   const caps = readLoopCaps(d.store.root);
   const rt = d.runtimes.default;
   const env = { DORI_HOME: d.store.root };
-  const agent = (name: string) => `${d.agentCmd} --append-system-prompt ${shq(renderPrompt(d, name))}`;
   markLeadStarting(d.store.root);
   // herdr ignores the group of a workspace-root session and reports the new workspace as the lead ref's group.
   let lead: SessionRef;

@@ -120,7 +120,10 @@ describe("dori lead-restart worker", () => {
     w.exec = async (cmd, argv, opts) => {
       if (cmd === "taskkill") {
         killed = true;
-        w.panes.get("w1:p1")!.status = "shell";
+        const pane = w.panes.get("w1:p1")!;
+        pane.status = "shell";
+        pane.screen = "PS C:\\Users\\USER> ";
+        w.tree = [{ pid: 100, exe: "powershell.exe" }];
         return { code: 0, stdout: "", stderr: "" };
       }
       const r = await base(cmd, argv, opts);

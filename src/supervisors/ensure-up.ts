@@ -2,12 +2,14 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readJson } from "../json-file.ts";
+import { settleProbe } from "../lead-revive.ts";
 import { leadRestartBusy } from "../lead-restart-busy.ts";
 import { leadStarting, clearLeadStarting } from "../lead-starting.ts";
 import { refFromText } from "../refs.ts";
 import { spawnExec, type Exec } from "../runtime/exec.ts";
 import { HcRuntime } from "../runtime/hc/index.ts";
 import { HerdrRuntime } from "../runtime/herdr/index.ts";
+import type { PaneLiveness, PaneTree } from "../runtime/pane-liveness.ts";
 import type { AgentStatus, SessionRef } from "../runtime/types.ts";
 import { ENSURE_UP_HEARTBEAT, ENSURE_UP_OFF, pidAlive, stateDir, writeEnsureUpRecord } from "../supervisors.ts";
 
@@ -22,24 +24,37 @@ export function leadRef(home: string): SessionRef | undefined {
 }
 
 /**
+ * One read of the registered lead: its status word and, on herdr, the process-tree verdict behind it (D2). A thrown
+ * probe is the caller's doubt, never evidence that the lead is down. `tree` is the snapshot the probe reads; tests pass
+ * their own.
+ */
+export type LeadProbe = { readonly status: AgentStatus | "absent"; readonly liveness?: PaneLiveness };
+
+/**
  * The lead's own runtime answers for its pane, so a stale role from before a reboot is `gone`; `absent` when no role is
- * registered. A thrown probe is the caller's doubt, never evidence that the lead is down.
+ * registered.
  */
 export async function leadStatus(
   home: string,
   exec: Exec = spawnExec,
+  tree?: PaneTree,
   session: string | undefined = process.env["DORI_HERDR_SESSION"],
-): Promise<AgentStatus | "absent"> {
+  sleep?: (ms: number) => Promise<void>,
+): Promise<LeadProbe> {
   const ref = leadRef(home);
-  if (ref === undefined) return "absent";
-  const rt = ref.runtime === "hc" ? new HcRuntime(exec) : new HerdrRuntime(exec, session);
-  return (await rt.probe(ref)).status;
+  if (ref === undefined) return { status: "absent" };
+  const rt =
+    ref.runtime === "hc" ? new HcRuntime(exec) : new HerdrRuntime(exec, session, tree === undefined ? {} : { tree });
+  const probe = await settleProbe(() => rt.probe(ref), sleep);
+  return { status: probe.status, ...(probe.liveness === undefined ? {} : { liveness: probe.liveness }) };
 }
 
 export type EnsureUpOptions = {
   readonly home?: string;
   readonly once?: boolean;
   readonly exec?: Exec;
+  /** The process snapshot the lead probe reads to prove a TUI has exited (D2); production takes the OS snapshot. */
+  readonly tree?: PaneTree;
   readonly up?: () => Promise<{ readonly code: number; readonly detail: string }>;
   readonly log?: (line: string) => void;
   readonly sleep?: (ms: number) => Promise<void>;
@@ -130,28 +145,29 @@ export async function ensureUpCheck(opts: EnsureUpOptions = {}): Promise<EnsureU
     return "alive";
   }
   try {
-    const lead = await leadStatus(home, exec);
-    // A shell is a new lead until its agent registers; the start marker keeps a slow registration from looking dead.
-    if (lead === "shell") {
+    const lead = await leadStatus(home, exec, opts.tree, undefined, opts.sleep);
+    // A lead is alive only when its pane's own tree proves a live process in it. No agent (a shell, or a TUI herdr still
+    // calls `working`) and an unreadable snapshot (doubt) are both down: the start marker covers a slow registration.
+    const unproven = lead.status === "shell" || lead.liveness === "doubt";
+    if (unproven) {
       const start = leadStarting(home);
       if (start.starting) {
         opts.report?.("alive", `ENSURE_UP lead starting attempts=${start.attempts}`);
         return "alive";
       }
-    }
-    // A lead pane that answers `shell` has no agent: it is as down as a gone pane, and waiting for `gone` left a bare
-    // shell unrepaired for 33 minutes (2026-11-25).
-    if (lead !== "gone" && lead !== "absent" && lead !== "shell") {
+    } else if (lead.status !== "gone" && lead.status !== "absent") {
       clearLeadStarting(home);
       opts.report?.("alive", "ENSURE_UP alive");
       return "alive";
     }
     const why =
-      lead === "absent"
+      lead.status === "absent"
         ? "no lead role"
-        : lead === "shell"
-          ? "lead pane has a shell, not an agent"
-          : "lead pane is gone";
+        : lead.status === "gone"
+          ? "lead pane is gone"
+          : lead.liveness === "doubt"
+            ? "lead pane's process tree is unreadable"
+            : "lead pane has no agent (shell or exited TUI)";
     opts.report?.("down", `ENSURE_UP ${why}; running dori up`);
     const r = await up();
     log(`DORI_UP exit=${r.code} ${r.detail}`);

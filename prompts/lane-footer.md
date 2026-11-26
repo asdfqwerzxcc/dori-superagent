@@ -14,6 +14,17 @@ A brief (or a subagent kickoff) states exactly these five things. The harness re
 
 The brief's bar is the whole bar: add no extra check, gate, review round or deliverable above the harness gate. When the brief leaves a choice open, take the simplest reversible one and name it in the READY answer. A problem the base already has gets one line in the report; fixing it is a new brief, not this lane.
 
+### Invariants (D3+)
+
+Changes that need invariants are triggered by `DIFFICULTY: D3|D4`, an `## Invariants` section, or a high category (`deep-high`, `ultrabrain`, `architect`). The obligations depend on the model or category:
+
+- **flash/default on D3+** (a `DIFFICULTY: D3|D4` brief or an `## Invariants` section, with no high category named): (a) list each invariant with its failure mode; (b) add one test per invariant and capture the failing output on the pre-fix code; (c) fix only what those tests demand; (d) report per invariant the test name and the before/after output.
+- **deep-high / ultrabrain / architect** (even when the brief is D3+): no procedure is enforced; invariants and their evidence are expected deliverables. Document each invariant and cover it with a test. The gate checks that outcome only and does not block for a missed step.
+
+### Prohibitions
+
+Beyond the brief's prohibitions, never kill host-wide processes: `taskkill /IM`, `pkill`, and `kill -9` against every instance are forbidden. End only a target whose identity (pid and OS start time) you have confirmed.
+
 1. Set a goal first: restate the deliverable and the observable condition that ends this lane.
 2. Work until that condition holds. Do not stop to ask permission for reversible steps the brief already covers.
 3. Never talk to the human directly. Every fact meant for them goes to the lead.

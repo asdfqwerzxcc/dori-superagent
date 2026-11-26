@@ -1,4 +1,5 @@
 import { type Exec, spawnExec } from "../exec.ts";
+import type { PaneTree } from "../pane-liveness.ts";
 import type {
   AgentIdentity,
   CloseScope,
@@ -22,7 +23,7 @@ export type { Sleep } from "./deliver.ts";
 export { HerdrError } from "./exec.ts";
 export { omoScreenIdle } from "../screen.ts";
 
-export type HerdrOptions = { readonly env?: Env; readonly sleep?: Sleep };
+export type HerdrOptions = { readonly env?: Env; readonly sleep?: Sleep; readonly tree?: PaneTree };
 
 /** herdr behind the session runtime interface: a session is a pane, its group the pane's workspace. */
 export class HerdrRuntime implements SessionRuntime {
@@ -30,6 +31,7 @@ export class HerdrRuntime implements SessionRuntime {
   private readonly cli: HerdrCli;
   private readonly env: Env;
   private readonly sleep: Sleep;
+  private readonly tree: PaneTree | undefined;
 
   constructor(
     exec: Exec = spawnExec,
@@ -39,6 +41,7 @@ export class HerdrRuntime implements SessionRuntime {
     this.cli = new HerdrCli(exec, session);
     this.env = options.env ?? process.env;
     this.sleep = options.sleep ?? ((ms) => Bun.sleep(ms));
+    this.tree = options.tree;
   }
 
   self(): SessionRef | undefined {
@@ -62,7 +65,7 @@ export class HerdrRuntime implements SessionRuntime {
   }
 
   probe(ref: SessionRef): Promise<Probe> {
-    return probe(this.cli, ref.id);
+    return probe(this.cli, ref.id, this.tree === undefined ? {} : { tree: this.tree });
   }
 
   read(ref: SessionRef, lines: number, opts?: ReadOptions): Promise<string> {
@@ -71,15 +74,15 @@ export class HerdrRuntime implements SessionRuntime {
 
   /** herdr types whatever the status word says (the caller decided), so `when` and `force` change nothing here. */
   deliver(ref: SessionRef, text: string, _opts?: DeliverOptions): Promise<DeliverOutcome> {
-    return deliver(this.cli, ref.id, text, this.sleep);
+    return deliver(this.cli, ref.id, text, this.sleep, this.tree);
   }
 
   submitTyped(ref: SessionRef, into: AgentIdentity): Promise<SubmitResult> {
-    return submitTyped(this.cli, ref.id, into);
+    return submitTyped(this.cli, ref.id, into, this.tree);
   }
 
   typeIntoShell(ref: SessionRef, text: string): Promise<boolean> {
-    return typeIntoShell(this.cli, ref.id, text);
+    return typeIntoShell(this.cli, ref.id, text, this.tree);
   }
 
   keys(ref: SessionRef, pressed: readonly Key[]): Promise<void> {

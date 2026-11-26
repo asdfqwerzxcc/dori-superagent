@@ -1,6 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { HerdrError, HerdrRuntime } from "../src/runtime/herdr/index.ts";
-import { fail, ok, omoFront, recorder, ref, world } from "./herdr-recorder.ts";
+import { fail, liveTree, ok, omoFront, recorder, ref, world } from "./herdr-recorder.ts";
 
 describe("deliver outcomes", () => {
   test("agent prompt accepted: delivered, nothing typed", async () => {
@@ -94,7 +94,8 @@ describe("deliver outcomes", () => {
             : fail("pane_not_found")
           : ok(omoFront),
     );
-    expect(await new HerdrRuntime(gone.exec, "").deliver(ref("w1:p1"), "hi")).toEqual({ kind: "no-agent" });
+    const rt = new HerdrRuntime(gone.exec, "", { tree: liveTree });
+    expect(await rt.deliver(ref("w1:p1"), "hi")).toEqual({ kind: "no-agent" });
     expect(gone.calls.filter((a) => a[1] === "get")).toHaveLength(2);
     expect(gone.calls.some((a) => a[1] === "send-text")).toBe(false);
   });
@@ -107,7 +108,10 @@ describe("deliver outcomes", () => {
           ? fail("broken pipe")
           : ok(a[1] === "get" ? { pane: { agent: "omo", agent_status: "idle" } } : omoFront),
     );
-    const out = await new HerdrRuntime(r.exec, "", { sleep: async () => {} }).deliver(ref("w1:p1"), "hi");
+    const out = await new HerdrRuntime(r.exec, "", { sleep: async () => {}, tree: liveTree }).deliver(
+      ref("w1:p1"),
+      "hi",
+    );
     expect(out).toMatchObject({ kind: "ambiguous", detail: "herdr pane send-text failed: broken pipe" });
   });
 
@@ -198,10 +202,14 @@ describe("submitTyped and typeIntoShell", () => {
 
   test("typeIntoShell types text and Enter only into a pane with no agent", async () => {
     const { w, rt, herdr } = world();
+    w.tree = [{ pid: 100, exe: "powershell.exe" }];
     const sh = w.addPane("w1:p1", "shell");
+    sh.screen = "PS C:\\Users\\USER> ";
     expect(await rt.typeIntoShell(ref("w1:p1"), "ls -la")).toBe(true);
     expect(sh.received).toEqual(["ls -la"]);
     expect(herdr().slice(1)).toEqual([
+      ["pane", "process-info", "--pane", "w1:p1"],
+      ["pane", "read", "w1:p1", "--lines", "30", "--source", "recent"],
       ["pane", "send-text", "w1:p1", "ls -la"],
       ["pane", "send-keys", "w1:p1", "enter"],
     ]);

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { type ExecResult, ToolError } from "../src/runtime/exec.ts";
 import { HerdrError, HerdrRuntime } from "../src/runtime/herdr/index.ts";
 import { type CreateSpec, openSession } from "../src/runtime/types.ts";
-import { fail, ok, omoFront, recorder, ref, world } from "./herdr-recorder.ts";
+import { fail, liveTree, ok, omoFront, recorder, ref, world } from "./herdr-recorder.ts";
 
 const pane = { pane_id: "w1:p2", tab_id: "w1:t2", workspace_id: "w1" };
 const spec = (over: Partial<CreateSpec> = {}): CreateSpec => ({
@@ -146,7 +146,8 @@ describe("herdr argv", () => {
       ok(argv[1] === "process-info" ? omoFront : { pane: { agent: "omo", agent_status: "idle" } }),
     );
     const text = `it's "done" $(rm -rf ~) \`id\`\nline two`;
-    expect(await new HerdrRuntime(r.exec, "").deliver(ref("w1:p1"), text)).toEqual({ kind: "delivered" });
+    const rt = new HerdrRuntime(r.exec, "", { tree: liveTree });
+    expect(await rt.deliver(ref("w1:p1"), text)).toEqual({ kind: "delivered" });
     expect(r.calls).toEqual([
       ["pane", "get", "w1:p1"],
       ["pane", "process-info", "--pane", "w1:p1"],
@@ -229,6 +230,7 @@ describe("herdr replies", () => {
     expect(await rt.probe(ref("w1:p1"))).toEqual({
       status: "idle",
       agent: "omo",
+      liveness: "alive",
       pgid: 777,
       rootPid: 100,
       shellInFront: false,
