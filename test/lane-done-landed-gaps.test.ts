@@ -26,6 +26,20 @@ describe("done after a PR landing: refusals", () => {
   });
 });
 
+describe("done after a PR landing: gone worktree proof", () => {
+  test("a surviving branch main contains closes even when its receipt is BLOCK", async () => {
+    const { d, store, repo, worktree, base, tip } = await fixture({ pane: "gone" });
+    saveVerdict(store, { tip, base, verdict: "BLOCK", at: 2 });
+    rmSync(worktree, { recursive: true, force: true });
+    await git(repo, "worktree", "prune");
+
+    const note = await done(d, "scenario");
+    expect(note).toContain("is already on main");
+    expect(store.lane("scenario")!.status).toBe("done");
+    expect(await git(repo, "branch", "--list", "lane/scenario")).toBe("");
+  });
+});
+
 describe("done after a PR landing: pane states", () => {
   test("a landed lane closes while its pane is blocked", async () => {
     const { d, store, w, tip } = await fixture({ pane: "blocked" });

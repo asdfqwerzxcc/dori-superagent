@@ -26,6 +26,8 @@ type Landed = { readonly repo: string; readonly sha: string; readonly via: strin
  * Proof that the lane's work is on main: a branch whose tip is already in it (or whose tree is, after a squash merge),
  * else - when the branch is gone, as a PR landing deletes its remote half - the newest reviewed tip with a CLEAR
  * receipt that main contains. A surviving branch with commits main never got is not landed, whatever older receipts say.
+ * A surviving branch main contains is proof on ancestry alone: its merge already happened outside this close, so the
+ * verdict on its tip can no longer stop it. Only the gone-branch path needs a CLEAR receipt to know what landed.
  */
 async function landedState(d: Deps, lane: Lane, allowContent: boolean): Promise<Landed | undefined> {
   const repo = lane.repo;
@@ -110,6 +112,8 @@ export async function done(d: Deps, key: string, opts: DoneOptions = {}): Promis
   // Read the gate's own tip: it is the commit the receipt decision proved, even when a rebase moved HEAD past it.
   const tip = lane.baseSha === undefined ? undefined : (gate.tip ?? (await laneHead(d, lane)) ?? lane.tipSha);
   const receipt = gate.receipt ?? (tip === undefined ? undefined : await laneReceiptFor(d, lane, tip));
+  // An exact-tip receipt (no gate.via) covers what landWorktree publishes: the worktree is created on lane/<key>, so
+  // its branch is that tip. A fallback was guarded above; a detached HEAD is outside the lane contract.
   const landing = lane.worktree === undefined ? undefined : await landWorktree(d, lane);
   const notes = [gate.note, gate.via, paneNote].filter((n): n is string => n !== undefined);
   const note = notes.length === 0 ? undefined : notes.join("; ");

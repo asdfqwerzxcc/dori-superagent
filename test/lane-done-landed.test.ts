@@ -68,6 +68,15 @@ describe("done after a PR landing", () => {
     expect(store.lane("scenario")!.status).toBe("done");
   });
 
+  test("the exact-tip path publishes exactly the reviewed commit", async () => {
+    const { d, store, repo, w, tip } = await fixture({ merge: false, pane: "idle" });
+
+    expect(await done(d, "scenario")).toBeUndefined();
+    expect(await git(repo, "rev-parse", "HEAD")).toBe(tip);
+    expect(store.lane("scenario")!.status).toBe("done");
+    expect(w.panes.has("w1:p9")).toBe(false);
+  });
+
   test("a same-patch BLOCK on main still refuses a rebased-after-merge lane", async () => {
     const { d, store, worktree, repo, base, tip, patchId, contentId } = await fixture({ merge: false, pane: "gone" });
     if (patchId === undefined) throw new Error("fixture has no patch id");
@@ -86,6 +95,32 @@ describe("done after a PR landing", () => {
       ...(contentId === undefined ? {} : { contentId }),
     });
     await git(repo, "merge", "--no-ff", "-m", "Merge pull request #1 from lane/scenario", "lane/scenario");
+    await git(worktree, "rebase", "main");
+
+    await expect(done(d, "scenario")).rejects.toThrow("is BLOCK");
+    expect(store.lane("scenario")!.status).toBe("ready");
+  });
+
+  test("a same-patch BLOCK is surfaced when only the already-on-main receipt remains", async () => {
+    const { d, store, worktree, repo, base, tip, patchId, contentId } = await fixture({ merge: false, pane: "gone" });
+    if (patchId === undefined) throw new Error("fixture has no patch id");
+    writeFileSync(join(repo, "before-merge.txt"), "main moved\n");
+    await git(repo, "add", "--", "before-merge.txt");
+    await git(repo, "commit", "-m", "main work before the merge");
+    const tree = await git(repo, "rev-parse", `${tip}^{tree}`);
+    const blocked = await git(repo, "commit-tree", tree, "-p", base, "-m", "the same patch, blocked later");
+    saveVerdict(store, {
+      tip: blocked,
+      base,
+      verdict: "BLOCK",
+      at: 2,
+      patchId,
+      ...(contentId === undefined ? {} : { contentId }),
+    });
+    await git(repo, "merge", "--no-ff", "-m", "Merge pull request #1 from lane/scenario", "lane/scenario");
+    writeFileSync(join(repo, "after-merge.txt"), "main moved again\n");
+    await git(repo, "add", "--", "after-merge.txt");
+    await git(repo, "commit", "-m", "main work after the merge");
     await git(worktree, "rebase", "main");
 
     await expect(done(d, "scenario")).rejects.toThrow("is BLOCK");
