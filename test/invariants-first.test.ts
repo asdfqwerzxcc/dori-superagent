@@ -22,12 +22,21 @@ const KILL =
   "never kill host-wide processes: `taskkill /IM`, `pkill`, and `kill -9` against every instance are forbidden. " +
   "End only a target whose identity (pid and OS start time) you have confirmed.";
 
-const MIRROR_FLASH =
-  "A D3+ change on the flash/default path (`DIFFICULTY: D3|D4` in the brief or PR body, or an `## Invariants` section, " +
-  "with no high category named) without per-invariant failing-first evidence";
+const MIRROR_HEAD = "A D3+ change on the flash/default path";
+
+const MIRROR_TAIL =
+  "without per-invariant failing-first evidence — one test per invariant, the captured failing output on the pre-fix " +
+  "code, and the test name with before/after output in the report — is a HIGH finding (missing tests for changed " +
+  "behaviour, hardened): `VERDICT: BLOCK`.";
+
+const REVIEW_TRIGGER =
+  "(`DIFFICULTY: D3|D4` in the brief or PR body, or an `## Invariants` section, with no high category named)";
+
+const LANE_TRIGGER =
+  "(`DIFFICULTY: D3|D4` in the lane brief, or an `## Invariants` section, with no high category named)";
 
 const MIRROR_HIGH =
-  "For the high categories (`deep-high`, `ultrabrain`, `architect`) it is an outcome check only for high categories: " +
+  "For the high categories (`deep-high`, `ultrabrain`, `architect`) apply an outcome check only for high categories: " +
   "the invariants are documented and each is covered by a test; missing documentation or an uncovered invariant is a " +
   "HIGH finding, and a missed failing-first step is not.";
 
@@ -45,7 +54,7 @@ describe("invariants-first rule (D3+)", () => {
     expect(lane).not.toContain("{{");
   });
 
-  test("both review prompts mirror the full check and the outcome-only branch", () => {
+  test("both review prompts mirror the whole check and the outcome-only branch", () => {
     const review = prompt("review.md", {
       pr: "owner/repo#1",
       sha: "abc",
@@ -53,7 +62,9 @@ describe("invariants-first rule (D3+)", () => {
       diff: "d",
       ...CEILING_VARS,
     });
-    expect(review).toContain(MIRROR_FLASH);
+    expect(review).toContain(MIRROR_HEAD);
+    expect(review).toContain(REVIEW_TRIGGER);
+    expect(review).toContain(MIRROR_TAIL);
     expect(review).toContain(MIRROR_HIGH);
 
     const laneReview = prompt("review-lane.md", {
@@ -66,18 +77,24 @@ describe("invariants-first rule (D3+)", () => {
       checkout: "c",
       ...CEILING_VARS,
     });
-    expect(laneReview).toContain(MIRROR_FLASH);
+    expect(laneReview).toContain(MIRROR_HEAD);
+    expect(laneReview).toContain(LANE_TRIGGER);
+    expect(laneReview).toContain(MIRROR_TAIL);
     expect(laneReview).toContain(MIRROR_HIGH);
     expect(laneReview).not.toContain("{{");
   });
 
-  test("docs/workflow.md documents both branches and the kill prohibition", () => {
+  test("docs/workflow.md pins both branches, the BLOCK outcome and every kill example", () => {
     const doc = readFileSync(join(ROOT, "docs", "workflow.md"), "utf8");
     expect(doc).toContain("### 불변조건 우선 (D3+)");
     expect(doc).toContain(TRIGGER);
     expect(doc).toContain(FLASH);
     expect(doc).toContain(HIGH);
+    expect(doc).toContain("`VERDICT: BLOCK`");
     expect(doc).toContain("### 호스트 전역 프로세스 킬 금지");
-    expect(doc).toContain("taskkill /IM");
+    expect(doc).toContain("`taskkill /IM`");
+    expect(doc).toContain("`pkill`");
+    expect(doc).toContain("`kill -9 <all>`");
+    expect(doc).toContain("taskkill //F //IM bun.exe");
   });
 });
