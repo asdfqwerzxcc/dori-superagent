@@ -85,6 +85,20 @@ describe("lane landing", () => {
     expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(false);
   });
 
+  test("refuses a lane landing on every pull_request workflow answer that is not green", async () => {
+    for (const [runs, why] of [
+      [{ status: "queued", conclusion: null }, "ci=queued"],
+      [{ status: "completed", conclusion: "action_required" }, "ci=action_required"],
+      ["fail", "could not be read: HTTP 403"],
+    ] as const) {
+      const { w, d } = laneFixture();
+      receiptAt(d, tipA);
+      laneGh(w, { runs });
+      await expect(mergeLane(d, "alpha")).rejects.toThrow(why);
+      expect(w.calls.some((call) => call.cmd === "gh" && call.argv[1] === "merge")).toBe(false);
+    }
+  });
+
   test("refuses a gh pr checks failure with its message", async () => {
     const { w, d } = laneFixture();
     receiptAt(d, tipA);

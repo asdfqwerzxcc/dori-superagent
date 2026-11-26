@@ -191,7 +191,7 @@ export async function mergeLane(d: Deps, key: string, opts: LaneMergeOptions = {
       `head=${short(head)} receipt=CLEAR`,
     `  push ${remote.name} ${branch}`,
     `  gh pr create|edit --repo ${repo} --base main --head ${branch}`,
-    `  gh pr checks <new PR> --repo ${repo} (green or none)`,
+    `  gh pr checks <new PR> --repo ${repo} + pull_request runs at the head (green or none)`,
     `  gh pr merge --merge --match-head-commit ${head}`,
     `  git push ${remote.name} --delete ${branch}`,
   ];
@@ -209,12 +209,12 @@ export async function mergeLane(d: Deps, key: string, opts: LaneMergeOptions = {
   if (push.code !== 0)
     throw new Refusal(`lane ${key}: cannot push ${branch} to ${remote.name} (${repo}): ${gitWhy(push)}`);
   const pr = await upsertPr(d, lane, repo, branch, head, bodyPath);
-  const check = await checkGate(d, { repo, number: pr.number });
+  const check = await checkGate(d, { repo, number: pr.number }, head);
   if (check.refusal !== undefined) {
     d.usage.record({ name: "dori.merge_decided", outcome: check.refusal[0] });
     throw new Refusal(
       `MERGE_REFUSED lane ${key}: PR #${pr.number} (${pr.url}) is not ready: ${check.refusal[1]}; ` +
-        `rerun dori merge ${key} once checks pass`,
+        `rerun dori merge ${key} once checks and the workflow are green`,
     );
   }
   const merged = await d.exec("gh", [

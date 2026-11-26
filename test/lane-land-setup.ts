@@ -16,6 +16,7 @@ export const url = `https://github.com/${repoName}/pull/7`;
 const GREEN = [{ name: "test", bucket: "pass" }] as const;
 type GhResult = { readonly code: number; readonly stdout: string; readonly stderr?: string };
 type CheckList = readonly { readonly name: string; readonly bucket: string }[];
+type Runs = { readonly status: string; readonly conclusion: string | null } | "fail" | "none";
 
 const isCheckList = (value: CheckList | GhResult): value is CheckList => Array.isArray(value);
 
@@ -76,6 +77,7 @@ export function laneGh(
     readonly existing?: boolean;
     readonly checks?: CheckList | GhResult;
     readonly workflows?: number | GhResult;
+    readonly runs?: Runs;
     readonly stale?: "at-head" | "older";
     readonly base?: string;
     readonly headRepo?: string;
@@ -123,6 +125,14 @@ export function laneGh(
     if (argv[0] === "api" && argv[1]?.endsWith("/actions/workflows")) {
       const workflows = opts.workflows ?? 1;
       return typeof workflows === "number" ? { code: 0, stdout: `${workflows}\n` } : workflows;
+    }
+    if (argv[0] === "api" && argv[1]?.includes("/actions/runs?")) {
+      const runs = opts.runs ?? { status: "completed", conclusion: "success" };
+      if (runs === "fail") return { code: 1, stdout: "", stderr: "HTTP 403: Resource not accessible by integration" };
+      const sha = /head_sha=([0-9a-f]{40})/.exec(argv[1] ?? "")?.[1] ?? tipA;
+      const list =
+        runs === "none" ? [] : [{ id: 1, workflow_id: 10, name: "ci", head_sha: sha, event: "pull_request", ...runs }];
+      return { code: 0, stdout: JSON.stringify({ total_count: list.length, workflow_runs: list }) };
     }
     if (argv[0] === "pr" && argv[1] === "checks") {
       const checks = opts.checks ?? GREEN;

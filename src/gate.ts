@@ -106,16 +106,14 @@ async function gateRefusal(
       return ["review_block", `review at ${sha.slice(0, 12)} is ${receipt.verdict}`];
     }
   }
-  const checks = await checksRefusal(d, pr);
-  if (checks !== undefined) return checks;
-  // Both merge forms read the runs at the head: a bundle's green check list says nothing about a pull_request workflow
-  // that waited for approval, failed to start or was cancelled.
-  return workflowRefusal(d, pr.repo, sha);
+  const checks = await checkGate(d, pr, sha);
+  return checks.refusal;
 }
 
-/** The check dimension alone, shared by the PR gate, the bundle gate and the lane gate. `none` is true only when no
- * check ran (`gh` reported no checks, or every check was skipped) and the repository has no workflows; any other
- * uncertain answer is a refusal. */
+/** The check and workflow-run dimensions together, shared by every merge path: the PR gate, the bundle gate and the lane
+ * gate. `none` is true only when no check ran (`gh` reported no checks, or every check was skipped) and the repository
+ * has no workflows; any other uncertain answer is a refusal. A green check list alone is not green while a
+ * `pull_request` workflow at the exact head is queued, waiting for approval or cancelled. */
 export type CheckGate = { readonly none: boolean; readonly refusal?: [MergeOutcome, string] };
 
 const checkRefusal = (why: string): CheckGate => ({ none: false, refusal: ["checks_red", why] });
@@ -156,7 +154,11 @@ async function workflowCount(
   return { count };
 }
 
-export async function checkGate(d: Deps, pr: { readonly repo: string; readonly number: number }): Promise<CheckGate> {
+export async function checkGate(
+  d: Deps,
+  pr: { readonly repo: string; readonly number: number },
+  sha: string,
+): Promise<CheckGate> {
   const r = await d.exec("gh", ["pr", "checks", String(pr.number), "--repo", pr.repo, "--json", "name,bucket"]);
   const stdout = r.stdout.trim();
   const stderr = r.stderr.trim();
@@ -187,13 +189,6 @@ export async function checkGate(d: Deps, pr: { readonly repo: string; readonly n
   }
   const bad = checks.filter((c) => c.bucket !== "pass" && c.bucket !== "skipping");
   if (bad.length > 0) return checkRefusal(`checks not green: ${bad.map((c) => `${c.name}=${c.bucket}`).join(", ")}`);
-  return { none: false };
-}
-
-/** The refusal form shared by the PR and bundle gates. */
-export async function checksRefusal(
-  d: Deps,
-  pr: { readonly repo: string; readonly number: number },
-): Promise<[MergeOutcome, string] | undefined> {
-  return (await checkGate(d, pr)).refusal;
+  const runs = await workflowRefusal(d, pr.repo, sha);
+  return runs === undefined ? { none: false } : { none: false, refusal: runs };
 }
