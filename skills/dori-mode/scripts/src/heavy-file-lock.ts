@@ -14,6 +14,15 @@ const BREAK_STALE_MS = 10_000;
 const PROBE_TTL_MS = 2_000;
 const LOCK_POLL_MS = 50;
 
+// A probe binary that cannot be started is an unknown start time, never an exception out of the lock: unknown refuses.
+const spawnStart = (argv: string[]) => {
+  try {
+    return Bun.spawnSync(argv, { windowsHide: true, stdout: "pipe", stderr: "pipe" });
+  } catch {
+    return undefined;
+  }
+};
+
 /** The OS start time of a process, normalized to ISO, or undefined when the probe cannot answer. A reused pid starts
  * at a different time, which is how a lock left by an exited holder is told from one still held. */
 export const processStart = (pid: number): string | undefined => {
@@ -28,8 +37,8 @@ export const processStart = (pid: number): string | undefined => {
         `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o')`,
       ]
     : ["ps", "-o", "lstart=", "-p", String(pid)];
-  const r = Bun.spawnSync(argv, { windowsHide: true, stdout: "pipe", stderr: "pipe" });
-  if (r.exitCode !== 0) return undefined;
+  const r = spawnStart(argv);
+  if (r === undefined || r.exitCode !== 0) return undefined;
   const ms = Date.parse(
     r.stdout
       .toString()
@@ -75,6 +84,13 @@ const livenessOf = (pid: number): Liveness => {
 
 const refuse = (why: string): HeavyAdmissionError => new HeavyAdmissionError(why);
 
+// Windows answers a handle taken while another process deletes or replaces the same file with EPERM/EBUSY. That is a
+// race on the path, not evidence about the holder: the caller waits and looks again.
+const transient = (e: unknown): boolean => {
+  const code = (e as { code?: string } | null)?.code;
+  return code === "EPERM" || code === "EBUSY";
+};
+
 type SeenLock = { readonly raw: string; readonly record: LockRecord | null; readonly mtimeMs: number };
 
 const seenLock = (lock: string): SeenLock | undefined => {
@@ -84,7 +100,7 @@ const seenLock = (lock: string): SeenLock | undefined => {
     raw = readFileSync(lock, "utf8");
     mtimeMs = statSync(lock).mtimeMs;
   } catch (e) {
-    if ((e as { code?: string } | null)?.code === "ENOENT") return undefined;
+    if ((e as { code?: string } | null)?.code === "ENOENT" || transient(e)) return undefined;
     throw refuse(`cannot read the heavy lock ${lock}: ${e instanceof Error ? e.message : String(e)}`);
   }
   return { raw, record: recordOf(raw), mtimeMs };
@@ -124,7 +140,7 @@ const breakLock = (lock: string, expectedRaw: string): boolean => {
   try {
     fd = openSync(breaker, "wx");
   } catch (e) {
-    if ((e as { code?: string } | null)?.code !== "EEXIST") throw e;
+    if ((e as { code?: string } | null)?.code !== "EEXIST" && !transient(e)) throw e;
     try {
       if (Date.now() - statSync(breaker).mtimeMs > BREAK_STALE_MS) rmSync(breaker, { force: true });
     } catch {
@@ -137,13 +153,22 @@ const breakLock = (lock: string, expectedRaw: string): boolean => {
     try {
       raw = readFileSync(lock, "utf8");
     } catch (e) {
-      if ((e as { code?: string } | null)?.code !== "ENOENT") throw e;
+      if ((e as { code?: string } | null)?.code !== "ENOENT" && !transient(e)) throw e;
     }
-    if (raw === expectedRaw) rmSync(lock, { force: true });
+    if (raw !== expectedRaw) return true;
+    try {
+      rmSync(lock, { force: true });
+    } catch {
+      return false;
+    }
     return true;
   } finally {
     closeSync(fd);
-    rmSync(breaker, { force: true });
+    try {
+      rmSync(breaker, { force: true });
+    } catch {
+      // The breaker stays and BREAK_STALE_MS clears it: a later takeover waits at most that long.
+    }
   }
 };
 
@@ -151,7 +176,7 @@ const createLock = (lock: string): number | undefined => {
   try {
     return openSync(lock, "wx");
   } catch (e) {
-    if ((e as { code?: string } | null)?.code !== "EEXIST")
+    if ((e as { code?: string } | null)?.code !== "EEXIST" && !transient(e))
       throw refuse(`cannot create the heavy lock ${lock}: ${e instanceof Error ? e.message : String(e)}`);
     return undefined;
   }
@@ -195,15 +220,18 @@ export const underFileLock = async <T>(
   for (;;) {
     const fd = createLock(lock);
     if (fd !== undefined) {
-      const own = probe(process.pid);
-      if (own === undefined) {
+      try {
+        const own = probe(process.pid);
+        if (own === undefined)
+          throw refuse(
+            `cannot read this process's start time, so the heavy lock ${lock} could not prove its holder; refusing admission rather than holding a lock no waiter can verify`,
+          );
+        writeSync(fd, JSON.stringify({ pid: process.pid, start: own, nonce }));
+      } catch (e) {
         closeSync(fd);
         rmSync(lock, { force: true });
-        throw refuse(
-          `cannot read this process's start time, so the heavy lock ${lock} could not prove its holder; refusing admission rather than holding a lock no waiter can verify`,
-        );
+        throw e;
       }
-      writeSync(fd, JSON.stringify({ pid: process.pid, start: own, nonce }));
       try {
         return await section();
       } finally {
