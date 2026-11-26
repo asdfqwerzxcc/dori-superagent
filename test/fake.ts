@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Deps } from "../src/harness.ts";
+import type { ProcNode } from "../src/process-tree.ts";
 import type { Exec, ExecOptions } from "../src/runtime/exec.ts";
 import { HcRuntime } from "../src/runtime/hc/index.ts";
 import { HerdrRuntime } from "../src/runtime/herdr/index.ts";
@@ -46,6 +47,20 @@ export class World {
   private gets = new Map<string, number>();
   /** `pane process-info` fails (exit 1) for every pane */
   processInfoFails = false;
+  /**
+   * The OS process tree a herdr probe reads (D2). The default is a live pane — a shell (100) with one agent child (101),
+   * matching the default process-info — so a test that models a dead TUI or an unreadable host sets this explicitly.
+   */
+  tree: ProcNode[] | undefined = [
+    { pid: 100, exe: "powershell.exe" },
+    { pid: 101, parent: 100, exe: "omo.exe" },
+  ];
+  /** The provider the probe takes; it reads `tree` at call time, so a test can switch it inside one case. */
+  treeProvider = async (): Promise<readonly ProcNode[] | undefined> => this.tree;
+  /** The waits a `dori up` revive asked for, so a test can prove the second snapshot was taken. */
+  sleeps: number[] = [];
+  /** Called inside the fake sleep: a test changes the world between the first snapshot and the confirming one. */
+  onSleep: (() => void) | undefined;
   /** a command named `slow-hook` awaits this before answering (a hook that hangs) */
   hang: Promise<void> | undefined;
   /** called when a hanging `slow-hook` is killed; the killed hook then exits 143 */
@@ -201,7 +216,9 @@ export class World {
     return {
       store: new Store(mkdtempSync(join(tmpdir(), "dori-test-"))),
       runtimes: new Runtimes(kind, (k) =>
-        k === "hc" ? new HcRuntime(this.exec, { ...quiet, log: () => {} }) : new HerdrRuntime(this.exec, "", quiet),
+        k === "hc"
+          ? new HcRuntime(this.exec, { ...quiet, log: () => {} })
+          : new HerdrRuntime(this.exec, "", { ...quiet, tree: this.treeProvider }),
       ),
       choice: () => ({ kind, source: "config" }),
       exec: this.exec,
@@ -210,6 +227,10 @@ export class World {
       doriCmd: "dori",
       host: () => this.host,
       usage: this.recorder,
+      sleep: async (ms) => {
+        this.sleeps.push(ms);
+        this.onSleep?.();
+      },
       supervise: async (_home, opts) => {
         this.superviseCalls.push({ startMissing: opts?.startMissing ?? false });
         return this.supervised;

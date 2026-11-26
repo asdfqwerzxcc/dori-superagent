@@ -129,7 +129,13 @@
 
 - 조사·탐색은 `explore` 서브에이전트가 하고 리드는 결과만 판단하며(한 줄 확인·결정적 읽기는 예외), 긴 작업은 `run_in_background: true`로 돌려 리드 턴을 짧게 끊고 턴 사이에 `dori inbox list lead`로 큐를 확인하며, 인바운드가 늦으면 `dori status`의 게이트웨이·슈퍼바이저 줄과 리드 인박스부터 본다.
 
-## 8. Windows: 레인과 리뷰어는 창을 열지 않는다 (2026-11-24)
+## 8. 리드 TUI가 죽어도 herdr는 `working`이라고 말한다 (2026-11-26)
+
+- 2026-11-26 10:11:55Z에 한 레인이 호스트의 `bun.exe`를 모두 죽였고, 리드 프로세스(가동 35.3시간)가 사라졌는데도 `herdr pane get wZ:p1`은 계속 `agent:"pi", agent_status:"working"`을 돌려줬다. 그 말을 믿은 `ensure-up`과 `dori up`은 1.5시간 동안 "lead alive"만 출력했고, 인박스는 죽은 pane에 메시지를 타이핑해 그 텍스트가 셸 명령으로 실행되게 했다.
+- 이제 herdr 프로브는 상태 단어를 믿기 전에 pane의 프로세스 정체성을 OS 스냅샷으로 확인한다(`src/runtime/pane-liveness.ts`): `pane process-info`의 `shell_pid`가 셸이고 자식 프로세스가 하나도 없으면 pane 안에서는 아무것도 돌 수 없으므로, 그 pane은 `shell`(down)로 읽고 `atPrompt`를 남긴다. 스냅샷을 못 읽거나 root가 셸이 아니면 의심(doubt)으로 남겨 살아 있는 리드를 되살리지 않는다.
+- `ensure-up`은 그 `shell`을 down으로 보고 `dori up`을 부르고, `dori up`은 증명된 pane에만 같은 pane에서 리드 명령을 다시 타이핑한다(역할 `roles.json`의 ref 유지, start grace 기록): pane의 트리가 자식 없는 셸이고 **화면 맨 아래 줄이 빈 프롬프트**(PS/drive/user@host/fish/단일 프롬프트 문자만; 연속 프롬프트 `>>`·`...`·`>`, 프롬프트 뒤 드래프트, `>`로 끝나는 드래프트, 덮어그려진 줄, 읽기 실패는 거부)이며, 300ms 뒤 **화면과 스냅샷을 다시 읽어** 같은 결론일 때만이다. 같은 pane 재타이핑은 pane당 1회뿐이고(`state/lead-revives/<pane>.json`을 O_EXCL(`wx`) 핸들로 선점하고 같은 핸들에 내용을 써서 닫는다 — 별도 게시 단계가 없어 클레임 뒤 실패 창이 없고, 동시 `dori up` 중 하나만 이긴다. 클레임 뒤 내용 쓰기가 실패하면 마커를 남긴 채 revive를 거부하고 `state/lead-revives/errors.jsonl`에 이유를 남기며, 이미 마커가 있으면 새 리드를 연다) 두 번째부터는 새 리드를 연다. 재기동 명령은 pane이 보고한 `cwd`(리드의 기록된 작업 디렉터리)와 `OMO_TASK_DEFAULT_BACKGROUND=1`을 명시한다. 스냅샷을 못 읽는 의심(doubt)은 300ms 간격 3회까지 다시 읽어 일시 장애로 리드를 쪼개지 않고, 그래도 의심이면 살아 있다고 보지 않되 새 리드를 열기 전에 그 판정을 쓴다. pane이 사라졌으면(`gone`) 예전처럼 새 리드를 열고, pane에서 아직 무언가 돌고 있으면 타이핑하지 않고 새 리드로 교체한다.
+
+## 9. Windows: 레인과 리뷰어는 창을 열지 않는다 (2026-11-24)
 
 - 레인·리뷰어·게이트·QA는 Windows에서 콘솔 프로세스(bun, 게이트, 테스트, QA)를 `detached`, PowerShell
   `Start-Process`, `CREATE_NEW_CONSOLE`로 띄우지 않는다. 부모 콘솔을 상속하거나 `windowsHide: true`/
