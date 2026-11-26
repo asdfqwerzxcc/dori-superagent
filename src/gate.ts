@@ -58,7 +58,7 @@ type Check = { name: string; bucket: string };
  * Merge only when the review dimension is satisfied and every configured check passed. The review dimension is a CLEAR
  * receipt at the exact current head, or with `--bundle` every recorded member still CLEAR at the sha it was admitted on.
  * `checks=none` requires gh's no-checks answer and a repository with no workflows; pending, failed, skipped-only,
- * unreadable or failed gh calls refuse.
+ * unreadable or failed gh calls refuse, and both forms read the pull_request runs at the head the same way.
  */
 export async function mergeGate(
   d: Deps,
@@ -108,8 +108,8 @@ async function gateRefusal(
   }
   const checks = await checksRefusal(d, pr);
   if (checks !== undefined) return checks;
-  // The bundle form was admitted by its own gate; the workflow-run rule belongs to the PR form.
-  if (bundleId !== undefined) return undefined;
+  // Both merge forms read the runs at the head: a bundle's green check list says nothing about a pull_request workflow
+  // that waited for approval, failed to start or was cancelled.
   return workflowRefusal(d, pr.repo, sha);
 }
 
