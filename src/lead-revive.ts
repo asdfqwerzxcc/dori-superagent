@@ -2,7 +2,7 @@
 // childless tree as a clean prompt, so a second revive into that pane could compose onto the first line. From the second
 // attempt `dori up` opens a new lead instead; a different pane starts the count over.
 
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import type { Deps } from "./harness.ts";
 import { clearLeadStarting, markLeadStarting } from "./lead-starting.ts";
@@ -33,36 +33,57 @@ export function leadRevives(home: string, pane: string): number {
   return existsSync(markerOf(home, pane)) ? 1 : 0;
 }
 
+/** Writes the record through the claimed handle; a test injects a failing one. */
+export type ClaimWrite = (fd: number, text: string) => void;
+
+const writeThrough = (fd: number, text: string): void => {
+  writeSync(fd, text);
+};
+
+/** Best effort: the marker already stands, and the operator can read why the revive was refused. */
+function noteClaimFailure(home: string, pane: string, reason: unknown, now: number): void {
+  try {
+    appendFileSync(
+      join(stateDir(home), LEAD_REVIVE, "errors.jsonl"),
+      `${JSON.stringify({ pane, at: now, reason: String(reason) })}\n`,
+    );
+  } catch {
+    // The refusal is the contract; the note is diagnostics.
+  }
+}
+
 /**
- * Claims the one revive of `pane`, or returns false when it is already claimed or the record cannot be written — a
- * failed record must refuse the typing, never fall back to it. The claim itself is an exclusive create (`wx`), so two
- * concurrent revives cannot both win: the loser sees EEXIST and opens a new lead instead. The record is then published
- * from a temp name by rename, so a reader never sees half a line; if that write fails the claim is released and the
- * revive refused.
+ * Claims the one revive of `pane`, or returns false. The claim is the exclusive create itself: openSync(marker, "wx")
+ * succeeds for exactly one process and the loser sees EEXIST. The record is written through that same handle and the
+ * handle is closed, so there is no separate publish step that could fail after the claim; a write failure still leaves
+ * the marker (the claim stands), is noted in state/lead-revives/errors.jsonl, and returns false so no text is typed.
  */
-export function claimLeadRevive(home: string, pane: string, now: number = Date.now()): boolean {
-  const final = markerOf(home, pane);
-  const tmp = `${final}.${process.pid}.tmp`;
-  const drop = (path: string): void => {
-    try {
-      rmSync(path, { force: true });
-    } catch {
-      // A cleanup that fails must not turn a refused claim into a thrown one; the caller opens a new lead either way.
-    }
-  };
-  let claimed = false;
+export function claimLeadRevive(
+  home: string,
+  pane: string,
+  now: number = Date.now(),
+  write: ClaimWrite = writeThrough,
+): boolean {
+  const marker = markerOf(home, pane);
+  let fd: number;
   try {
     mkdirSync(join(stateDir(home), LEAD_REVIVE), { recursive: true });
-    writeFileSync(final, "", { flag: "wx" });
-    claimed = true;
-    writeFileSync(tmp, JSON.stringify({ pane, at: now, pid: process.pid }), { flag: "wx" });
-    renameSync(tmp, final);
-    return true;
+    fd = openSync(marker, "wx");
   } catch {
-    if (claimed) drop(final);
+    return false;
+  }
+  try {
+    write(fd, JSON.stringify({ pane, at: now, pid: process.pid }));
+    return true;
+  } catch (e) {
+    noteClaimFailure(home, pane, e, now);
     return false;
   } finally {
-    drop(tmp);
+    try {
+      closeSync(fd);
+    } catch {
+      // A close that fails cannot un-make the claim; the marker exists either way.
+    }
   }
 }
 
