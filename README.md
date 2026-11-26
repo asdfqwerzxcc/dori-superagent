@@ -288,7 +288,7 @@ Every record also carries the service name and version, the install hash, a CI f
 ## Tests and development
 
 ```sh
-bun test ./test/                                  # the harness: 1127 tests across 144 files, no model calls
+bun test ./test/                                  # the harness: 1187 tests across 150 files, no model calls
 cd skills/dori-mode/scripts && bun install && bun test   # Dori mode: 487 tests across 70 files
 bun run ci                                        # biome, tsc, knip, the 250-line check, both suites
 ```
