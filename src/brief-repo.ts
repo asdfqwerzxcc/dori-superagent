@@ -48,12 +48,6 @@ export function briefRepoHint(text: string): BriefRepoHint | undefined {
   return found === undefined ? undefined : { marker: found.marker, repo: found.repo, origin: found.origin };
 }
 
-/** True when `checkout` is the repo whose path ends with `suffix` (case and separator insensitive). */
-export function inRepo(checkout: string, suffix: string): boolean {
-  const path = checkout.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  return path === suffix || path.endsWith(`/${suffix}`);
-}
-
 /** True when `checkout` is `path` itself or a directory that contains it. */
 export function containsPath(checkout: string, path: string): boolean {
   const root = checkout.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
@@ -71,9 +65,8 @@ const originRepo = (url: string): string | undefined =>
     .pop()
     ?.toLowerCase() || undefined;
 
-/** True when `checkout` is the team repo by path or by its `origin` remote; a hint never bypasses this. */
-export function matchesTeamRepo(hint: BriefRepoHint, checkout: string, origin?: string): boolean {
-  if (inRepo(checkout, hint.repo)) return true;
+/** True when the checkout's `origin` is the team repo. The path is never the identity: a nested checkout can fake it. */
+export function matchesTeamRepo(hint: BriefRepoHint, origin?: string): boolean {
   return origin !== undefined && originRepo(origin) === hint.origin;
 }
 
@@ -91,8 +84,9 @@ export type RepoCheck = {
 
 /**
  * The refusal text for a lane about to start, else undefined. A declared repo must be a real git checkout containing
- * the lane's cwd; a brief that names a team repo passes only when the actual checkout is that repo by path or origin.
- * The team check runs whether or not a hint was declared, so a hint can locate a checkout but never excuse a wrong one.
+ * the lane's cwd; a brief that names a team repo passes only when the git toplevel's `origin` is that repo, so neither
+ * a path suffix nor a hint can excuse a nested or wrong checkout. The team check runs whether or not a hint was
+ * declared.
  */
 export function laneRepoRefusal(check: RepoCheck): string | undefined {
   const cwd = check.cwd;
@@ -102,11 +96,11 @@ export function laneRepoRefusal(check: RepoCheck): string | undefined {
       `the lane was not started and nothing was written`
     );
   const team = briefRepoHint(check.brief);
-  if (team !== undefined && !matchesTeamRepo(team, check.repo ?? cwd, check.origin))
+  if (team !== undefined && !matchesTeamRepo(team, check.origin))
     return (
       `refusing to start: a brief that names ${team.marker} belongs to ${team.repo} (origin ${team.origin}), ` +
-      `but this lane would work in ${check.repo ?? cwd}${check.origin === undefined ? "" : ` (origin ${check.origin})`}\n` +
-      `start the lane in that checkout, or add a "repo: <path-to-${team.repo}>" line / --repo <path>`
+      `but this lane's checkout ${check.repo ?? cwd} has origin ${check.origin ?? "none"}\n` +
+      `point --repo / the brief's "repo:" line at a checkout whose git origin is ${team.origin}, or fix that origin`
     );
   if (check.declared !== undefined && !containsPath(check.declared, cwd))
     return (

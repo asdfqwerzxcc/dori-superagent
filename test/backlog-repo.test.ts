@@ -8,8 +8,12 @@ import { fakeGit } from "./fake-git.ts";
 import type { World } from "./fake.ts";
 import { setup } from "./loop-setup.ts";
 
-/** fakeGit with `rev-parse --show-toplevel` answering the checkout it was pointed at, so a lane records the hint. */
-function gitAtCwd(w: World): void {
+const DESIGN_ORIGIN = "https://github.com/asdfqwerzxcc/dori-design-system.git";
+const OMO_STATS_ORIGIN = "https://github.com/asdfqwerzxcc/omo-stats.git";
+const DORI_ORIGIN = "https://github.com/sisyphuslabs/dori-superagent.git";
+
+/** fakeGit with a per-path toplevel and origin, so identity is the remote and never a path suffix. */
+function gitAtCwd(w: World, origins: Record<string, string> = {}): void {
   const head = "a".repeat(40);
   const inner = w.git;
   w.git = (argv, stdin) => {
@@ -17,6 +21,11 @@ function gitAtCwd(w: World): void {
     const args = argv[0] === "-C" ? argv.slice(2) : argv;
     if (args[0] === "rev-parse" && args.includes("--show-toplevel")) return { code: 0, stdout: `${cwd}\n` };
     if (args[0] === "rev-parse" && args[1] === "HEAD") return { code: 0, stdout: `${head}\n` };
+    if (args[0] === "remote" && args[1] === "get-url") {
+      const url = cwd === undefined ? undefined : origins[cwd];
+      if (url !== undefined) return { code: 0, stdout: `${url}\n` };
+      return { code: 2, stdout: "", stderr: "no such remote" };
+    }
     return inner(argv, stdin);
   };
 }
@@ -31,7 +40,7 @@ describe("backlog repo hints", () => {
     const item = backlogAdd(d, "design-card", brief, { cwd: d.store.root, repo });
     expect(item.repo).toBe(repo);
     fakeGit(w, { head: "a".repeat(40) });
-    gitAtCwd(w);
+    gitAtCwd(w, { [repo]: DESIGN_ORIGIN });
     const run = await loopTick(d, { force: true });
     expect(run.started).toEqual(["design-card (p5)"]);
     const lane = d.store.lane("design-card")!;
@@ -90,6 +99,8 @@ describe("backlog repo hints", () => {
     mkdirSync(repo, { recursive: true });
     const brief = join(d.store.root, "stats.md");
     writeFileSync(brief, "# Budgets\n\nSee teams/omo-stats/budgets.\n");
+    fakeGit(w, { head: "a".repeat(40) });
+    gitAtCwd(w, { [repo]: OMO_STATS_ORIGIN });
     expect((await startLane(d, "stats-ok", brief, { cwd: repo, group: "w1" })).cwd).toBe(repo);
     await expect(startLane(d, "stats-wrong", brief, { cwd: d.store.root, group: "w1" })).rejects.toThrow(
       "belongs to teams/omo-stats",
@@ -97,8 +108,6 @@ describe("backlog repo hints", () => {
     expect(d.store.lane("stats-wrong")).toBeUndefined();
     const declared = join(d.store.root, "plain-declared.md");
     writeFileSync(declared, `---\nrepo: ${repo}\n---\n\n# Plain\n`);
-    fakeGit(w, { head: "a".repeat(40) });
-    gitAtCwd(w);
     await expect(startLane(d, "declared-elsewhere", declared, { cwd: d.store.root, group: "w1" })).rejects.toThrow(
       `declares repo ${repo}`,
     );
@@ -111,11 +120,8 @@ describe("backlog repo hints", () => {
     const brief = join(d.store.root, "design-hinted.md");
     writeFileSync(brief, "# Card\n\nMatch the ds-v4/ reference.\n");
     backlogAdd(d, "design-wrong-hint", brief, { cwd: d.store.root, repo: wrong });
-    fakeGit(w, {
-      head: "a".repeat(40),
-      remotes: { origin: "https://github.com/sisyphuslabs/dori-superagent.git" },
-    });
-    gitAtCwd(w);
+    fakeGit(w, { head: "a".repeat(40) });
+    gitAtCwd(w, { [wrong]: DORI_ORIGIN });
     const run = await loopTick(d, { force: true });
     expect(run.started).toEqual([]);
     const finding = run.findings.find((f) => f.startsWith("start design-wrong-hint failed"));
@@ -132,14 +138,44 @@ describe("backlog repo hints", () => {
     const brief = join(d.store.root, "design-clone.md");
     writeFileSync(brief, "# Card\n\nMatch the ds-v4/ reference.\n");
     backlogAdd(d, "design-origin", brief, { cwd: d.store.root, repo: clone });
-    fakeGit(w, {
-      head: "a".repeat(40),
-      remotes: { origin: "https://github.com/asdfqwerzxcc/dori-design-system.git" },
-    });
-    gitAtCwd(w);
+    fakeGit(w, { head: "a".repeat(40) });
+    gitAtCwd(w, { [clone]: DESIGN_ORIGIN });
     const run = await loopTick(d, { force: true });
     expect(run.started).toEqual(["design-origin (p5)"]);
     expect(d.store.lane("design-origin")!.cwd).toBe(clone);
+  });
+
+  test("a nested dori checkout cannot pass by its path suffix", async () => {
+    const { w, d } = setup();
+    const nested = join(d.store.root, "teams", "design", "teams", "omo-stats");
+    mkdirSync(nested, { recursive: true });
+    const brief = join(d.store.root, "nested.md");
+    writeFileSync(brief, "# Budgets\n\nSee teams/omo-stats/budgets.\n");
+    backlogAdd(d, "nested-omo", brief, { cwd: d.store.root, repo: nested });
+    fakeGit(w, { head: "a".repeat(40) });
+    gitAtCwd(w, { [nested]: DORI_ORIGIN });
+    const run = await loopTick(d, { force: true });
+    expect(run.started).toEqual([]);
+    const finding = run.findings.find((f) => f.startsWith("start nested-omo failed"));
+    expect(finding).toContain("belongs to teams/omo-stats");
+    expect(finding).toContain("dori-superagent");
+    expect(d.store.lane("nested-omo")).toBeUndefined();
+  });
+
+  test("a team checkout with no origin is refused", async () => {
+    const { w, d } = setup();
+    const repo = join(d.store.root, "teams", "design");
+    mkdirSync(repo, { recursive: true });
+    const brief = join(d.store.root, "design-no-origin.md");
+    writeFileSync(brief, "# Card\n\nMatch the ds-v4/ reference.\n");
+    backlogAdd(d, "design-no-origin", brief, { cwd: d.store.root, repo });
+    fakeGit(w, { head: "a".repeat(40) });
+    gitAtCwd(w);
+    const run = await loopTick(d, { force: true });
+    expect(run.started).toEqual([]);
+    const finding = run.findings.find((f) => f.startsWith("start design-no-origin failed"));
+    expect(finding).toContain("has origin none");
+    expect(d.store.lane("design-no-origin")).toBeUndefined();
   });
 
   test("a hint that is not a git checkout fails before a lane and never logs a start repo", async () => {
