@@ -36,5 +36,11 @@ export async function repoHead(d: Deps, repo: string): Promise<string | undefine
   return asSha(await gitOut(d, repo, ["rev-parse", "HEAD"]));
 }
 
+/** The `origin` remote URL of a checkout, or undefined when it has none. */
+export async function repoOrigin(d: Deps, repo: string): Promise<string | undefined> {
+  const url = await gitOut(d, repo, ["remote", "get-url", "origin"]);
+  return url === "" ? undefined : url;
+}
+
 /** HEAD of the lane's checkout, or undefined when it cannot be read (gone directory, not a repository). */
 export const laneHead = (d: Deps, lane: Lane): Promise<string | undefined> => repoHead(d, laneRepo(lane));

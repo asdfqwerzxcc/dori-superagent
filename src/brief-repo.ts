@@ -31,21 +31,21 @@ export function repoHintFromBrief(file: string): string | undefined {
   return hint === undefined ? undefined : resolve(dirname(file), hint);
 }
 
-/** The team checkout a brief names, with the exact marker that named it. */
-export type BriefRepoHint = { readonly marker: string; readonly repo: string };
+/** The team checkout a brief names, with the marker that named it and the origin repo that also identifies it. */
+export type BriefRepoHint = { readonly marker: string; readonly repo: string; readonly origin: string };
 
 // Only these paths bind a brief to a repo today. `ds-v4/` is the design system's directory inside `teams/design`.
-const HINTS: readonly { readonly re: RegExp; readonly marker: string; readonly repo: string }[] = [
-  { re: /ds-v4\//, marker: "ds-v4/", repo: "teams/design" },
-  { re: /teams\/design(?![\w-])/, marker: "teams/design", repo: "teams/design" },
-  { re: /teams\/omo-stats(?![\w-])/, marker: "teams/omo-stats", repo: "teams/omo-stats" },
+const HINTS: readonly (BriefRepoHint & { readonly re: RegExp })[] = [
+  { re: /ds-v4\//, marker: "ds-v4/", repo: "teams/design", origin: "dori-design-system" },
+  { re: /teams\/design(?![\w-])/, marker: "teams/design", repo: "teams/design", origin: "dori-design-system" },
+  { re: /teams\/omo-stats(?![\w-])/, marker: "teams/omo-stats", repo: "teams/omo-stats", origin: "omo-stats" },
 ];
 
 /** The team checkout a brief's text names, whichever marker it uses; undefined when it names none. */
 export function briefRepoHint(text: string): BriefRepoHint | undefined {
   const body = text.replace(FRONT_MATTER, "").replace(/\\/g, "/").toLowerCase();
   const found = HINTS.find((hint) => hint.re.test(body));
-  return found === undefined ? undefined : { marker: found.marker, repo: found.repo };
+  return found === undefined ? undefined : { marker: found.marker, repo: found.repo, origin: found.origin };
 }
 
 /** True when `checkout` is the repo whose path ends with `suffix` (case and separator insensitive). */
@@ -61,28 +61,57 @@ export function containsPath(checkout: string, path: string): boolean {
   return target === root || target.startsWith(`${root}/`);
 }
 
-/**
- * The refusal text when a brief names a team repo but the lane would work in another checkout, else undefined.
- * `checkout` is the repository start resolved, or the lane's cwd when the cwd is not a repository. Used only when no
- * `repo:` hint declared the checkout; a declared repo is checked by declaredRepoMismatch.
- */
-export function repoMismatch(text: string, checkout: string): string | undefined {
-  const hint = briefRepoHint(text);
-  if (hint === undefined || inRepo(checkout, hint.repo)) return undefined;
-  return (
-    `refusing to start: a brief that names ${hint.marker} belongs to ${hint.repo}, but this lane would work in ${checkout}\n` +
-    `add a "repo: <path-to-${hint.repo}>" line to the brief front-matter, or pass --repo <path> to dori backlog add`
-  );
+/** The repository name in a remote URL: the last path segment without a trailing `.git`. */
+const originRepo = (url: string): string | undefined =>
+  url
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "")
+    .replace(/\.git$/i, "")
+    .split("/")
+    .pop()
+    ?.toLowerCase() || undefined;
+
+/** True when `checkout` is the team repo by path or by its `origin` remote; a hint never bypasses this. */
+export function matchesTeamRepo(hint: BriefRepoHint, checkout: string, origin?: string): boolean {
+  if (inRepo(checkout, hint.repo)) return true;
+  return origin !== undefined && originRepo(origin) === hint.origin;
 }
 
+/** What a starting lane knows about its checkout: the brief, its cwd, the git toplevel and the declared repo. */
+export type RepoCheck = {
+  readonly brief: string;
+  readonly cwd: string;
+  /** The git toplevel of `cwd`, or undefined when git found no repository. */
+  readonly repo?: string;
+  /** The `origin` remote URL of `repo`, when it has one. */
+  readonly origin?: string;
+  /** The checkout `--repo` or the brief's `repo:` line names, absolute. */
+  readonly declared?: string;
+};
+
 /**
- * The refusal text when a brief declares its own repo but the lane's cwd is not inside it, else undefined. The lane
- * works in its cwd, so that directory must be the declared checkout or one of its subdirectories.
+ * The refusal text for a lane about to start, else undefined. A declared repo must be a real git checkout containing
+ * the lane's cwd; a brief that names a team repo passes only when the actual checkout is that repo by path or origin.
+ * The team check runs whether or not a hint was declared, so a hint can locate a checkout but never excuse a wrong one.
  */
-export function declaredRepoMismatch(declared: string, cwd: string): string | undefined {
-  if (containsPath(declared, cwd)) return undefined;
-  return (
-    `refusing to start: the brief declares repo ${declared}, but this lane would work in ${cwd}\n` +
-    `start the lane in the declared checkout, or point --repo and the brief's repo: line at this one`
-  );
+export function laneRepoRefusal(check: RepoCheck): string | undefined {
+  const cwd = check.cwd;
+  if (check.declared !== undefined && (check.repo === undefined || !containsPath(check.repo, cwd)))
+    return (
+      `refusing to start: repo hint ${check.declared} is not a git checkout (git found no repository at ${cwd}); ` +
+      `the lane was not started and nothing was written`
+    );
+  const team = briefRepoHint(check.brief);
+  if (team !== undefined && !matchesTeamRepo(team, check.repo ?? cwd, check.origin))
+    return (
+      `refusing to start: a brief that names ${team.marker} belongs to ${team.repo} (origin ${team.origin}), ` +
+      `but this lane would work in ${check.repo ?? cwd}${check.origin === undefined ? "" : ` (origin ${check.origin})`}\n` +
+      `start the lane in that checkout, or add a "repo: <path-to-${team.repo}>" line / --repo <path>`
+    );
+  if (check.declared !== undefined && !containsPath(check.declared, cwd))
+    return (
+      `refusing to start: the brief declares repo ${check.declared}, but this lane would work in ${cwd}\n` +
+      `start the lane in the declared checkout, or point --repo and the brief's repo: line at this one`
+    );
+  return undefined;
 }

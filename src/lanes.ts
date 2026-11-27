@@ -1,9 +1,9 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { declaredRepoMismatch, repoHintFromBrief, repoMismatch } from "./brief-repo.ts";
+import { briefRepoHint, laneRepoRefusal, repoHintFromBrief } from "./brief-repo.ts";
 import { shq } from "./delivery.ts";
 import { prompt, type Deps } from "./harness.ts";
-import { repoHead, resolveLaneRepo } from "./lane-repo.ts";
+import { repoHead, repoOrigin, resolveLaneRepo } from "./lane-repo.ts";
 import { createLaneWorktree, discardWorktree, worktreeRoot } from "./lane-worktree.ts";
 import { settled, tellLead, type SendResult } from "./inbox.ts";
 import { Refusal } from "./refusal.ts";
@@ -50,11 +50,19 @@ export async function startLane(
   if (!existsSync(briefFile)) throw new Refusal(`no brief file ${briefFile}`);
   if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Refusal(`no directory ${cwd}`);
   const repo = await resolveLaneRepo(d, cwd);
-  // A design or omo-stats brief must not be lifted into another checkout: refuse before a worktree or brief is written.
+  // A design or omo-stats brief must not be lifted into another checkout: a hint locates one but never excuses a wrong one.
   const briefText = readFileSync(briefFile, "utf8");
   const declared = opts.repo ?? hinted;
-  const mismatch = declared !== undefined ? declaredRepoMismatch(declared, cwd) : repoMismatch(briefText, repo ?? cwd);
-  if (mismatch !== undefined) throw new Refusal(mismatch);
+  const team = briefRepoHint(briefText);
+  const origin = team !== undefined && repo !== undefined ? await repoOrigin(d, repo) : undefined;
+  const refusal = laneRepoRefusal({
+    brief: briefText,
+    cwd,
+    ...(repo !== undefined ? { repo } : {}),
+    ...(origin !== undefined ? { origin } : {}),
+    ...(declared !== undefined ? { declared } : {}),
+  });
+  if (refusal !== undefined) throw new Refusal(refusal);
   const baseSha = repo === undefined ? undefined : await repoHead(d, repo);
   // A repo we found but cannot read a HEAD from (an empty repository) must not turn into a lane that silently works in
   // the shared checkout: that is exactly the fallback isolation exists to prevent.

@@ -81,12 +81,12 @@ async function pull(
       lockLost = true;
       break;
     }
-    let repo = item.repo;
+    let hint = item.repo;
     try {
-      repo ??= repoHintFromBrief(item.brief);
+      hint ??= repoHintFromBrief(item.brief);
       await startLane(d, item.id, item.brief, {
-        cwd: repo ?? item.cwd,
-        ...(repo !== undefined ? { repo } : {}),
+        cwd: hint ?? item.cwd,
+        ...(hint !== undefined ? { repo: hint } : {}),
         item: item.id,
       });
     } catch (e) {
@@ -102,8 +102,14 @@ async function pull(
       }
       run.findings.push(`${item.id} started in ${refText(lane.sessionRef)} but the lead was not told: ${why}`);
     }
+    const opened = d.store.lane(item.id);
     item.status = "running";
-    log(d, item, "start", `lane opened by the hourly loop (repo=${repo ?? "default"})`);
+    log(
+      d,
+      item,
+      "start",
+      `lane opened by the hourly loop (repo=${hint === undefined ? "default" : (opened?.repo ?? "default")})`,
+    );
     run.started.push(`${item.id} (p${item.priority})`);
   }
   const waiting = candidates.length - tried;

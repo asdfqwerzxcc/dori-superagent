@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { backlogAdd } from "../src/backlog.ts";
 import { startLane } from "../src/lanes.ts";
@@ -85,7 +85,7 @@ describe("backlog repo hints", () => {
   });
 
   test("the right checkout passes the guard, and an ad-hoc start in the wrong one is refused", async () => {
-    const { d } = setup();
+    const { w, d } = setup();
     const repo = join(d.store.root, "teams", "omo-stats");
     mkdirSync(repo, { recursive: true });
     const brief = join(d.store.root, "stats.md");
@@ -95,11 +95,69 @@ describe("backlog repo hints", () => {
       "belongs to teams/omo-stats",
     );
     expect(d.store.lane("stats-wrong")).toBeUndefined();
-    const declared = join(d.store.root, "stats-declared.md");
-    writeFileSync(declared, `---\nrepo: ${repo}\n---\n\n# Budgets\n\nSee teams/omo-stats/budgets.\n`);
-    await expect(startLane(d, "stats-elsewhere", declared, { cwd: d.store.root, group: "w1" })).rejects.toThrow(
+    const declared = join(d.store.root, "plain-declared.md");
+    writeFileSync(declared, `---\nrepo: ${repo}\n---\n\n# Plain\n`);
+    fakeGit(w, { head: "a".repeat(40) });
+    gitAtCwd(w);
+    await expect(startLane(d, "declared-elsewhere", declared, { cwd: d.store.root, group: "w1" })).rejects.toThrow(
       `declares repo ${repo}`,
     );
+  });
+
+  test("a repo hint does not bypass the team guard", async () => {
+    const { w, d } = setup();
+    const wrong = join(d.store.root, "dori-clone");
+    mkdirSync(wrong, { recursive: true });
+    const brief = join(d.store.root, "design-hinted.md");
+    writeFileSync(brief, "# Card\n\nMatch the ds-v4/ reference.\n");
+    backlogAdd(d, "design-wrong-hint", brief, { cwd: d.store.root, repo: wrong });
+    fakeGit(w, {
+      head: "a".repeat(40),
+      remotes: { origin: "https://github.com/sisyphuslabs/dori-superagent.git" },
+    });
+    gitAtCwd(w);
+    const run = await loopTick(d, { force: true });
+    expect(run.started).toEqual([]);
+    const finding = run.findings.find((f) => f.startsWith("start design-wrong-hint failed"));
+    expect(finding).toContain("names ds-v4/");
+    expect(finding).toContain("belongs to teams/design");
+    expect(finding).toContain("dori-superagent");
+    expect(d.store.lane("design-wrong-hint")).toBeUndefined();
+  });
+
+  test("a design clone outside teams/design passes by its design origin", async () => {
+    const { w, d } = setup();
+    const clone = join(d.store.root, "design-clone");
+    mkdirSync(clone, { recursive: true });
+    const brief = join(d.store.root, "design-clone.md");
+    writeFileSync(brief, "# Card\n\nMatch the ds-v4/ reference.\n");
+    backlogAdd(d, "design-origin", brief, { cwd: d.store.root, repo: clone });
+    fakeGit(w, {
+      head: "a".repeat(40),
+      remotes: { origin: "https://github.com/asdfqwerzxcc/dori-design-system.git" },
+    });
+    gitAtCwd(w);
+    const run = await loopTick(d, { force: true });
+    expect(run.started).toEqual(["design-origin (p5)"]);
+    expect(d.store.lane("design-origin")!.cwd).toBe(clone);
+  });
+
+  test("a hint that is not a git checkout fails before a lane and never logs a start repo", async () => {
+    const { d } = setup();
+    const plain = join(d.store.root, "plain-dir");
+    mkdirSync(plain, { recursive: true });
+    const brief = join(d.store.root, "plain.md");
+    writeFileSync(brief, "# Plain\n");
+    backlogAdd(d, "not-git", brief, { cwd: d.store.root, repo: plain });
+    const run = await loopTick(d, { force: true });
+    expect(run.started).toEqual([]);
+    const finding = run.findings.find((f) => f.startsWith("start not-git failed"));
+    expect(finding).toContain("is not a git checkout");
+    expect(d.store.lane("not-git")).toBeUndefined();
+    const log = d.store.item("not-git")!.log;
+    expect(log.some((e) => e.text.startsWith("lane opened"))).toBe(false);
+    expect(log.at(-1)!.text).toStartWith("failed:");
+    expect(existsSync(join(d.store.root, "worktrees", "not-git"))).toBe(false);
   });
 
   test("the loop logs repo=default when the item has no hint and the brief names no repo", async () => {
