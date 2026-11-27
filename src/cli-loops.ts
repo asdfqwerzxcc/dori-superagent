@@ -124,10 +124,12 @@ export async function runBacklog(d: Deps, a: Args, x: string | undefined): Promi
     const p = one(a, "priority");
     const title = one(a, "title");
     const cwd = one(a, "cwd");
+    const repo = one(a, "repo");
     const decision = one(a, "decision");
     const item = backlogAdd(d, id, need(one(a, "brief"), "--brief"), {
       ...(title !== undefined ? { title } : {}),
       ...(cwd !== undefined ? { cwd } : {}),
+      ...(repo !== undefined ? { repo } : {}),
       ...(decision !== undefined ? { decision } : {}),
       ...(p !== undefined ? { priority: Number(p) } : {}),
     });

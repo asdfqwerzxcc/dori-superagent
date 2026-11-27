@@ -20,7 +20,7 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori loop [--once] [--interval S] [--max-lanes N] [--max-starts N] [--max-load L] [--force]
                                               hourly: sync backlog, audit missed work, start the next item, ask decisions
   dori loop stop [--text WHY] | resume | status   kill switch and last run
-  dori backlog add <id> --brief FILE [--title T] [--priority 1-9] [--cwd DIR] [--decision Q]
+  dori backlog add <id> --brief FILE [--title T] [--priority 1-9] [--cwd DIR] [--repo DIR] [--decision Q]
   dori backlog list | decide <id> --text ANSWER | drop <id> [--text WHY]
   dori backlog import <owner/repo> [--label dori] [--cwd DIR]   open labelled issues -> items
   dori board post --thread <id|new> [--channel C] --text T [--label L]...

@@ -157,6 +157,8 @@ export type Item = {
   title: string;
   brief: string;
   cwd: string;
+  /** Checkout the work belongs to, from `--repo` or the brief's `repo:` front-matter; absent means the default. */
+  repo?: string;
   priority: number;
   status: ItemStatus;
   decision?: string;
