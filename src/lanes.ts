@@ -1,8 +1,9 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import { briefRepoHint, laneRepoRefusal, repoHintFromBrief } from "./brief-repo.ts";
 import { shq } from "./delivery.ts";
 import { prompt, type Deps } from "./harness.ts";
-import { repoHead, resolveLaneRepo } from "./lane-repo.ts";
+import { repoHead, repoOrigin, resolveLaneRepo } from "./lane-repo.ts";
 import { createLaneWorktree, discardWorktree, worktreeRoot } from "./lane-worktree.ts";
 import { settled, tellLead, type SendResult } from "./inbox.ts";
 import { Refusal } from "./refusal.ts";
@@ -25,7 +26,7 @@ export async function startLane(
   d: Deps,
   key: string,
   briefFile: string,
-  opts: { cwd?: string; group?: string; item?: string } = {},
+  opts: { cwd?: string; repo?: string; group?: string; item?: string } = {},
 ): Promise<Lane> {
   if (!KEY_RE.test(key)) throw new Refusal(`lane key must match ${KEY_RE}`);
   const reserved = reservedKey(key);
@@ -43,11 +44,25 @@ export async function startLane(
     linkedItem !== undefined && (linkedItem.status === "open" || linkedItem.status === "running")
       ? linkedId
       : undefined;
-  const cwd = resolve(opts.cwd ?? process.cwd());
+  const hinted = repoHintFromBrief(briefFile);
+  const cwd = resolve(opts.cwd ?? opts.repo ?? hinted ?? process.cwd());
   // Checked before anything is written or opened: a missing brief was a raw ENOENT, and a missing cwd went on to the runtime.
   if (!existsSync(briefFile)) throw new Refusal(`no brief file ${briefFile}`);
   if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Refusal(`no directory ${cwd}`);
   const repo = await resolveLaneRepo(d, cwd);
+  // A design or omo-stats brief must not be lifted into another checkout: a hint locates one but never excuses a wrong one.
+  const briefText = readFileSync(briefFile, "utf8");
+  const declared = opts.repo ?? hinted;
+  const team = briefRepoHint(briefText);
+  const origin = team !== undefined && repo !== undefined ? await repoOrigin(d, repo) : undefined;
+  const refusal = laneRepoRefusal({
+    brief: briefText,
+    cwd,
+    ...(repo !== undefined ? { repo } : {}),
+    ...(origin !== undefined ? { origin } : {}),
+    ...(declared !== undefined ? { declared } : {}),
+  });
+  if (refusal !== undefined) throw new Refusal(refusal);
   const baseSha = repo === undefined ? undefined : await repoHead(d, repo);
   // A repo we found but cannot read a HEAD from (an empty repository) must not turn into a lane that silently works in
   // the shared checkout: that is exactly the fallback isolation exists to prevent.
@@ -76,7 +91,7 @@ export async function startLane(
   const footer = prompt("lane-footer.md", { key, dori: d.doriCmd, ...CEILING_VARS });
   let ref: SessionRef;
   try {
-    await Bun.write(briefPath, `${readFileSync(briefFile, "utf8").trimEnd()}\n\n${footer}`);
+    await Bun.write(briefPath, `${briefText.trimEnd()}\n\n${footer}`);
 
     // The group is the caller's own when it runs in a session of the selected runtime (a lane opened from the lead's
     // workspace stays there); otherwise herdr gets a new "dori" workspace and hc this home's group label.

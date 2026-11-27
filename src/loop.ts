@@ -3,6 +3,7 @@
 // never pushes and never edits a lane record; under a memory hold it may close an idle landed lane's
 // session (see loop-hold.ts). See docs/hourly-loop.md.
 import { log, MAX_ATTEMPTS } from "./backlog.ts";
+import { repoHintFromBrief } from "./brief-repo.ts";
 import type { Deps } from "./harness.ts";
 import { tellLead } from "./inbox.ts";
 import { startLane } from "./lanes.ts";
@@ -80,8 +81,14 @@ async function pull(
       lockLost = true;
       break;
     }
+    let hint = item.repo;
     try {
-      await startLane(d, item.id, item.brief, { cwd: item.cwd, item: item.id });
+      hint ??= repoHintFromBrief(item.brief);
+      await startLane(d, item.id, item.brief, {
+        cwd: hint ?? item.cwd,
+        ...(hint !== undefined ? { repo: hint } : {}),
+        item: item.id,
+      });
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
       const lane = d.store.lane(item.id);
@@ -95,8 +102,14 @@ async function pull(
       }
       run.findings.push(`${item.id} started in ${refText(lane.sessionRef)} but the lead was not told: ${why}`);
     }
+    const opened = d.store.lane(item.id);
     item.status = "running";
-    log(d, item, "start", "lane opened by the hourly loop");
+    log(
+      d,
+      item,
+      "start",
+      `lane opened by the hourly loop (repo=${hint === undefined ? "default" : (opened?.repo ?? "default")})`,
+    );
     run.started.push(`${item.id} (p${item.priority})`);
   }
   const waiting = candidates.length - tried;
