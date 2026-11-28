@@ -92,8 +92,9 @@ command-line scan is ever spawned. hc reads its terminal's foreground process an
 
 The supervisor never asks PowerShell for process status. A recorded pid is checked with `kernel32!OpenProcess` on
 Windows, or `kill(pid, 0)` on POSIX, and the process tree is a Toolhelp32 snapshot on Windows (one hidden `ps` on POSIX).
-The only `Get-CimInstance` left runs on an explicit lead restart, hidden, because the lead stack is identified by command
-lines the kernel does not expose; a supervisor status read or a restart never spawns it.
+One `Get-CimInstance` remains on an explicit lead restart, hidden, because the lead stack is identified by command lines
+the kernel does not expose; the gateway guard runs the other, hidden, only when a supervisor record cannot prove a live
+supervisor. A supervisor status read or a restart never spawns it.
 
 Measured cost on this host (Windows 11, herdr 0.9.5, 2026-11-23, 8 empty unit panes): each PowerShell pane host is
 ~55 MB private / ~72 MB working set, and the herdr server grows ~2.6 MB private (terminal state) per pane. At 8 units
@@ -157,22 +158,45 @@ three core children plus the two side-jobs that were units then; the plugin chil
 - The watchdog recovered a killed supervisor unaided in 80 s: `WATCHDOG_STALE supervisor=94s ws=82s`, then
   `WATCHDOG_SPAWN supervisor pid=3716`; the five units returned with new pids.
 
-## Host guard compatibility
+## Host guard
 
 The `DoriGatewayGuard` scheduled task runs `bin/ensure-gateway.ps1` every minute and is the cover for "the watchdog
-itself dies". The merged supervisor keeps `state/gateway-heartbeat` fresh in the same 30 s beat as
-`state/supervisor-heartbeat`, so the old guard never sees a missing gateway. The script matches only `bin/supervisor.ts`
-(or the repo's `src/supervisors/supervisor.ts`), reads `supervisor-heartbeat`, and starts `bin/supervisor.ts`; it no
-longer matches or starts the pre-merge `gateway-supervisor.ts`. `state/gateway-heartbeat` remains a compatibility write
-for pre-merge launchers and monitors.
+itself dies". The repo owns both halves: `bin/ensure-gateway.ps1` is the launcher (deployed to `~/.dori/bin/`), and
+`src/supervisors/ensure-gateway.ts` is the program it runs from the installed checkout (`~/.dori/bin/ensure-gateway.ts`
+is the manual shim).
 
-Verified on this host (2026-11-16):
+A fresh `supervisor-heartbeat` under a live `state/supervisor.json` record is healthy: the guard prints one
+`GUARD HEALTHY` line and reads no process list. A stale or missing heartbeat, or a record that cannot prove its
+supervisor, takes the whole tree down:
 
-- Fresh guard run while the stack was healthy: task result 0; supervisor `10584` and children
-  `6040,6060,10868,11176,19364` unchanged; one supervisor, one gateway.
-- After `supervisor-heartbeat` was aged 200 s: the guard replaced `10584` with `17900`, the old children exited, and the
-  new units were `6544,18500,2036,19272,15744`; no `gateway-supervisor.ts` / `loops-supervisor.ts` process appeared;
-  `GATEWAY_READY` at 10:57:58 and `gateway-heartbeat` fresh on the new supervisor.
+- The kill plan is every supervisor process whose command line is the home shim or this checkout's
+  `src/supervisors/supervisor.ts`, the OS subtree below each of them (headless children), and every pid
+  `state/supervisor.json`, `state/plugins/<name>.json` and `state/ensure-up.json` name. A unit in pane mode is a child of
+  its pane shell, not of the supervisor, so the records are the other half of the tree. Children are killed before
+  parents; nothing descends from a recorded unit, because what a unit spawns is a session, not a unit. The guard's own
+  process chain is protected.
+- `GUARD KILL ... tree=<pids>` is printed and appended to `state/ensure-gateway.log` before the first kill.
+  `GUARD SURVIVORS pids=<pids|none> killed=<n>` follows the last one. A survivor prints `GUARD START skipped=1` and
+  exits 1 without starting a supervisor, because a new supervisor over a live unit duplicates it; the next minute
+  retries. Otherwise the guard starts `bin/supervisor.ts`, waits for a fresh beat, and prints `GUARD RESTART` and
+  `GUARD BEAT`.
+- The reason is the incident of 2026-11-24: a parent-only kill left the unit children running and a second supervisor
+  added a second ensure-up (`22836`/`8904`).
+
+The merged supervisor keeps `state/gateway-heartbeat` fresh in the same 30 s beat as `state/supervisor-heartbeat`, so a
+"missing gateway" read stays compatible. `state/gateway-heartbeat` remains a compatibility write for pre-merge
+launchers and monitors.
+
+Verified on this host (2026-11-25):
+
+- A live healthy stack cost one record read and one liveness probe: `GUARD HEALTHY supervisor=18764 fresh=1`, killed
+  nothing. `test/ensure-gateway.test.ts` covers the same path with a scan and a kill that must not run.
+- A synthetic stale home (one fake supervisor, one fake unit, no unit record, heartbeat 10 min old) run through
+  `bin/ensure-gateway.ps1`: exit 0, then
+  `GUARD KILL fresh=0 supervisors=18056 tree=19284,4480,24648,18056`, `GUARD SURVIVORS pids=none killed=4`,
+  `GUARD RESTART supervisor=24156 killed=4`, `GUARD BEAT supervisor=24156 fresh=1`. Both fake pids were dead and no
+  `bun` process naming that home remained. The two extra pids are the `conhost.exe` children Windows gives the fake
+  supervisor and its unit; a headless supervisor's own console hosts are part of its subtree the same way.
 
 ## ensure-up
 
